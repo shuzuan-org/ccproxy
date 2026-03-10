@@ -327,9 +327,9 @@ max_concurrency = 10
 name = "anthropic"
 client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 auth_url = "https://claude.ai/oauth/authorize"
-token_url = "https://console.anthropic.com/v1/oauth/token"
+token_url = "https://platform.claude.com/v1/oauth/token"
 redirect_uri = "https://platform.claude.com/oauth/code/callback"
-scopes = ["org:create_api_key", "user:profile", "user:inference"]
+scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers"]
 
 [observability]
 retention_days = 7

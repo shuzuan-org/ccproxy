@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
@@ -24,7 +26,7 @@ var oauthCmd = &cobra.Command{
 // oauthLoginCmd starts a PKCE authorization flow for a given provider.
 var oauthLoginCmd = &cobra.Command{
 	Use:   "login <provider>",
-	Short: "Authenticate with an OAuth provider via browser",
+	Short: "Authenticate with an OAuth provider",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		providerName := args[0]
@@ -62,89 +64,41 @@ var oauthLoginCmd = &cobra.Command{
 		// Build the authorization URL
 		authURL := provider.AuthorizationURL(state, challenge)
 
-		// Open the URL in the browser (macOS: open, Linux: xdg-open)
-		fmt.Printf("Opening browser for %s authorization...\n", providerName)
-		fmt.Printf("If the browser does not open, visit:\n  %s\n\n", authURL)
-		if err := exec.Command("open", authURL).Start(); err != nil {
-			// Non-fatal: user can copy-paste the URL
-			_ = exec.Command("xdg-open", authURL).Start()
-		}
+		// Print the URL and try to copy to clipboard
+		fmt.Println("Open the following URL in your browser to authorize:")
+		fmt.Printf("\n  %s\n\n", authURL)
+		copyToClipboard(authURL)
 
-		// Start a temporary local HTTP server to receive the OAuth callback
+		// Read authorization code from stdin
+		fmt.Println("After authorizing, paste the authorization code or the full callback URL below.")
+		fmt.Print("Code: ")
+
 		codeCh := make(chan string, 1)
 		errCh := make(chan error, 1)
-
-		// Extract the callback port from redirect_uri (default 8085)
-		callbackAddr := ":8085"
-		if providerCfg.RedirectURI != "" {
-			// Try to parse port from redirect_uri like http://localhost:8085/callback
-			if parsed, parseErr := parseCallbackAddr(providerCfg.RedirectURI); parseErr == nil {
-				callbackAddr = parsed
-			}
-		}
-
-		mux := http.NewServeMux()
-		srv := &http.Server{
-			Addr:    callbackAddr,
-			Handler: mux,
-		}
-
-		mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-			q := r.URL.Query()
-
-			// Validate state to prevent CSRF
-			if q.Get("state") != state {
-				http.Error(w, "invalid state parameter", http.StatusBadRequest)
-				errCh <- fmt.Errorf("state mismatch in callback")
-				return
-			}
-
-			if errParam := q.Get("error"); errParam != "" {
-				desc := q.Get("error_description")
-				_, _ = fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>%s</p></body></html>", errParam, desc)
-				errCh <- fmt.Errorf("authorization error: %s — %s", errParam, desc)
-				return
-			}
-
-			code := q.Get("code")
-			if code == "" {
-				http.Error(w, "missing code parameter", http.StatusBadRequest)
-				errCh <- fmt.Errorf("no authorization code in callback")
-				return
-			}
-
-			_, _ = fmt.Fprint(w, "<html><body><h2>Authorization successful!</h2><p>You may close this tab.</p></body></html>")
-			codeCh <- code
-		})
-
-		// Start server in background
 		go func() {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("callback server error: %w", err)
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				codeCh <- strings.TrimSpace(scanner.Text())
+			} else {
+				errCh <- fmt.Errorf("failed to read input: %w", scanner.Err())
 			}
 		}()
 
-		fmt.Printf("Waiting for authorization callback on %s...\n", callbackAddr)
-
-		// Wait for code or error (timeout after 5 minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
 		var code string
 		select {
-		case code = <-codeCh:
-		case err = <-errCh:
-			_ = srv.Shutdown(context.Background())
+		case raw := <-codeCh:
+			if raw == "" {
+				return fmt.Errorf("empty input — authorization aborted")
+			}
+			code = extractCode(raw, state)
+		case err := <-errCh:
 			return err
 		case <-ctx.Done():
-			_ = srv.Shutdown(context.Background())
-			return fmt.Errorf("timed out waiting for authorization")
+			return fmt.Errorf("timed out waiting for authorization code (5 minutes)")
 		}
-
-		// Shutdown the callback server
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer shutdownCancel()
-		_ = srv.Shutdown(shutdownCtx)
 
 		// Exchange the authorization code for tokens
 		fmt.Println("Exchanging authorization code for tokens...")
@@ -298,25 +252,38 @@ func init() {
 	rootCmd.AddCommand(oauthCmd)
 }
 
-// parseCallbackAddr extracts ":port" from a redirect URI such as
-// "http://localhost:8085/callback". Returns ":8085" in that example.
-func parseCallbackAddr(redirectURI string) (string, error) {
-	return parseAddrFromURI(redirectURI)
+// copyToClipboard tries to copy text to the system clipboard.
+// Failures are silently ignored — the user can always copy manually.
+func copyToClipboard(text string) {
+	// Try macOS pbcopy first, then Linux xclip
+	for _, args := range [][]string{
+		{"pbcopy"},
+		{"xclip", "-selection", "clipboard"},
+	} {
+		c := exec.Command(args[0], args[1:]...)
+		c.Stdin = strings.NewReader(text)
+		if err := c.Run(); err == nil {
+			fmt.Println("(URL copied to clipboard)")
+			return
+		}
+	}
 }
 
-// parseAddrFromURI extracts the host:port from a URI and returns it in ":port" form.
-func parseAddrFromURI(rawURI string) (string, error) {
-	u, err := url.Parse(rawURI)
-	if err != nil {
-		return "", fmt.Errorf("parse redirect URI: %w", err)
+// extractCode parses user input that is either a bare authorization code
+// or a full callback URL containing ?code=...&state=... parameters.
+// When a full URL is provided, state is validated if present.
+func extractCode(raw string, expectedState string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		return raw // treat as bare code
 	}
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		return "", fmt.Errorf("redirect URI %q has no port", rawURI)
+	q := u.Query()
+	code := q.Get("code")
+	if code == "" {
+		return raw // not a recognizable callback URL
 	}
-	if host == "" || host == "localhost" || host == "127.0.0.1" {
-		return ":" + port, nil
+	if st := q.Get("state"); st != "" && st != expectedState {
+		fmt.Println("Warning: state parameter in URL does not match expected value.")
 	}
-	return host + ":" + port, nil
+	return code
 }

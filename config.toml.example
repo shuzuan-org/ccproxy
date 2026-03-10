@@ -1,11 +1,11 @@
 [server]
-host = "127.0.0.1"
+host = "0.0.0.0"
 port = 3000
 log_level = "info"
-admin_password = ""
+admin_password = "tmLuqkQjJk2BhgyMW40vqEUKMCx10EMI"
 
 [[api_keys]]
-key = "sk-ccproxy-001"
+key = "sk-ccproxy-987313a7b186d14afe045aa16335b032"
 name = "dev-team"
 enabled = true
 
@@ -30,14 +30,15 @@ max_concurrency = 10
 base_url = "https://api.anthropic.com"
 request_timeout = 300
 tls_fingerprint = false
+enabled = false
 
 [[oauth_providers]]
 name = "anthropic"
 client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 auth_url = "https://claude.ai/oauth/authorize"
-token_url = "https://console.anthropic.com/v1/oauth/token"
+token_url = "https://platform.claude.com/v1/oauth/token"
 redirect_uri = "https://platform.claude.com/oauth/code/callback"
-scopes = ["org:create_api_key", "user:profile", "user:inference"]
+scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers"]
 
 [observability]
 retention_days = 7
