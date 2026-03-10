@@ -45,7 +45,8 @@ type InstanceConfig struct {
 	BaseURL        string `toml:"base_url"`
 	RequestTimeout int    `toml:"request_timeout"` // seconds
 	TLSFingerprint bool   `toml:"tls_fingerprint"`
-	Enabled        *bool  `toml:"enabled"` // default true
+	Disguise       bool   `toml:"disguise"` // apply Claude CLI headers even for bearer instances
+	Enabled        *bool  `toml:"enabled"`  // default true
 }
 
 type OAuthProviderConfig struct {

@@ -267,9 +267,9 @@ func (h *Handler) doRequest(
 		upstreamReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Step 5b: Apply disguise for OAuth instances not already Claude Code.
+	// Step 5b: Apply disguise for OAuth instances or bearer instances with disguise enabled.
 	disguised := false
-	if inst.IsOAuth() && h.disguise != nil {
+	if (inst.IsOAuth() || inst.Disguise) && h.disguise != nil {
 		sessionSeed := origReq.Header.Get("X-Session-Seed")
 		if sessionSeed == "" {
 			sessionSeed = upstreamURL // fallback seed
