@@ -65,9 +65,6 @@ auth_url = "https://claude.ai/oauth/authorize"
 token_url = "https://platform.claude.com/v1/oauth/token"
 redirect_uri = "https://platform.claude.com/oauth/code/callback"
 scopes = ["org:create_api_key", "user:profile"]
-
-[observability]
-retention_days = 30
 `
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -155,10 +152,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 		t.Errorf("provider.scopes len = %d, want 2", len(prov.Scopes))
 	}
 
-	// Observability
-	if cfg.Observability.RetentionDays != 30 {
-		t.Errorf("retention_days = %d, want 30", cfg.Observability.RetentionDays)
-	}
 }
 
 // minimalConfig has only the required fields to pass validation; everything
@@ -191,10 +184,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.Server.LogLevel != "info" {
 		t.Errorf("log_level default = %q, want info", cfg.Server.LogLevel)
 	}
-	if cfg.Observability.RetentionDays != 7 {
-		t.Errorf("retention_days default = %d, want 7", cfg.Observability.RetentionDays)
-	}
-
 	inst := cfg.Instances[0]
 	if inst.RequestTimeout != 300 {
 		t.Errorf("request_timeout default = %d, want 300", inst.RequestTimeout)

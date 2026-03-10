@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
-	"strconv"
 
 	"github.com/binn/ccproxy/internal/loadbalancer"
-	"github.com/binn/ccproxy/internal/observability"
 )
 
 //go:embed static
@@ -16,14 +14,12 @@ var staticFiles embed.FS
 
 // Handler provides HTTP handlers for the admin dashboard.
 type Handler struct {
-	stats    *observability.Stats
 	balancer *loadbalancer.Balancer
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(stats *observability.Stats, balancer *loadbalancer.Balancer) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer) *Handler {
 	return &Handler{
-		stats:    stats,
 		balancer: balancer,
 	}
 }
@@ -34,27 +30,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, "json encode error", http.StatusInternalServerError)
 	}
-}
-
-// HandleStats returns token usage statistics grouped by instance.
-// GET /api/stats?hours=24
-func (h *Handler) HandleStats(w http.ResponseWriter, r *http.Request) {
-	hours := 24
-	if v := r.URL.Query().Get("hours"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			hours = n
-		}
-	}
-
-	usage, err := h.stats.TokenUsageByInstance(hours)
-	if err != nil {
-		http.Error(w, "failed to query stats: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if usage == nil {
-		usage = []observability.InstanceUsage{}
-	}
-	writeJSON(w, usage)
 }
 
 // InstanceState holds the runtime state of a single backend instance.
@@ -101,27 +76,6 @@ type SessionState struct {
 func (h *Handler) HandleSessions(w http.ResponseWriter, r *http.Request) {
 	// Balancer does not expose individual session details; return empty list.
 	writeJSON(w, []SessionState{})
-}
-
-// HandleRequests returns recent request logs.
-// GET /api/requests?limit=100
-func (h *Handler) HandleRequests(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-
-	records, err := h.stats.RecentRequests(limit)
-	if err != nil {
-		http.Error(w, "failed to query requests: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if records == nil {
-		records = []observability.RequestRecord{}
-	}
-	writeJSON(w, records)
 }
 
 // HandleDashboard serves the embedded static HTML dashboard.

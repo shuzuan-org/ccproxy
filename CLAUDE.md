@@ -34,20 +34,17 @@ cmd/ccproxy/        Entry point (main.go)
 internal/
   auth/             Bearer token validation middleware (constant-time compare)
   admin/            Embedded HTML dashboard handler and static assets
-  cli/              Cobra commands: start, stop, reload, test, stats, oauth, version
+  cli/              Cobra commands: start, stop, reload, test, oauth, version
   config/           TOML config loading, validation, defaults, fsnotify hot-reload
   disguise/         6-layer Claude CLI impersonation engine
   loadbalancer/     3-layer balancer, concurrency tracker, retry/failover engine
   oauth/            PKCE flow, AES-256-GCM token store, Anthropic provider
-  observability/    SQLite logger and stats query
   proxy/            HTTP proxy handler, SSE streaming, error mapping
-  server/           HTTP server setup (chi router, middleware wiring)
+  server/           HTTP server setup (net/http mux, middleware wiring)
 data/               Runtime data — NOT committed (.gitignore)
-  ccproxy.db        SQLite request log
   ccproxy.pid       PID file written by `start`, read by `stop`/`reload`
   oauth_tokens.json Encrypted OAuth tokens (0600)
 docs/               Design specs and notes
-migrations/         SQL migration files (001_init.sql)
 config.toml.example Reference configuration
 ```
 
@@ -83,7 +80,7 @@ Token files are stored at `data/oauth_tokens.json` with 0600 permissions. Encryp
 
 ### SSE Streaming
 
-The proxy forwards the upstream response as a raw byte stream. Token usage is extracted from `message_delta` events and written to SQLite asynchronously via a buffered channel after the stream closes.
+The proxy forwards the upstream response as a raw byte stream. Token usage is extracted from `message_delta` events during streaming.
 
 ## Testing Approach
 
@@ -91,7 +88,6 @@ The proxy forwards the upstream response as a raw byte stream. Token usage is ex
 - Every non-trivial package has a `*_test.go` file in the same package (white-box) or `*_test` package (black-box).
 - Table-driven tests using `t.Run(name, ...)` for multiple input variants.
 - Use `t.Parallel()` in unit tests that have no shared mutable state.
-- Integration tests that need a real SQLite DB should use `t.TempDir()` for the data directory.
 - The `-race` flag is mandatory; all CI runs use it.
 
 ## Config File During Development

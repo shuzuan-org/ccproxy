@@ -18,7 +18,6 @@ type Config struct {
 	APIKeys        []APIKeyConfig        `toml:"api_keys"`
 	Instances      []InstanceConfig      `toml:"instances"`
 	OAuthProviders []OAuthProviderConfig `toml:"oauth_providers"`
-	Observability  ObservabilityConfig   `toml:"observability"`
 }
 
 type ServerConfig struct {
@@ -58,10 +57,6 @@ type OAuthProviderConfig struct {
 	Scopes      []string `toml:"scopes"`
 }
 
-type ObservabilityConfig struct {
-	RetentionDays int `toml:"retention_days"`
-}
-
 // Load reads, parses, applies defaults, and validates the config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -94,11 +89,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Server.LogLevel == "" {
 		cfg.Server.LogLevel = "info"
-	}
-
-	// Observability defaults
-	if cfg.Observability.RetentionDays == 0 {
-		cfg.Observability.RetentionDays = 7
 	}
 
 	// Instance defaults

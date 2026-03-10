@@ -152,7 +152,7 @@ func TestHandler_NonStreaming(t *testing.T) {
 
 	inst := buildBearerInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -202,7 +202,7 @@ func TestHandler_Streaming(t *testing.T) {
 
 	inst := buildBearerInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", true)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -241,7 +241,7 @@ func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 	inst := buildOAuthInstance(upstream.URL)
 	balancer := buildBalancer(inst)
 	oauthMgr := buildOAuthManager(t, "fake-oauth-access-token")
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 	body := standardRequestBody("claude-sonnet-4-5", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -285,7 +285,7 @@ func TestHandler_DisguiseNotAppliedForBearer(t *testing.T) {
 
 	inst := buildBearerInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -322,7 +322,7 @@ func TestHandler_AuthHeaderBearer(t *testing.T) {
 
 	inst := buildBearerInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -360,7 +360,7 @@ func TestHandler_AuthHeaderOAuth(t *testing.T) {
 	inst := buildOAuthInstance(upstream.URL)
 	balancer := buildBalancer(inst)
 	oauthMgr := buildOAuthManager(t, "my-oauth-token-xyz")
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 	body := standardRequestBody("claude-sonnet-4-5", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -403,7 +403,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 
 		inst := buildBearerInstance(upstream.URL)
 		balancer := buildBalancer(inst)
-		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -437,7 +437,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 
 		inst := buildBearerInstance(upstream.URL)
 		balancer := buildBalancer(inst)
-		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -487,7 +487,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 func TestHandler_NoHealthyInstances(t *testing.T) {
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer([]config.InstanceConfig{}, tracker)
-	h := NewHandler([]config.InstanceConfig{}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{}, balancer, disguise.NewEngine(), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -516,7 +516,7 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 
 	inst := buildBearerInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil, nil)
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
 
 	// Use a request body that includes metadata.user_id with a session ID.
 	sessionUUID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

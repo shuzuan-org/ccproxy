@@ -13,7 +13,6 @@ import (
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
-	"github.com/binn/ccproxy/internal/observability"
 	"github.com/binn/ccproxy/internal/proxy"
 )
 
@@ -21,31 +20,19 @@ import (
 type Server struct {
 	cfg        *config.Config
 	httpServer *http.Server
-	logger     *observability.RequestLogger
 	oauthMgr   *oauth.Manager
 }
 
 // New constructs a fully wired Server from the given config.
 func New(cfg *config.Config) (*Server, error) {
-	const dbPath = "data/ccproxy.db"
-
-	// 1. Create request logger (also handles data dir creation via MkdirAll internally).
-	reqLogger, err := observability.NewRequestLogger(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("create request logger: %w", err)
-	}
-
-	// 2. Create stats backed by the same database.
-	stats := observability.NewStats(reqLogger.DB())
-
-	// 3. Create concurrency tracker and load balancer.
+	// 1. Create concurrency tracker and load balancer.
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(cfg.Instances, tracker)
 
-	// 4. Create disguise engine.
+	// 2. Create disguise engine.
 	disguiseEngine := disguise.NewEngine()
 
-	// 5. Create OAuth manager only when at least one instance uses oauth auth_mode.
+	// 3. Create OAuth manager only when at least one instance uses oauth auth_mode.
 	var oauthMgr *oauth.Manager
 	for _, inst := range cfg.Instances {
 		if inst.IsOAuth() {
@@ -58,13 +45,13 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 	}
 
-	// 6. Create proxy handler.
-	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr, reqLogger)
+	// 4. Create proxy handler.
+	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
 
-	// 7. Create admin handler.
-	adminHandler := admin.NewHandler(stats, balancer)
+	// 5. Create admin handler.
+	adminHandler := admin.NewHandler(balancer)
 
-	// 8. Setup HTTP mux with route groups.
+	// 6. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
 
 	// API route — requires bearer token auth.
@@ -78,10 +65,8 @@ func New(cfg *config.Config) (*Server, error) {
 		adminMiddleware = noopMiddleware
 	}
 
-	mux.Handle("/api/stats", adminMiddleware(http.HandlerFunc(adminHandler.HandleStats)))
 	mux.Handle("/api/instances", adminMiddleware(http.HandlerFunc(adminHandler.HandleInstances)))
 	mux.Handle("/api/sessions", adminMiddleware(http.HandlerFunc(adminHandler.HandleSessions)))
-	mux.Handle("/api/requests", adminMiddleware(http.HandlerFunc(adminHandler.HandleRequests)))
 	mux.Handle("/admin/", adminMiddleware(http.StripPrefix("/admin", adminHandler.HandleDashboard())))
 
 	// Health check — no auth required.
@@ -105,7 +90,6 @@ func New(cfg *config.Config) (*Server, error) {
 	return &Server{
 		cfg:        cfg,
 		httpServer: httpServer,
-		logger:     reqLogger,
 		oauthMgr:   oauthMgr,
 	}, nil
 }
@@ -120,12 +104,9 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown gracefully stops the HTTP server and closes the request logger.
+// Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("shutting down server...")
-	if s.logger != nil {
-		s.logger.Close()
-	}
 	return s.httpServer.Shutdown(ctx)
 }
 

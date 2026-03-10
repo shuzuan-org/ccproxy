@@ -14,7 +14,6 @@ import (
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
-	"github.com/binn/ccproxy/internal/observability"
 	"github.com/binn/ccproxy/internal/session"
 	proxytls "github.com/binn/ccproxy/internal/tls"
 )
@@ -24,7 +23,6 @@ type Handler struct {
 	balancer     *loadbalancer.Balancer
 	disguise     *disguise.Engine
 	oauthManager *oauth.Manager
-	logger       *observability.RequestLogger
 	httpClients  map[string]*http.Client        // instanceName → client
 	instances    map[string]config.InstanceConfig // instanceName → config
 }
@@ -35,7 +33,6 @@ func NewHandler(
 	balancer *loadbalancer.Balancer,
 	disguiseEngine *disguise.Engine,
 	oauthManager *oauth.Manager,
-	logger *observability.RequestLogger,
 ) *Handler {
 	httpClients := make(map[string]*http.Client, len(instances))
 	instanceMap := make(map[string]config.InstanceConfig, len(instances))
@@ -57,7 +54,6 @@ func NewHandler(
 		balancer:     balancer,
 		disguise:     disguiseEngine,
 		oauthManager: oauthManager,
-		logger:       logger,
 		httpClients:  httpClients,
 		instances:    instanceMap,
 	}
@@ -65,8 +61,6 @@ func NewHandler(
 
 // ServeHTTP handles POST /v1/messages.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now()
-
 	// Step 1: Read request body fully.
 	defer func() { _ = r.Body.Close() }()
 	rawBody, err := io.ReadAll(r.Body)
@@ -82,7 +76,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model, _ := parsed["model"].(string)
 	isStream, _ := parsed["stream"].(bool)
 
 	// Extract session ID from metadata.user_id if present.
@@ -111,14 +104,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Step 6: Write 503 on retry exhaustion.
 		WriteError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("upstream unavailable: %s", err.Error()))
-		h.logEvent(observability.RequestEvent{
-			APIKeyName:   authInfo.APIKeyName,
-			Model:        model,
-			Status:       "failure",
-			ErrorMessage: err.Error(),
-			DurationMs:   time.Since(startTime).Milliseconds(),
-			SessionID:    sessionID,
-		})
 		return
 	}
 
@@ -135,16 +120,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(proxyStatus)
 		_, _ = w.Write(errBody)
-
-		h.logEvent(observability.RequestEvent{
-			APIKeyName:   authInfo.APIKeyName,
-			InstanceName: result.InstanceName,
-			Model:        model,
-			Status:       "business_error",
-			ErrorType:    fmt.Sprintf("upstream_%d", resp.StatusCode),
-			DurationMs:   time.Since(startTime).Milliseconds(),
-			SessionID:    sessionID,
-		})
 		return
 	}
 
@@ -162,25 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		usage, _ := ForwardSSE(r.Context(), resp.Body, w)
-
-		var usageInfo UsageInfo
-		if usage != nil {
-			usageInfo = *usage
-		}
-
-		h.logEvent(observability.RequestEvent{
-			APIKeyName:               authInfo.APIKeyName,
-			InstanceName:             result.InstanceName,
-			Model:                    model,
-			Status:                   "success",
-			InputTokens:              usageInfo.InputTokens,
-			OutputTokens:             usageInfo.OutputTokens,
-			CacheCreationInputTokens: usageInfo.CacheCreationInputTokens,
-			CacheReadInputTokens:     usageInfo.CacheReadInputTokens,
-			DurationMs:               time.Since(startTime).Milliseconds(),
-			SessionID:                sessionID,
-		})
+		ForwardSSE(r.Context(), resp.Body, w)
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
 		respBody, _ := io.ReadAll(resp.Body)
@@ -192,22 +149,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
-
-		// Extract usage from JSON response body.
-		usageInfo := extractUsageFromJSON(respBody)
-
-		h.logEvent(observability.RequestEvent{
-			APIKeyName:               authInfo.APIKeyName,
-			InstanceName:             result.InstanceName,
-			Model:                    model,
-			Status:                   "success",
-			InputTokens:              usageInfo.InputTokens,
-			OutputTokens:             usageInfo.OutputTokens,
-			CacheCreationInputTokens: usageInfo.CacheCreationInputTokens,
-			CacheReadInputTokens:     usageInfo.CacheReadInputTokens,
-			DurationMs:               time.Since(startTime).Milliseconds(),
-			SessionID:                sessionID,
-		})
 	}
 }
 
@@ -364,12 +305,4 @@ func extractUsageFromJSON(body []byte) UsageInfo {
 		CacheCreationInputTokens: ur.Usage.CacheCreationInputTokens,
 		CacheReadInputTokens:     ur.Usage.CacheReadInputTokens,
 	}
-}
-
-// logEvent sends a RequestEvent to the logger if one is configured.
-func (h *Handler) logEvent(event observability.RequestEvent) {
-	if h.logger == nil {
-		return
-	}
-	h.logger.Log(event)
 }

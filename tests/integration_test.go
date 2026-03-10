@@ -19,7 +19,6 @@ import (
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
-	"github.com/binn/ccproxy/internal/observability"
 	"github.com/binn/ccproxy/internal/proxy"
 )
 
@@ -117,7 +116,7 @@ data: {"type":"message_stop"}
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a minimal ccproxy HTTP handler stack without needing a real DB.
+// Helper: build a minimal ccproxy HTTP handler stack.
 // ---------------------------------------------------------------------------
 
 const (
@@ -126,26 +125,17 @@ const (
 	testUpstreamKey = "upstream-bearer-key"
 )
 
-// buildHandler constructs the proxy mux the same way server.New() does, but
-// accepts a custom dbPath so we can point it at a temp directory.
-func buildHandler(t *testing.T, cfg *config.Config, dbPath string) http.Handler {
+// buildHandler constructs the proxy mux the same way server.New() does.
+func buildHandler(t *testing.T, cfg *config.Config) http.Handler {
 	t.Helper()
 
-	reqLogger, err := observability.NewRequestLogger(dbPath)
-	if err != nil {
-		t.Fatalf("create request logger: %v", err)
-	}
-	t.Cleanup(reqLogger.Close)
-
-	stats := observability.NewStats(reqLogger.DB())
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(cfg.Instances, tracker)
-	_ = stats
 
 	disguiseEngine := disguise.NewEngine()
 
 	// No OAuth manager needed for bearer-only tests.
-	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, nil, reqLogger)
+	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
@@ -257,8 +247,7 @@ func standardRequestBody() map[string]interface{} {
 func TestIntegration_AuthRequired(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "" /* no token */, standardRequestBody())
@@ -282,8 +271,7 @@ func TestIntegration_AuthRequired(t *testing.T) {
 func TestIntegration_InvalidAuth(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "wrong-token", standardRequestBody())
@@ -300,8 +288,7 @@ func TestIntegration_InvalidAuth(t *testing.T) {
 func TestIntegration_NonStreamingRequest(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
@@ -341,8 +328,7 @@ func TestIntegration_NonStreamingRequest(t *testing.T) {
 func TestIntegration_StreamingRequest(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "stream")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	reqBody := standardRequestBody()
@@ -413,8 +399,7 @@ func TestIntegration_StreamingRequest(t *testing.T) {
 func TestIntegration_DisguiseApplied(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	// Send a normal request; for bearer instances disguise should NOT be applied.
@@ -468,8 +453,7 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 func TestIntegration_ErrorMapping(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "error503")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
@@ -511,8 +495,7 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 func TestIntegration_HealthCheck(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
-	dbPath := t.TempDir() + "/ccproxy.db"
-	handler := buildHandler(t, cfg, dbPath)
+	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
 	resp, err := http.Get(proxyURL + "/health")

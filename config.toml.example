@@ -40,5 +40,3 @@ token_url = "https://platform.claude.com/v1/oauth/token"
 redirect_uri = "https://platform.claude.com/oauth/code/callback"
 scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers"]
 
-[observability]
-retention_days = 7
