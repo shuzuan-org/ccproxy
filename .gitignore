@@ -1,4 +1,5 @@
 bin/
+ccproxy
 data/
 *.db
 oauth_tokens.json

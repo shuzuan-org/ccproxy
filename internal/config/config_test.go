@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // writeTemp writes content to a temp file and returns the path.
@@ -321,4 +323,68 @@ api_key = "sk-ant-2"
 			}
 		})
 	}
+}
+
+func TestWatch(t *testing.T) {
+	// Create a temp config file with valid initial content
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(minimalConfigTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	var lastCfg atomic.Pointer[Config]
+
+	stop, err := Watch(path, func(cfg *Config) {
+		lastCfg.Store(cfg)
+		callCount.Add(1)
+	})
+	if err != nil {
+		t.Fatalf("Watch failed: %v", err)
+	}
+	defer stop()
+
+	// Modify the config file to trigger a reload
+	updatedTOML := `
+[[api_keys]]
+key = "sk-updated"
+name = "updated"
+enabled = true
+
+[[instances]]
+name = "inst-updated"
+auth_mode = "bearer"
+api_key = "sk-ant-updated"
+`
+	if err := os.WriteFile(path, []byte(updatedTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for debounce (500ms) plus some margin
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if callCount.Load() > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if callCount.Load() == 0 {
+		t.Fatal("onChange callback was not called after file modification")
+	}
+
+	cfg := lastCfg.Load()
+	if cfg == nil {
+		t.Fatal("onChange callback received nil config")
+	}
+	if len(cfg.APIKeys) == 0 || cfg.APIKeys[0].Key != "sk-updated" {
+		t.Errorf("reloaded config api_key = %q, want sk-updated", cfg.APIKeys[0].Key)
+	}
+	if len(cfg.Instances) == 0 || cfg.Instances[0].Name != "inst-updated" {
+		t.Errorf("reloaded config instance name = %q, want inst-updated", cfg.Instances[0].Name)
+	}
+
+	// Verify stop function works (should not panic or block)
+	stop()
 }

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ccproxy Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+      --bar-bg: #21262d;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: -0.3px;
+    }
+
+    #refresh-status {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-header h2 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .badge {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    th {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      background: var(--surface2);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    tr:hover td { background: rgba(88, 166, 255, 0.04); }
+
+    /* Load bar */
+    .load-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .bar-track {
+      width: 90px;
+      height: 6px;
+      background: var(--bar-bg);
+      border-radius: 3px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+
+    .bar-fill.low  { background: var(--success); }
+    .bar-fill.mid  { background: var(--warn); }
+    .bar-fill.high { background: var(--danger); }
+
+    .bar-pct { font-size: 12px; color: var(--text-muted); width: 34px; }
+
+    /* Status chips */
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .chip-success { background: rgba(63,185,80,.15); color: var(--success); }
+    .chip-warn    { background: rgba(210,153,34,.15); color: var(--warn); }
+    .chip-danger  { background: rgba(248,81,73,.15);  color: var(--danger); }
+    .chip-muted   { background: var(--surface2); color: var(--text-muted); }
+
+    /* Token summary grid */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1px;
+      background: var(--border);
+    }
+
+    .summary-item {
+      background: var(--surface);
+      padding: 16px 20px;
+    }
+
+    .summary-item .label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .summary-item .value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .empty-row td {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 24px;
+    }
+
+    @media (max-width: 640px) {
+      .container { padding: 12px 8px; }
+      header { padding: 10px 12px; }
+      th, td { padding: 8px 10px; }
+      .bar-track { width: 60px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>ccproxy Dashboard</h1>
+  <span id="refresh-status">Loading…</span>
+</header>
+
+<div class="container">
+
+  <!-- Section 1: Instance Status -->
+  <div class="card" id="card-instances">
+    <div class="card-header">
+      <h2>Instance Status</h2>
+      <span class="badge" id="instance-count">—</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Auth Mode</th>
+            <th>Load</th>
+            <th>Slots</th>
+            <th>Priority</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="instances-body">
+          <tr class="empty-row"><td colspan="6">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 2: Token Usage Summary -->
+  <div class="card" id="card-stats">
+    <div class="card-header">
+      <h2>Token Usage <span style="font-weight:400;color:var(--text-muted);font-size:13px;">(last 24 h)</span></h2>
+      <span class="badge" id="stats-count">—</span>
+    </div>
+    <div id="summary-totals" class="summary-grid"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Instance</th>
+            <th>Requests</th>
+            <th>Success</th>
+            <th>Failures</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>Cache Create</th>
+            <th>Cache Read</th>
+          </tr>
+        </thead>
+        <tbody id="stats-body">
+          <tr class="empty-row"><td colspan="8">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 3: Recent Requests -->
+  <div class="card" id="card-requests">
+    <div class="card-header">
+      <h2>Recent Requests</h2>
+      <span class="badge" id="requests-count">—</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>API Key</th>
+            <th>Instance</th>
+            <th>Model</th>
+            <th>Status</th>
+            <th>Tokens In</th>
+            <th>Tokens Out</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody id="requests-body">
+          <tr class="empty-row"><td colspan="8">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // --- Utilities ---
+  function fmt(n) {
+    if (n == null) return '—';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  function fmtTime(unixSec) {
+    if (!unixSec) return '—';
+    const d = new Date(unixSec * 1000);
+    return d.toLocaleTimeString([], { hour12: false }) + ' ' +
+           d.toLocaleDateString([], { month: '2-digit', day: '2-digit' });
+  }
+
+  function fmtDuration(ms) {
+    if (ms == null) return '—';
+    if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+    return ms + 'ms';
+  }
+
+  function statusChip(s) {
+    if (!s) return `<span class="chip chip-muted">—</span>`;
+    if (s === 'success') return `<span class="chip chip-success">${s}</span>`;
+    if (s === 'timeout') return `<span class="chip chip-warn">${s}</span>`;
+    return `<span class="chip chip-danger">${s}</span>`;
+  }
+
+  function loadBarHTML(rate) {
+    const pct = Math.min(rate, 100);
+    const cls = pct < 50 ? 'low' : pct < 85 ? 'mid' : 'high';
+    return `
+      <div class="load-bar">
+        <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+        <span class="bar-pct">${pct}%</span>
+      </div>`;
+  }
+
+  // --- Data fetch helpers ---
+  async function fetchJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    return res.json();
+  }
+
+  // --- Render instances ---
+  function renderInstances(data) {
+    document.getElementById('instance-count').textContent = data.length + ' instances';
+    const tbody = document.getElementById('instances-body');
+    if (!data.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No instances</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(inst => {
+      const enabled = inst.enabled
+        ? '<span class="chip chip-success">enabled</span>'
+        : '<span class="chip chip-muted">disabled</span>';
+      return `
+        <tr>
+          <td><strong>${esc(inst.name)}</strong></td>
+          <td><span class="chip chip-muted">${esc(inst.auth_mode)}</span></td>
+          <td>${loadBarHTML(inst.load_rate)}</td>
+          <td>${inst.active_slots} / ${inst.max_concurrency}</td>
+          <td>${inst.priority}</td>
+          <td>${enabled}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // --- Render token stats ---
+  function renderStats(data) {
+    document.getElementById('stats-count').textContent = data.length + ' instances';
+
+    // Totals
+    let totIn = 0, totOut = 0, totCacheCreate = 0, totCacheRead = 0, totReq = 0;
+    data.forEach(d => {
+      totReq         += d.TotalRequests            || 0;
+      totIn          += d.InputTokens              || 0;
+      totOut         += d.OutputTokens             || 0;
+      totCacheCreate += d.CacheCreationInputTokens || 0;
+      totCacheRead   += d.CacheReadInputTokens     || 0;
+    });
+
+    document.getElementById('summary-totals').innerHTML = [
+      { label: 'Total Requests',  value: fmt(totReq) },
+      { label: 'Input Tokens',    value: fmt(totIn) },
+      { label: 'Output Tokens',   value: fmt(totOut) },
+      { label: 'Cache Created',   value: fmt(totCacheCreate) },
+      { label: 'Cache Read',      value: fmt(totCacheRead) },
+    ].map(item => `
+      <div class="summary-item">
+        <div class="label">${item.label}</div>
+        <div class="value">${item.value}</div>
+      </div>
+    `).join('');
+
+    const tbody = document.getElementById('stats-body');
+    if (!data.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No data</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(d => `
+      <tr>
+        <td>${esc(d.InstanceName || '—')}</td>
+        <td>${fmt(d.TotalRequests)}</td>
+        <td><span class="chip chip-success">${fmt(d.SuccessCount)}</span></td>
+        <td>${d.FailureCount ? `<span class="chip chip-danger">${fmt(d.FailureCount)}</span>` : '—'}</td>
+        <td>${fmt(d.InputTokens)}</td>
+        <td>${fmt(d.OutputTokens)}</td>
+        <td>${fmt(d.CacheCreationInputTokens)}</td>
+        <td>${fmt(d.CacheReadInputTokens)}</td>
+      </tr>`).join('');
+  }
+
+  // --- Render recent requests ---
+  function renderRequests(data) {
+    document.getElementById('requests-count').textContent = data.length + ' records';
+    const tbody = document.getElementById('requests-body');
+    if (!data.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No recent requests</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(r => `
+      <tr>
+        <td>${fmtTime(r.Timestamp)}</td>
+        <td>${esc(r.APIKeyName || '—')}</td>
+        <td>${esc(r.InstanceName || '—')}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(r.Model || '—')}</td>
+        <td>${statusChip(r.Status)}</td>
+        <td>${fmt(r.InputTokens)}</td>
+        <td>${fmt(r.OutputTokens)}</td>
+        <td>${fmtDuration(r.DurationMs)}</td>
+      </tr>`).join('');
+  }
+
+  // Escape HTML special chars
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // --- Main refresh loop ---
+  async function refresh() {
+    const statusEl = document.getElementById('refresh-status');
+    statusEl.textContent = 'Refreshing…';
+    try {
+      const [instances, stats, requests] = await Promise.all([
+        fetchJSON('/api/instances'),
+        fetchJSON('/api/stats?hours=24'),
+        fetchJSON('/api/requests?limit=100'),
+      ]);
+      renderInstances(instances);
+      renderStats(stats);
+      renderRequests(requests);
+      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour12: false });
+    } catch (err) {
+      statusEl.textContent = 'Error: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 30_000);
+</script>
+</body>
+</html>
