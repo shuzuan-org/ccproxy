@@ -101,7 +101,7 @@ var oauthLoginCmd = &cobra.Command{
 
 			if errParam := q.Get("error"); errParam != "" {
 				desc := q.Get("error_description")
-				fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>%s</p></body></html>", errParam, desc)
+				_, _ = fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>%s</p></body></html>", errParam, desc)
 				errCh <- fmt.Errorf("authorization error: %s — %s", errParam, desc)
 				return
 			}
@@ -113,7 +113,7 @@ var oauthLoginCmd = &cobra.Command{
 				return
 			}
 
-			fmt.Fprint(w, "<html><body><h2>Authorization successful!</h2><p>You may close this tab.</p></body></html>")
+			_, _ = fmt.Fprint(w, "<html><body><h2>Authorization successful!</h2><p>You may close this tab.</p></body></html>")
 			codeCh <- code
 		})
 

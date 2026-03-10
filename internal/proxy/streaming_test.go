@@ -35,7 +35,7 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 func (r *responseRecorder) BodyString() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.ResponseRecorder.Body.String()
+	return r.Body.String()
 }
 
 // buildSSEStream constructs a raw SSE byte stream from event/data pairs.
@@ -160,7 +160,7 @@ func TestForwardSSE_ContextCancellation(t *testing.T) {
 	}()
 
 	// Write one event then cancel.
-	fmt.Fprint(pw, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	_, _ = fmt.Fprint(pw, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 	// Close writer so ForwardSSE's reader eventually unblocks.
@@ -215,7 +215,7 @@ func TestForwardSSE_IncompleteChunks(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	pw.Close()
+	_ = pw.Close()
 
 	wg.Wait()
 
@@ -269,7 +269,7 @@ func TestForwardSSE_RealHTTPServer(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody)
+		_, _ = fmt.Fprint(w, sseBody)
 	}))
 	defer srv.Close()
 
@@ -277,7 +277,7 @@ func TestForwardSSE_RealHTTPServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("http.Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	w := newResponseRecorder()
 	usage, err := ForwardSSE(context.Background(), resp.Body, w)

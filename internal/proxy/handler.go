@@ -63,25 +63,17 @@ func NewHandler(
 	}
 }
 
-// requestBody holds parsed fields from the incoming JSON request.
-type requestBody struct {
-	Model    string                 `json:"model"`
-	Stream   bool                   `json:"stream"`
-	Metadata map[string]interface{} `json:"metadata"`
-	raw      map[string]interface{}
-}
-
 // ServeHTTP handles POST /v1/messages.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	// Step 1: Read request body fully.
+	defer func() { _ = r.Body.Close() }()
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
 	}
-	defer r.Body.Close()
 
 	// Step 2: Parse JSON to extract model, stream flag, session ID from metadata.user_id.
 	var parsed map[string]interface{}
@@ -131,7 +123,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := result.Response
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Step 9: Handle error responses from upstream.
 	if resp.StatusCode >= 400 {
@@ -142,7 +134,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		copyHeaders(w.Header(), resp.Header)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(proxyStatus)
-		w.Write(errBody)
+		_, _ = w.Write(errBody)
 
 		h.logEvent(observability.RequestEvent{
 			APIKeyName:   authInfo.APIKeyName,
@@ -199,7 +191,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
+		_, _ = w.Write(respBody)
 
 		// Extract usage from JSON response body.
 		usageInfo := extractUsageFromJSON(respBody)

@@ -67,5 +67,5 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 func writeAuthError(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"` + message + `"}}`))
+	_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"` + message + `"}}`))
 }

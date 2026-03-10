@@ -45,11 +45,11 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 	// Apply utls handshake
 	tlsConn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloCustom)
 	if err := tlsConn.ApplyPreset(t.spec); err != nil {
-		tcpConn.Close()
+		_ = tcpConn.Close()
 		return nil, err
 	}
 	if err := tlsConn.Handshake(); err != nil {
-		tcpConn.Close()
+		_ = tcpConn.Close()
 		return nil, err
 	}
 

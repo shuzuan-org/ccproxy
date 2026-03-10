@@ -11,7 +11,9 @@ import (
 // GenerateClientID generates a random 64-character hex string (32 bytes).
 func GenerateClientID() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 

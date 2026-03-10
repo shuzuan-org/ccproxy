@@ -18,11 +18,6 @@ import (
 	"github.com/binn/ccproxy/internal/oauth"
 )
 
-// contextKey is duplicated here since it is unexported from handler.go.
-type testContextKey string
-
-const testAuthInfoKey testContextKey = "auth_info"
-
 // setAuthInfo injects auth info into a request context using the auth package's mechanism.
 func setAuthInfo(r *http.Request, name string) *http.Request {
 	// We cannot use auth.contextKey directly (unexported), so we use SetAuthInfo
@@ -151,7 +146,7 @@ func TestHandler_NonStreaming(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(upstreamResp)
+		_ = json.NewEncoder(w).Encode(upstreamResp)
 	}))
 	defer upstream.Close()
 
@@ -198,7 +193,7 @@ func TestHandler_Streaming(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, sseBody)
+		_, _ = fmt.Fprint(w, sseBody)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -239,7 +234,7 @@ func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 		capturedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_02","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
+		_, _ = w.Write([]byte(`{"id":"msg_02","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
 	}))
 	defer upstream.Close()
 
@@ -284,7 +279,7 @@ func TestHandler_DisguiseNotAppliedForBearer(t *testing.T) {
 		capturedUA = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_03","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
+		_, _ = w.Write([]byte(`{"id":"msg_03","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
 	}))
 	defer upstream.Close()
 
@@ -321,7 +316,7 @@ func TestHandler_AuthHeaderBearer(t *testing.T) {
 		capturedAuthHeader = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_04","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
+		_, _ = w.Write([]byte(`{"id":"msg_04","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
 	}))
 	defer upstream.Close()
 
@@ -358,7 +353,7 @@ func TestHandler_AuthHeaderOAuth(t *testing.T) {
 		capturedAPIKey = r.Header.Get("X-Api-Key")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_05","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
+		_, _ = w.Write([]byte(`{"id":"msg_05","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
 	}))
 	defer upstream.Close()
 
@@ -402,7 +397,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 		// 400 is classified as ReturnToClient, so it is forwarded through MapUpstreamError.
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
 		}))
 		defer upstream.Close()
 
@@ -436,7 +431,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 	t.Run("rate_limit_single_instance_503", func(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(429)
-			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
 		}))
 		defer upstream.Close()
 
@@ -515,7 +510,7 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_06","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
+		_, _ = w.Write([]byte(`{"id":"msg_06","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
 	}))
 	defer upstream.Close()
 

@@ -9,7 +9,9 @@ import (
 // GenerateVerifier creates a PKCE code verifier (32 bytes, base64url).
 func GenerateVerifier() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -22,6 +24,8 @@ func GenerateChallenge(verifier string) string {
 // GenerateState creates a random state parameter for OAuth (16 bytes, base64url).
 func GenerateState() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }

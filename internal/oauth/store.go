@@ -33,7 +33,9 @@ type TokenStore struct {
 }
 
 func NewTokenStore(dataDir string) (*TokenStore, error) {
-	os.MkdirAll(dataDir, 0755)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
 	path := filepath.Join(dataDir, "oauth_tokens.json")
 	key, err := deriveKey()
 	if err != nil {
@@ -106,7 +108,10 @@ func (s *TokenStore) loadFile() *tokenFileData {
 	if err != nil {
 		return data
 	}
-	json.Unmarshal(f, data)
+	if err := json.Unmarshal(f, data); err != nil {
+		// Corrupted file — start with empty data to avoid silent data loss
+		data.Tokens = make(map[string][]byte)
+	}
 	if data.Tokens == nil {
 		data.Tokens = make(map[string][]byte)
 	}

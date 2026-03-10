@@ -92,12 +92,16 @@ func NewRequestLogger(dbPath string) (*RequestLogger, error) {
 	}
 
 	// Enable WAL mode for better concurrent read/write performance
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA synchronous=NORMAL")
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		slog.Warn("failed to set WAL mode", "error", err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		slog.Warn("failed to set synchronous mode", "error", err)
+	}
 
 	// Run schema migrations
 	if _, err := db.Exec(initSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
@@ -128,7 +132,7 @@ func (l *RequestLogger) Log(event RequestEvent) {
 func (l *RequestLogger) Close() {
 	close(l.events)
 	l.wg.Wait()
-	l.db.Close()
+	_ = l.db.Close()
 }
 
 // DB returns the underlying *sql.DB for direct queries (e.g., stats).

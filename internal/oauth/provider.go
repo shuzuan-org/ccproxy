@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -72,10 +73,11 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, data url.Values) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("token request failed: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("token request failed: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp struct {

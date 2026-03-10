@@ -207,13 +207,13 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 	// delete+recreate files (vim, etc.)
 	dir := filepath.Dir(path)
 	if err := watcher.Add(dir); err != nil {
-		watcher.Close()
+		_ = watcher.Close()
 		return nil, fmt.Errorf("watch directory: %w", err)
 	}
 
 	done := make(chan struct{})
 	go func() {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 
 		// Debounce timer to avoid reloading on rapid file changes
 		var debounceTimer *time.Timer

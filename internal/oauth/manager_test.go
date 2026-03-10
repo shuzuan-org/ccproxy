@@ -40,7 +40,7 @@ func mockTokenServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "new-access",
 			"refresh_token": "new-refresh",
 			"expires_in":    3600,

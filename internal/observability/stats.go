@@ -74,7 +74,7 @@ func (s *Stats) TokenUsageByInstance(hours int) ([]InstanceUsage, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []InstanceUsage
 	for rows.Next() {
@@ -120,7 +120,7 @@ func (s *Stats) RecentRequests(limit int) ([]RequestRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []RequestRecord
 	for rows.Next() {

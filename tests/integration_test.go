@@ -109,7 +109,7 @@ data: {"type":"message_stop"}
 `,
 	}
 	for _, ev := range events {
-		fmt.Fprint(w, ev)
+		_, _ = fmt.Fprint(w, ev)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -262,7 +262,7 @@ func TestIntegration_AuthRequired(t *testing.T) {
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "" /* no token */, standardRequestBody())
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", resp.StatusCode)
@@ -287,7 +287,7 @@ func TestIntegration_InvalidAuth(t *testing.T) {
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "wrong-token", standardRequestBody())
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", resp.StatusCode)
@@ -305,7 +305,7 @@ func TestIntegration_NonStreamingRequest(t *testing.T) {
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -364,7 +364,7 @@ func TestIntegration_StreamingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -419,7 +419,7 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 
 	// Send a normal request; for bearer instances disguise should NOT be applied.
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -473,7 +473,7 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Upstream 503 falls into RetryThenFailover. After exhausting retries with
 	// a single instance, the proxy returns 503 (overloaded_error from
@@ -519,7 +519,7 @@ func TestIntegration_HealthCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("health check request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)

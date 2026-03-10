@@ -40,7 +40,6 @@ func TestGenerateUserID_SameSeedSameSessionUUID(t *testing.T) {
 
 	// Extract session UUID part (after last "_session_").
 	extractSession := func(uid string) string {
-		const marker = "_account__session_"
 		idx := regexp.MustCompile(`_account__session_`).FindStringIndex(uid)
 		if idx == nil {
 			return ""

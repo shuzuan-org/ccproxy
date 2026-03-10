@@ -80,12 +80,12 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 
 		// Forward the event verbatim to the downstream client.
 		if event != "" {
-			fmt.Fprintf(downstream, "event: %s\n", event)
+			_, _ = fmt.Fprintf(downstream, "event: %s\n", event)
 		}
 		if data != "" {
-			fmt.Fprintf(downstream, "data: %s\n", data)
+			_, _ = fmt.Fprintf(downstream, "data: %s\n", data)
 		}
-		fmt.Fprint(downstream, "\n")
+		_, _ = fmt.Fprint(downstream, "\n")
 
 		// Flush immediately if the writer supports it.
 		if f, ok := downstream.(http.Flusher); ok {

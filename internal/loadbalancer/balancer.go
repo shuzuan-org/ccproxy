@@ -168,7 +168,8 @@ func (b *Balancer) findInstance(name string) *config.InstanceConfig {
 	defer b.mu.RUnlock()
 	for _, inst := range b.instances {
 		if inst.Name == name {
-			return &inst
+			found := inst
+			return &found
 		}
 	}
 	return nil

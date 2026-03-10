@@ -18,7 +18,7 @@ func successHandler() http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(info.APIKeyName))
+		_, _ = w.Write([]byte(info.APIKeyName))
 	})
 }
 

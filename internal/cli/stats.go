@@ -22,7 +22,7 @@ var statsCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("open database %s: %w", dbFile, err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		if err := db.Ping(); err != nil {
 			return fmt.Errorf("connect to database: %w", err)
@@ -49,18 +49,6 @@ var statsCmd = &cobra.Command{
 			periodLabel = fmt.Sprintf("last %d hour(s)", statsHours)
 		}
 		fmt.Printf("Token usage statistics (%s)\n\n", periodLabel)
-
-		// Column widths
-		const (
-			colInstance = -24
-			colRequests = 10
-			colSuccess  = 10
-			colFailure  = 10
-			colInput    = 12
-			colOutput   = 12
-			colCacheC   = 14
-			colCacheR   = 14
-		)
 
 		// Header row
 		fmt.Printf("%-24s %10s %10s %10s %12s %12s %14s %14s\n",
