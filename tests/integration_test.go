@@ -126,17 +126,17 @@ const (
 )
 
 // buildHandler constructs the proxy mux the same way server.New() does.
-func buildHandler(t *testing.T, cfg *config.Config) http.Handler {
+func buildHandler(t *testing.T, cfg *config.Config, instances []config.InstanceConfig) http.Handler {
 	t.Helper()
 
 	tracker := loadbalancer.NewConcurrencyTracker()
-	balancer := loadbalancer.NewBalancer(cfg.Instances, tracker)
+	balancer := loadbalancer.NewBalancer(instances, tracker)
 
 	disguiseEngine := disguise.NewEngine()
 
 	// Create OAuth manager with pre-saved tokens for all instances.
-	oauthMgr := buildIntegrationOAuthManager(t, cfg.Instances)
-	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
+	oauthMgr := buildIntegrationOAuthManager(t, instances)
+	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
@@ -175,23 +175,31 @@ func startProxyServer(t *testing.T, handler http.Handler) string {
 }
 
 // makeConfig returns a minimal valid Config pointing upstream requests at upstreamURL.
-func makeConfig(upstreamURL string) *config.Config {
+// Also returns the runtime InstanceConfig list (since instances are no longer in Config).
+func makeConfig(upstreamURL string) (*config.Config, []config.InstanceConfig) {
 	enabled := true
-	return &config.Config{
-		Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:           "127.0.0.1",
+			Port:           0,
+			BaseURL:        upstreamURL,
+			RequestTimeout: 10,
+			MaxConcurrency: 5,
+		},
 		APIKeys: []config.APIKeyConfig{
 			{Key: testAPIKey, Name: testAPIKeyName, Enabled: true},
 		},
-		Instances: []config.InstanceConfig{
-			{
-				Name:           "test-instance",
-				BaseURL:        upstreamURL,
-				MaxConcurrency: 5,
-				RequestTimeout: 10,
-				Enabled:        &enabled,
-			},
+	}
+	instances := []config.InstanceConfig{
+		{
+			Name:           "test-instance",
+			BaseURL:        upstreamURL,
+			MaxConcurrency: 5,
+			RequestTimeout: 10,
+			Enabled:        &enabled,
 		},
 	}
+	return cfg, instances
 }
 
 // buildIntegrationOAuthManager creates an oauth.Manager with pre-saved tokens for all instances.
@@ -202,7 +210,9 @@ func buildIntegrationOAuthManager(t *testing.T, instances []config.InstanceConfi
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	for _, inst := range instances {
+	names := make([]string, len(instances))
+	for i, inst := range instances {
+		names[i] = inst.Name
 		err = store.Save(inst.Name, oauth.OAuthToken{
 			AccessToken:  "fake-integration-token",
 			RefreshToken: "rt-ignored",
@@ -212,7 +222,7 @@ func buildIntegrationOAuthManager(t *testing.T, instances []config.InstanceConfi
 			t.Fatalf("store.Save(%q): %v", inst.Name, err)
 		}
 	}
-	return oauth.NewManager(instances, store)
+	return oauth.NewManager(names, store)
 }
 
 // postMessages sends a POST /v1/messages to proxyURL with optional auth token
@@ -264,8 +274,8 @@ func standardRequestBody() map[string]interface{} {
 // is rejected with HTTP 401.
 func TestIntegration_AuthRequired(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "" /* no token */, standardRequestBody())
@@ -288,8 +298,8 @@ func TestIntegration_AuthRequired(t *testing.T) {
 // token is rejected with HTTP 401.
 func TestIntegration_InvalidAuth(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, "wrong-token", standardRequestBody())
@@ -305,8 +315,8 @@ func TestIntegration_InvalidAuth(t *testing.T) {
 // client intact.
 func TestIntegration_NonStreamingRequest(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
@@ -345,8 +355,8 @@ func TestIntegration_NonStreamingRequest(t *testing.T) {
 // forwarded as SSE and that the client receives the expected event types.
 func TestIntegration_StreamingRequest(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "stream")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	reqBody := standardRequestBody()
@@ -410,8 +420,8 @@ func TestIntegration_StreamingRequest(t *testing.T) {
 // headers for OAuth instances when the client is not a real Claude Code client.
 func TestIntegration_DisguiseApplied(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	// Send a normal request; disguise should be applied for OAuth instances.
@@ -463,8 +473,8 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 // the proxy maps it to 502 with an Anthropic-format error body.
 func TestIntegration_ErrorMapping(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "error503")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
@@ -505,8 +515,8 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 // body "ok".
 func TestIntegration_HealthCheck(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
-	cfg := makeConfig(upstream.srv.URL)
-	handler := buildHandler(t, cfg)
+	cfg, instances := makeConfig(upstream.srv.URL)
+	handler := buildHandler(t, cfg, instances)
 	proxyURL := startProxyServer(t, handler)
 
 	resp, err := http.Get(proxyURL + "/health")

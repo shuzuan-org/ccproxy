@@ -14,16 +14,18 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `toml:"server"`
-	APIKeys   []APIKeyConfig   `toml:"api_keys"`
-	Instances []InstanceConfig `toml:"instances"`
+	Server  ServerConfig   `toml:"server"`
+	APIKeys []APIKeyConfig `toml:"api_keys"`
 }
 
 type ServerConfig struct {
-	Host          string `toml:"host"`
-	Port          int    `toml:"port"`
-	AdminPassword string `toml:"admin_password"`
-	RateLimit     int    `toml:"rate_limit"` // max requests per minute per IP for admin routes
+	Host           string `toml:"host"`
+	Port           int    `toml:"port"`
+	AdminPassword  string `toml:"admin_password"`
+	RateLimit      int    `toml:"rate_limit"`       // max requests per minute per IP for admin routes
+	BaseURL        string `toml:"base_url"`          // upstream API base URL (default: https://api.anthropic.com)
+	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 300)
+	MaxConcurrency int    `toml:"max_concurrency"`   // per-instance concurrency limit (default: 5)
 }
 
 type APIKeyConfig struct {
@@ -32,17 +34,24 @@ type APIKeyConfig struct {
 	Enabled bool   `toml:"enabled"`
 }
 
+// InstanceConfig is the runtime representation of an instance, built from
+// global config + registry entry. Not parsed from TOML directly.
 type InstanceConfig struct {
-	Name           string `toml:"name"`
-	MaxConcurrency int    `toml:"max_concurrency"`
-	BaseURL        string `toml:"base_url"`
-	RequestTimeout int    `toml:"request_timeout"` // seconds
-	Enabled        *bool  `toml:"enabled"`         // default true
+	Name           string
+	MaxConcurrency int
+	BaseURL        string
+	RequestTimeout int
+	Enabled        *bool
 }
 
 // Load reads, parses, applies defaults, auto-generates missing credentials,
-// and validates the config file at path.
+// and validates the config file at path. If the file does not exist, a
+// default config is created automatically.
 func Load(path string) (*Config, error) {
+	if err := ensureConfigFile(path); err != nil {
+		return nil, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
@@ -68,6 +77,35 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// defaultConfigContent is the template written when no config file exists.
+const defaultConfigContent = `[server]
+host = "0.0.0.0"
+port = 3000
+`
+
+// ensureConfigFile creates a minimal config file if it does not exist,
+// including any parent directories needed.
+func ensureConfigFile(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // file exists
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check config file: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create config directory: %w", err)
+		}
+	}
+
+	log.Printf("config file not found, creating default at %s", path)
+	if err := os.WriteFile(path, []byte(defaultConfigContent), 0o600); err != nil {
+		return fmt.Errorf("create config file: %w", err)
+	}
+	return nil
+}
+
 // applyDefaults fills in zero-value fields with sensible defaults.
 func applyDefaults(cfg *Config) {
 	// Server defaults
@@ -80,18 +118,14 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.RateLimit == 0 {
 		cfg.Server.RateLimit = 60
 	}
-	// Instance defaults
-	for i := range cfg.Instances {
-		inst := &cfg.Instances[i]
-		if inst.RequestTimeout == 0 {
-			inst.RequestTimeout = 300
-		}
-		if inst.MaxConcurrency == 0 {
-			inst.MaxConcurrency = 5
-		}
-		if inst.BaseURL == "" {
-			inst.BaseURL = "https://api.anthropic.com"
-		}
+	if cfg.Server.BaseURL == "" {
+		cfg.Server.BaseURL = "https://api.anthropic.com"
+	}
+	if cfg.Server.RequestTimeout == 0 {
+		cfg.Server.RequestTimeout = 300
+	}
+	if cfg.Server.MaxConcurrency == 0 {
+		cfg.Server.MaxConcurrency = 5
 	}
 }
 
@@ -116,28 +150,6 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("at least one enabled api_key is required"))
 	}
 
-	// At least 1 enabled instance
-	enabledInstances := 0
-	for _, inst := range c.Instances {
-		if inst.IsEnabled() {
-			enabledInstances++
-		}
-	}
-	if enabledInstances == 0 {
-		errs = append(errs, errors.New("at least one enabled instance is required"))
-	}
-
-	// Instance-level validations
-	names := make(map[string]struct{}, len(c.Instances))
-	for _, inst := range c.Instances {
-		// Unique names
-		if _, dup := names[inst.Name]; dup {
-			errs = append(errs, fmt.Errorf("duplicate instance name: %q", inst.Name))
-		}
-		names[inst.Name] = struct{}{}
-
-	}
-
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -147,6 +159,27 @@ func (c *Config) Validate() error {
 // IsEnabled returns true when Enabled is nil (default on) or explicitly true.
 func (ic *InstanceConfig) IsEnabled() bool {
 	return ic.Enabled == nil || *ic.Enabled
+}
+
+// RuntimeInstance builds a full InstanceConfig from global settings + a registry entry.
+func (c *Config) RuntimeInstance(name string, enabled bool) InstanceConfig {
+	return InstanceConfig{
+		Name:           name,
+		MaxConcurrency: c.Server.MaxConcurrency,
+		BaseURL:        c.Server.BaseURL,
+		RequestTimeout: c.Server.RequestTimeout,
+		Enabled:        &enabled,
+	}
+}
+
+// RuntimeInstances builds all InstanceConfigs from a registry.
+func (c *Config) RuntimeInstances(registry *InstanceRegistry) []InstanceConfig {
+	entries := registry.List()
+	result := make([]InstanceConfig, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, c.RuntimeInstance(e.Name, e.Enabled))
+	}
+	return result
 }
 
 // Watch starts watching the config file for changes.

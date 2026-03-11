@@ -22,15 +22,17 @@ type Handler struct {
 	oauthMgr *oauth.Manager
 	sessions *oauth.SessionStore
 	cfg      *config.Config
+	registry *config.InstanceRegistry
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.InstanceRegistry) *Handler {
 	return &Handler{
 		balancer: balancer,
 		oauthMgr: oauthMgr,
 		sessions: sessions,
 		cfg:      cfg,
+		registry: registry,
 	}
 }
 
@@ -80,27 +82,28 @@ func tokenStatus(token *oauth.OAuthToken) string {
 // GET /api/instances
 func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 	tracker := h.balancer.GetTracker()
+	maxConcurrency := h.cfg.Server.MaxConcurrency
 
-	// Read all OAuth instances from config (includes disabled)
-	states := make([]InstanceState, 0)
-	for _, inst := range h.cfg.Instances {
+	entries := h.registry.List()
+	states := make([]InstanceState, 0, len(entries))
+	for _, entry := range entries {
 		var loadRate, activeSlots int
-		if inst.IsEnabled() {
-			activeSlots, _, loadRate = tracker.LoadInfo(inst.Name, inst.MaxConcurrency)
+		if entry.Enabled {
+			activeSlots, _, loadRate = tracker.LoadInfo(entry.Name, maxConcurrency)
 		}
 
 		state := InstanceState{
-			Name:           inst.Name,
+			Name:           entry.Name,
 			AuthMode:       "oauth",
 			LoadRate:       loadRate,
 			ActiveSlots:    activeSlots,
-			MaxConcurrency: inst.MaxConcurrency,
-			Enabled:        inst.IsEnabled(),
+			MaxConcurrency: maxConcurrency,
+			Enabled:        entry.Enabled,
 		}
 
 		// Add token info
 		if h.oauthMgr != nil {
-			token, _ := h.oauthMgr.Status(inst.Name)
+			token, _ := h.oauthMgr.Status(entry.Name)
 			state.TokenStatus = tokenStatus(token)
 			if token != nil {
 				exp := token.ExpiresAt.Format(time.RFC3339)
@@ -282,10 +285,57 @@ func (h *Handler) HandleDashboard() http.Handler {
 
 // isOAuthInstance checks if the given name is a configured instance.
 func (h *Handler) isOAuthInstance(name string) bool {
-	for _, inst := range h.cfg.Instances {
-		if inst.Name == name {
-			return true
-		}
+	return h.registry.Has(name)
+}
+
+// HandleAddInstance adds a new instance to the registry.
+// POST /api/instances/add
+func (h *Handler) HandleAddInstance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
 	}
-	return false
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.registry.Add(req.Name); err != nil {
+		slog.Warn("add instance failed", "name", req.Name, "error", err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Ensure the oauth manager knows about the new instance.
+	h.oauthMgr.UpdateInstances(h.registry.Names())
+
+	slog.Info("instance added", "name", req.Name)
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// HandleRemoveInstance removes an instance from the registry and cleans up its OAuth token.
+// POST /api/instances/remove
+func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Clean up OAuth token before removing.
+	if err := h.oauthMgr.GetStore().Delete(req.Name); err != nil {
+		slog.Warn("failed to delete oauth token on instance removal", "name", req.Name, "error", err.Error())
+	}
+
+	if err := h.registry.Remove(req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Update oauth manager instance list.
+	h.oauthMgr.UpdateInstances(h.registry.Names())
+
+	slog.Info("instance removed", "name", req.Name)
+	writeJSON(w, map[string]bool{"ok": true})
 }

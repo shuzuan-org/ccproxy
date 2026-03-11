@@ -43,6 +43,7 @@ internal/
   server/           HTTP server setup (net/http mux, middleware wiring)
 data/               Runtime data — NOT committed (.gitignore)
   ccproxy.pid       PID file written by `start`, read by `stop`/`reload`
+  instances.json    Dynamic instance registry (0600)
   oauth_tokens.json Encrypted OAuth tokens (0600)
 docs/               Design specs and notes
 config.toml.example Reference configuration
@@ -61,8 +62,10 @@ config.toml.example Reference configuration
 - `config.Load(path)` reads, parses, applies defaults, auto-generates missing credentials, and validates in one call.
 - If `admin_password` is empty or `api_keys` has no enabled entries, `Load` auto-generates cryptographically secure values, persists them to the config file, and prints them to the console.
 - `config.Watch(path, callback)` starts a background fsnotify watcher with 500ms debounce.
-- All instances use OAuth authentication. There is no `auth_mode` or `api_key` field.
-- The `[[instances]]` `enabled` field is a `*bool` so that nil = default-true is distinguishable from explicit false.
+- `base_url`, `request_timeout`, `max_concurrency` are global settings under `[server]`.
+- Instances are **not** defined in TOML. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/instances.json` by `config.InstanceRegistry`.
+- `config.RuntimeInstance(name, enabled)` and `config.RuntimeInstances(registry)` build `InstanceConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).
+- `InstanceRegistry.SetOnChange(fn)` propagates dynamic add/remove to balancer and OAuth manager at runtime.
 
 ### Concurrency
 
@@ -82,7 +85,7 @@ All instances use OAuth authentication. Anthropic OAuth constants (ClientID, Aut
 
 Tokens are stored per-instance (not per-provider) at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
 
-The admin dashboard at `/admin/` provides a web UI for OAuth instance management: login (PKCE flow with manual code paste), refresh, and logout. PKCE sessions are stored in-memory with 10-minute TTL.
+The admin dashboard at `/admin/` provides a web UI for OAuth instance management: add instance, remove instance, login (PKCE flow with manual code paste), refresh, and logout. PKCE sessions are stored in-memory with 10-minute TTL. Instance add/remove triggers `InstanceRegistry.onChange` which updates the balancer and OAuth manager dynamically.
 
 ### SSE Streaming
 

@@ -30,30 +30,34 @@ type Server struct {
 func New(cfg *config.Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// 1. Create concurrency tracker and load balancer.
+	// 1. Create instance registry from persistent storage.
+	registry := config.NewInstanceRegistry("data")
+	runtimeInstances := cfg.RuntimeInstances(registry)
+
+	// 2. Create concurrency tracker and load balancer.
 	tracker := loadbalancer.NewConcurrencyTracker()
-	balancer := loadbalancer.NewBalancer(cfg.Instances, tracker)
+	balancer := loadbalancer.NewBalancer(runtimeInstances, tracker)
 	balancer.LoadState("data")
 	balancer.StartCleanup(ctx)
 	balancer.StartPersistence(ctx, "data")
 
-	// 2. Create disguise engine.
+	// 3. Create disguise engine.
 	disguiseEngine := disguise.NewEngine()
 
-	// 3. Create OAuth manager (all instances use OAuth).
+	// 4. Create OAuth manager (all instances use OAuth).
 	store, err := oauth.NewTokenStore("data")
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create oauth token store: %w", err)
 	}
-	oauthMgr := oauth.NewManager(cfg.Instances, store)
+	oauthMgr := oauth.NewManager(registry.Names(), store)
 
-	// 4. Create PKCE session store for browser-based OAuth login.
+	// 5. Create PKCE session store for browser-based OAuth login.
 	oauthSessions := oauth.NewSessionStore()
 	oauthSessions.StartCleanup(ctx, time.Minute)
 
 	// Log instance configuration summary.
-	for _, inst := range cfg.Instances {
+	for _, inst := range runtimeInstances {
 		slog.Info("instance configured",
 			"name", inst.Name,
 			"enabled", inst.IsEnabled(),
@@ -65,13 +69,21 @@ func New(cfg *config.Config) (*Server, error) {
 	oauthMgr.StartAutoRefresh(ctx)
 	slog.Info("oauth auto-refresh started")
 
-	// 5. Create proxy handler.
-	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
+	// 6. Register onChange callback to propagate dynamic instance changes.
+	registry.SetOnChange(func(instances []config.Instance) {
+		runtime := cfg.RuntimeInstances(registry)
+		balancer.UpdateInstances(runtime)
+		oauthMgr.UpdateInstances(registry.Names())
+		slog.Info("instances updated dynamically", "count", len(instances))
+	})
 
-	// 6. Create admin handler.
-	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg)
+	// 7. Create proxy handler.
+	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
-	// 7. Setup HTTP mux with route groups.
+	// 8. Create admin handler.
+	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry)
+
+	// 9. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
 
 	// API route — requires bearer token auth.
@@ -84,6 +96,8 @@ func New(cfg *config.Config) (*Server, error) {
 	adminAuth := basicAuth(cfg.Server.AdminPassword)
 
 	mux.Handle("/api/instances", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleInstances))))
+	mux.Handle("/api/instances/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddInstance))))
+	mux.Handle("/api/instances/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveInstance))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
 	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))

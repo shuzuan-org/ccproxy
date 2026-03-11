@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/binn/ccproxy/internal/config"
 )
 
 // newTestManager creates a Manager backed by a temp TokenStore and pointing to
@@ -21,10 +19,7 @@ func newTestManager(t *testing.T, tokenServerURL string) (*Manager, *TokenStore)
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	instances := []config.InstanceConfig{
-		{Name: "test-oauth"},
-	}
-	m := NewManager(instances, store)
+	m := NewManager([]string{"test-oauth"}, store)
 	// Override provider's tokenURL for testing
 	m.provider.tokenURL = tokenServerURL
 	return m, store

@@ -14,21 +14,29 @@ import (
 
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
-	tracker := loadbalancer.NewConcurrencyTracker()
-	instances := []config.InstanceConfig{
-		{Name: "test-oauth", MaxConcurrency: 5},
+
+	dir := t.TempDir()
+	registry := config.NewInstanceRegistry(dir)
+	_ = registry.Add("test-oauth")
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 300,
+			MaxConcurrency: 5,
+		},
 	}
-	balancer := loadbalancer.NewBalancer(instances, tracker)
+	runtimeInstances := cfg.RuntimeInstances(registry)
+
+	tracker := loadbalancer.NewConcurrencyTracker()
+	balancer := loadbalancer.NewBalancer(runtimeInstances, tracker)
 	store, err := oauth.NewTokenStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	mgr := oauth.NewManager(instances, store)
+	mgr := oauth.NewManager(registry.Names(), store)
 	sessions := oauth.NewSessionStore()
-	cfg := &config.Config{
-		Instances: instances,
-	}
-	return NewHandler(balancer, mgr, sessions, cfg)
+	return NewHandler(balancer, mgr, sessions, cfg, registry)
 }
 
 func TestHandleInstances_IncludesTokenStatus(t *testing.T) {
@@ -152,5 +160,53 @@ func TestHandleOAuthLogout(t *testing.T) {
 	got, _ := h.oauthMgr.GetStore().Load("test-oauth")
 	if got != nil {
 		t.Error("token should be deleted after logout")
+	}
+}
+
+func TestHandleAddInstance(t *testing.T) {
+	h := newTestHandler(t)
+
+	body, _ := json.Marshal(map[string]string{"name": "new-instance"})
+	req := httptest.NewRequest("POST", "/api/instances/add", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleAddInstance(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Verify it shows up in the list
+	if !h.registry.Has("new-instance") {
+		t.Error("new-instance not found in registry")
+	}
+}
+
+func TestHandleAddInstance_Duplicate(t *testing.T) {
+	h := newTestHandler(t)
+
+	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
+	req := httptest.NewRequest("POST", "/api/instances/add", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleAddInstance(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 for duplicate", w.Code)
+	}
+}
+
+func TestHandleRemoveInstance(t *testing.T) {
+	h := newTestHandler(t)
+
+	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
+	req := httptest.NewRequest("POST", "/api/instances/remove", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleRemoveInstance(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	if h.registry.Has("test-oauth") {
+		t.Error("test-oauth should have been removed")
 	}
 }

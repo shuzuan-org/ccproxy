@@ -6,29 +6,43 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/binn/ccproxy/internal/config"
 )
 
 type Manager struct {
+	mu        sync.RWMutex
 	instances []string // names of oauth instances
 	provider  *AnthropicProvider
 	store     *TokenStore
 	refreshMu map[string]*sync.Mutex
 }
 
-func NewManager(allInstances []config.InstanceConfig, store *TokenStore) *Manager {
-	var names []string
-	refreshMu := make(map[string]*sync.Mutex)
-	for _, inst := range allInstances {
-		names = append(names, inst.Name)
-		refreshMu[inst.Name] = &sync.Mutex{}
+// NewManager creates an OAuth manager for the given instance names.
+func NewManager(names []string, store *TokenStore) *Manager {
+	refreshMu := make(map[string]*sync.Mutex, len(names))
+	for _, name := range names {
+		refreshMu[name] = &sync.Mutex{}
 	}
+	instancesCopy := make([]string, len(names))
+	copy(instancesCopy, names)
 	return &Manager{
-		instances: names,
+		instances: instancesCopy,
 		provider:  NewAnthropicProvider(),
 		store:     store,
 		refreshMu: refreshMu,
+	}
+}
+
+// UpdateInstances dynamically replaces the instance name list and refresh mutex map.
+func (m *Manager) UpdateInstances(names []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.instances = make([]string, len(names))
+	copy(m.instances, names)
+	// Add new mutexes for new instances, keep existing ones.
+	for _, name := range names {
+		if _, ok := m.refreshMu[name]; !ok {
+			m.refreshMu[name] = &sync.Mutex{}
+		}
 	}
 }
 
@@ -51,7 +65,9 @@ func (m *Manager) GetValidToken(ctx context.Context, instanceName string) (*OAut
 }
 
 func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenStr string) (*OAuthToken, error) {
+	m.mu.RLock()
 	mu, ok := m.refreshMu[instanceName]
+	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown instance: %s", instanceName)
 	}
@@ -98,7 +114,11 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				for _, name := range m.instances {
+				m.mu.RLock()
+				names := make([]string, len(m.instances))
+				copy(names, m.instances)
+				m.mu.RUnlock()
+				for _, name := range names {
 					token, err := m.store.Load(name)
 					if err != nil || token == nil {
 						continue

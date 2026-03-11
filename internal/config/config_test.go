@@ -29,23 +29,14 @@ const validConfigTOML = `
 host = "0.0.0.0"
 port = 8080
 admin_password = "secret"
+base_url = "https://api.anthropic.com"
+request_timeout = 120
+max_concurrency = 3
 
 [[api_keys]]
 key = "sk-test-001"
 name = "team-a"
 enabled = true
-
-[[instances]]
-name = "alice-oauth"
-max_concurrency = 3
-base_url = "https://api.anthropic.com"
-request_timeout = 120
-
-[[instances]]
-name = "bob-oauth"
-max_concurrency = 10
-base_url = "https://api.anthropic.com"
-request_timeout = 60
 `
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -65,6 +56,15 @@ func TestLoadConfig_Valid(t *testing.T) {
 	if cfg.Server.AdminPassword != "secret" {
 		t.Errorf("admin_password = %q, want secret", cfg.Server.AdminPassword)
 	}
+	if cfg.Server.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("base_url = %q, want https://api.anthropic.com", cfg.Server.BaseURL)
+	}
+	if cfg.Server.RequestTimeout != 120 {
+		t.Errorf("request_timeout = %d, want 120", cfg.Server.RequestTimeout)
+	}
+	if cfg.Server.MaxConcurrency != 3 {
+		t.Errorf("max_concurrency = %d, want 3", cfg.Server.MaxConcurrency)
+	}
 
 	// API keys
 	if len(cfg.APIKeys) != 1 {
@@ -75,29 +75,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 	if !cfg.APIKeys[0].Enabled {
 		t.Error("api_key.enabled should be true")
-	}
-
-	// Instances
-	if len(cfg.Instances) != 2 {
-		t.Fatalf("instances len = %d, want 2", len(cfg.Instances))
-	}
-	alice := cfg.Instances[0]
-	if alice.Name != "alice-oauth" {
-		t.Errorf("instance[0].name = %q, want alice-oauth", alice.Name)
-	}
-	if alice.MaxConcurrency != 3 {
-		t.Errorf("alice.max_concurrency = %d, want 3", alice.MaxConcurrency)
-	}
-	if alice.RequestTimeout != 120 {
-		t.Errorf("alice.request_timeout = %d, want 120", alice.RequestTimeout)
-	}
-	if !alice.IsEnabled() {
-		t.Error("alice should be enabled by default")
-	}
-
-	bob := cfg.Instances[1]
-	if bob.Name != "bob-oauth" {
-		t.Errorf("instance[1].name = %q, want bob-oauth", bob.Name)
 	}
 }
 
@@ -111,9 +88,6 @@ admin_password = "test-pass"
 key = "sk-min"
 name = "min"
 enabled = true
-
-[[instances]]
-name = "inst-oauth"
 `
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -129,75 +103,33 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.Server.Port != 3000 {
 		t.Errorf("port default = %d, want 3000", cfg.Server.Port)
 	}
-	inst := cfg.Instances[0]
-	if inst.RequestTimeout != 300 {
-		t.Errorf("request_timeout default = %d, want 300", inst.RequestTimeout)
+	if cfg.Server.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("base_url default = %q, want https://api.anthropic.com", cfg.Server.BaseURL)
 	}
-	if inst.MaxConcurrency != 5 {
-		t.Errorf("max_concurrency default = %d, want 5", inst.MaxConcurrency)
+	if cfg.Server.RequestTimeout != 300 {
+		t.Errorf("request_timeout default = %d, want 300", cfg.Server.RequestTimeout)
 	}
-	if inst.BaseURL != "https://api.anthropic.com" {
-		t.Errorf("base_url default = %q, want https://api.anthropic.com", inst.BaseURL)
-	}
-	if !inst.IsEnabled() {
-		t.Error("instance should be enabled when Enabled field is absent")
+	if cfg.Server.MaxConcurrency != 5 {
+		t.Errorf("max_concurrency default = %d, want 5", cfg.Server.MaxConcurrency)
 	}
 }
 
-func TestLoadConfig_Validation(t *testing.T) {
-	cases := []struct {
-		name    string
-		toml    string
-		wantErr string
-	}{
-		{
-			name: "no instances",
-			toml: `
-[server]
-admin_password = "pass"
-
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-`,
-			wantErr: "at least one enabled instance",
+func TestValidate_NoEnabledAPIKeys(t *testing.T) {
+	// Test Validate() directly to bypass auto-generation in Load()
+	cfg := &Config{
+		Server: ServerConfig{
+			AdminPassword: "pass",
 		},
-		{
-			name: "duplicate instance names",
-			toml: `
-[server]
-admin_password = "pass"
-
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-
-[[instances]]
-name = "dup"
-
-[[instances]]
-name = "dup"
-`,
-			wantErr: "duplicate instance name",
+		APIKeys: []APIKeyConfig{
+			{Key: "sk-x", Name: "x", Enabled: false},
 		},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tc.toml), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			_, err := Load(path)
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
-			}
-		})
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "at least one enabled api_key") {
+		t.Errorf("error = %q, want it to contain 'at least one enabled api_key'", err.Error())
 	}
 }
 
@@ -210,9 +142,6 @@ admin_password = ""
 key = "sk-ok"
 name = "ok"
 enabled = true
-
-[[instances]]
-name = "x"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
@@ -244,9 +173,6 @@ func TestLoadConfig_AutoGenerateAPIKey(t *testing.T) {
 	tomlContent := `
 [server]
 admin_password = "pass"
-
-[[instances]]
-name = "x"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
@@ -283,8 +209,7 @@ name = "x"
 
 func TestLoadConfig_AutoGenerateBoth(t *testing.T) {
 	tomlContent := `
-[[instances]]
-name = "x"
+[server]
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
@@ -312,9 +237,6 @@ admin_password = "pass"
 key = "sk-x"
 name = "x"
 enabled = false
-
-[[instances]]
-name = "x"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
@@ -358,6 +280,33 @@ func TestLoadConfig_NoAutoGenerateWhenPresent(t *testing.T) {
 	}
 }
 
+func TestRuntimeInstance(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 120,
+			MaxConcurrency: 3,
+		},
+	}
+
+	inst := cfg.RuntimeInstance("alice", true)
+	if inst.Name != "alice" {
+		t.Errorf("name = %q, want alice", inst.Name)
+	}
+	if inst.MaxConcurrency != 3 {
+		t.Errorf("max_concurrency = %d, want 3", inst.MaxConcurrency)
+	}
+	if inst.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("base_url = %q", inst.BaseURL)
+	}
+	if inst.RequestTimeout != 120 {
+		t.Errorf("request_timeout = %d, want 120", inst.RequestTimeout)
+	}
+	if !inst.IsEnabled() {
+		t.Error("should be enabled")
+	}
+}
+
 func TestWatch(t *testing.T) {
 	// Create a temp config file with valid initial content
 	dir := t.TempDir()
@@ -387,9 +336,6 @@ admin_password = "test-pass"
 key = "sk-updated"
 name = "updated"
 enabled = true
-
-[[instances]]
-name = "inst-updated"
 `
 	if err := os.WriteFile(path, []byte(updatedTOML), 0o600); err != nil {
 		t.Fatal(err)
@@ -414,9 +360,6 @@ name = "inst-updated"
 	}
 	if len(cfg.APIKeys) == 0 || cfg.APIKeys[0].Key != "sk-updated" {
 		t.Errorf("reloaded config api_key = %q, want sk-updated", cfg.APIKeys[0].Key)
-	}
-	if len(cfg.Instances) == 0 || cfg.Instances[0].Name != "inst-updated" {
-		t.Errorf("reloaded config instance name = %q, want inst-updated", cfg.Instances[0].Name)
 	}
 
 	// Verify stop function works (should not panic or block)

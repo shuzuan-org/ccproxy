@@ -41,39 +41,33 @@ type Handler struct {
 	balancer     *loadbalancer.Balancer
 	disguise     *disguise.Engine
 	oauthManager *oauth.Manager
-	httpClients  map[string]*http.Client        // instanceName → client
-	instances    map[string]config.InstanceConfig // instanceName → config
+	httpClient   *http.Client // shared client for all instances
+	baseURL      string       // global upstream base URL
 }
 
-// NewHandler constructs a Handler and pre-builds per-instance HTTP clients.
+// NewHandler constructs a Handler with a shared HTTP client.
 func NewHandler(
-	instances []config.InstanceConfig,
+	baseURL string,
+	requestTimeout int,
 	balancer *loadbalancer.Balancer,
 	disguiseEngine *disguise.Engine,
 	oauthManager *oauth.Manager,
 ) *Handler {
-	httpClients := make(map[string]*http.Client, len(instances))
-	instanceMap := make(map[string]config.InstanceConfig, len(instances))
-
-	for _, inst := range instances {
-		transport := proxytls.NewTransport()
-		timeout := time.Duration(inst.RequestTimeout) * time.Second
-		if timeout == 0 {
-			timeout = 300 * time.Second
-		}
-		httpClients[inst.Name] = &http.Client{
-			Transport: transport,
-			Timeout:   timeout,
-		}
-		instanceMap[inst.Name] = inst
+	timeout := time.Duration(requestTimeout) * time.Second
+	if timeout == 0 {
+		timeout = 300 * time.Second
 	}
+	transport := proxytls.NewTransport()
 
 	return &Handler{
 		balancer:     balancer,
 		disguise:     disguiseEngine,
 		oauthManager: oauthManager,
-		httpClients:  httpClients,
-		instances:    instanceMap,
+		httpClient: &http.Client{
+			Transport: transport,
+			Timeout:   timeout,
+		},
+		baseURL: baseURL,
 	}
 }
 
@@ -288,7 +282,7 @@ func (h *Handler) doRequest(
 	_ = parsed // parsed is used by disguise internally via rawBody re-parse
 
 	// Build upstream URL.
-	upstreamURL := inst.BaseURL + "/v1/messages"
+	upstreamURL := h.baseURL + "/v1/messages"
 
 	// Build upstream request (will be modified before sending).
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, nil)
@@ -339,14 +333,8 @@ func (h *Handler) doRequest(
 	upstreamReq.Body = io.NopCloser(bytes.NewReader(body))
 	upstreamReq.ContentLength = int64(len(body))
 
-	// Step 5g: Send request with instance-specific HTTP client.
-	client, ok := h.httpClients[inst.Name]
-	if !ok {
-		// Fallback to default client.
-		client = http.DefaultClient
-	}
-
-	resp, err := client.Do(upstreamReq)
+	// Step 5g: Send request with shared HTTP client.
+	resp, err := h.httpClient.Do(upstreamReq)
 	if err != nil {
 		// Network-level error: treat as 503 for retry classification.
 		if ctx.Err() != nil {

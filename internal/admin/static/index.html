@@ -189,7 +189,10 @@
   <div class="card">
     <div class="card-header">
       <h2>OAuth Instances</h2>
-      <span class="badge" id="instance-count">—</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span class="badge" id="instance-count">—</span>
+        <button class="btn btn-accent" onclick="showAddModal()">+ Add Claude</button>
+      </div>
     </div>
     <div style="overflow-x:auto">
       <table>
@@ -205,6 +208,20 @@
           <tr class="empty-row"><td colspan="4">Loading…</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- Add Instance Modal -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <h3>Add Claude Instance</h3>
+    <p>Enter a name for the new instance (e.g. your account name).</p>
+    <div class="modal-status" id="add-modal-status"></div>
+    <input type="text" id="add-instance-name" placeholder="Instance name…" />
+    <div class="modal-actions">
+      <button class="btn" onclick="closeAddModal()">Cancel</button>
+      <button class="btn btn-accent" id="add-modal-submit" onclick="submitAddInstance()">Add</button>
     </div>
   </div>
 </div>
@@ -263,6 +280,7 @@
       html += '<button class="btn btn-accent" onclick="startLogin(\'' + name + '\')">Login</button>';
       html += '<button class="btn" onclick="doRefresh(\'' + name + '\')">Refresh</button>';
     }
+    html += '<button class="btn btn-danger" onclick="doRemove(\'' + name + '\')">Remove</button>';
     html += '</div>';
     return html;
   }
@@ -414,6 +432,63 @@
     }
   }
 
+
+  // --- Add / Remove Instance ---
+
+  function showAddModal() {
+    document.getElementById('add-instance-name').value = '';
+    document.getElementById('add-modal-status').textContent = '';
+    document.getElementById('add-modal-status').className = 'modal-status';
+    document.getElementById('add-modal').classList.add('active');
+    document.getElementById('add-instance-name').focus();
+  }
+
+  function closeAddModal() {
+    document.getElementById('add-modal').classList.remove('active');
+  }
+
+  async function submitAddInstance() {
+    const name = document.getElementById('add-instance-name').value.trim();
+    const statusEl = document.getElementById('add-modal-status');
+    if (!name) {
+      statusEl.textContent = 'Please enter a name.';
+      statusEl.className = 'modal-status error';
+      return;
+    }
+    const btn = document.getElementById('add-modal-submit');
+    btn.disabled = true;
+    statusEl.textContent = 'Adding…';
+    statusEl.className = 'modal-status';
+    try {
+      await fetchJSON('/api/instances/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }),
+      });
+      statusEl.textContent = 'Added!';
+      statusEl.className = 'modal-status ok';
+      setTimeout(function() { closeAddModal(); refresh(); }, 600);
+    } catch (err) {
+      statusEl.textContent = 'Error: ' + err.message;
+      statusEl.className = 'modal-status error';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function doRemove(instanceName) {
+    if (!confirm('Remove instance "' + instanceName + '"? This will also delete its OAuth token.')) return;
+    try {
+      await fetchJSON('/api/instances/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: instanceName }),
+      });
+      refresh();
+    } catch (err) {
+      alert('Remove failed: ' + err.message);
+    }
+  }
 
   // --- Init ---
   refresh();
