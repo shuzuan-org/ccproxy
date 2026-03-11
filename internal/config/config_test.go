@@ -133,6 +133,43 @@ func TestValidate_NoEnabledAPIKeys(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_FileNotFound_CreatesDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subdir", "config.toml")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have auto-generated credentials
+	if cfg.Server.AdminPassword == "" {
+		t.Error("admin_password should have been auto-generated")
+	}
+	if len(cfg.APIKeys) == 0 {
+		t.Fatal("api_keys should have been auto-generated")
+	}
+	if !strings.HasPrefix(cfg.APIKeys[0].Key, "sk-ccproxy-") {
+		t.Errorf("api key %q missing prefix", cfg.APIKeys[0].Key)
+	}
+
+	// Default server settings from the generated template
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Errorf("host = %q, want 0.0.0.0", cfg.Server.Host)
+	}
+	if cfg.Server.Port != 3000 {
+		t.Errorf("port = %d, want 3000", cfg.Server.Port)
+	}
+
+	// File should exist on disk with generated credentials
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file should have been created: %v", err)
+	}
+	if !strings.Contains(string(data), cfg.Server.AdminPassword) {
+		t.Error("generated admin_password not found in config file")
+	}
+}
+
 func TestLoadConfig_AutoGenerateAdminPassword(t *testing.T) {
 	tomlContent := `
 [server]
