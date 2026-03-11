@@ -11,10 +11,10 @@ Package ccproxy and Caddy into a single Docker image so users can start a produc
 
 ```bash
 # Production (HTTPS + auto certs)
-docker run -d -p 80:80 -p 443:443 -v ccproxy_data:/data -e DOMAIN=proxy.example.com binn/ccproxy
+docker run -d -p 80:80 -p 443:443 -v ccproxy_data:/data -e DOMAIN=proxy.example.com saloolooo/ccproxy
 
 # Local / internal (HTTP only)
-docker run -d -p 80:80 -v ccproxy_data:/data binn/ccproxy
+docker run -d -p 80:80 -v ccproxy_data:/data saloolooo/ccproxy
 
 # View auto-generated credentials
 docker logs <container>
@@ -53,7 +53,7 @@ Stage 3: alpine:3                  → runtime
 
 Build with `docker buildx` for `linux/amd64` and `linux/arm64`.
 
-Image name: `binn/ccproxy`
+Image name: `saloolooo/ccproxy`
 
 ### Estimated size
 

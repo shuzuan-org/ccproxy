@@ -127,7 +127,7 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build \
-    -ldflags "-X github.com/binn/ccproxy/internal/cli.Version=${VERSION} -s -w" \
+    -ldflags "-X github.com/saloolooo/ccproxy/internal/cli.Version=${VERSION} -s -w" \
     -o /ccproxy ./cmd/ccproxy
 
 # Stage 2: Get Caddy binary
@@ -177,15 +177,15 @@ Append to existing Makefile:
 
 ```makefile
 docker-build:
-	docker build --build-arg VERSION=$(VERSION) -t binn/ccproxy:$(VERSION) -t binn/ccproxy:latest .
+	docker build --build-arg VERSION=$(VERSION) -t saloolooo/ccproxy:$(VERSION) -t saloolooo/ccproxy:latest .
 
 docker-run:
-	docker run --rm -p 80:80 -p 443:443 -v ccproxy_data:/data --hostname ccproxy binn/ccproxy:latest
+	docker run --rm -p 80:80 -p 443:443 -v ccproxy_data:/data --hostname ccproxy saloolooo/ccproxy:latest
 
 docker-push:
 	docker buildx build --platform linux/amd64,linux/arm64 \
 		--build-arg VERSION=$(VERSION) \
-		-t binn/ccproxy:$(VERSION) -t binn/ccproxy:latest \
+		-t saloolooo/ccproxy:$(VERSION) -t saloolooo/ccproxy:latest \
 		--push .
 ```
 
@@ -213,7 +213,7 @@ Expected: Image builds successfully.
 
 - [ ] **Step 2: Start container in HTTP mode (no DOMAIN)**
 
-Run: `docker run --rm -d --name ccproxy-test -p 8080:80 -v ccproxy_test_data:/data --hostname ccproxy binn/ccproxy:latest`
+Run: `docker run --rm -d --name ccproxy-test -p 8080:80 -v ccproxy_test_data:/data --hostname ccproxy saloolooo/ccproxy:latest`
 Expected: Container starts without errors.
 
 - [ ] **Step 3: Verify ccproxy is running**
