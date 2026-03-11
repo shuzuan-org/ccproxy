@@ -22,22 +22,9 @@ func IsHaikuModel(model string) bool {
 // only oauth + interleaved-thinking. The claude-code beta is dropped for mimic
 // requests to match observed traffic patterns.
 //
-// Haiku models do not need claude-code beta at all.
-func BetaHeader(model string, hasTools bool, isOAuth bool) string {
-	if IsHaikuModel(model) {
-		// Haiku: oauth + interleaved-thinking (no claude-code)
-		if isOAuth {
-			return BetaOAuth + "," + BetaInterleavedThinking
-		}
-		return BetaInterleavedThinking
-	}
-
-	// Opus/Sonnet mimic: oauth + interleaved-thinking
-	// (claude-code beta is intentionally excluded per sub2api behavior)
-	if isOAuth {
-		return BetaOAuth + "," + BetaInterleavedThinking
-	}
-	return BetaInterleavedThinking
+// All instances are OAuth, so the oauth beta token is always included.
+func BetaHeader(model string, hasTools bool) string {
+	return BetaOAuth + "," + BetaInterleavedThinking
 }
 
 // SupplementBetaHeader preserves the client's existing beta tokens and ensures
@@ -57,11 +44,7 @@ func SupplementBetaHeader(clientBeta string) string {
 }
 
 // CountTokensBetaHeader returns beta header for count_tokens requests.
-func CountTokensBetaHeader(isOAuth bool) string {
-	parts := []string{BetaClaudeCode}
-	if isOAuth {
-		parts = append(parts, BetaOAuth)
-	}
-	parts = append(parts, BetaInterleavedThinking, BetaTokenCounting)
+func CountTokensBetaHeader() string {
+	parts := []string{BetaClaudeCode, BetaOAuth, BetaInterleavedThinking, BetaTokenCounting}
 	return strings.Join(parts, ",")
 }

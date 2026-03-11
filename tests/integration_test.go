@@ -19,6 +19,7 @@ import (
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
+	"github.com/binn/ccproxy/internal/oauth"
 	"github.com/binn/ccproxy/internal/proxy"
 )
 
@@ -120,9 +121,8 @@ data: {"type":"message_stop"}
 // ---------------------------------------------------------------------------
 
 const (
-	testAPIKey      = "test-key-integration"
-	testAPIKeyName  = "integration-test-key"
-	testUpstreamKey = "upstream-bearer-key"
+	testAPIKey     = "test-key-integration"
+	testAPIKeyName = "integration-test-key"
 )
 
 // buildHandler constructs the proxy mux the same way server.New() does.
@@ -134,8 +134,9 @@ func buildHandler(t *testing.T, cfg *config.Config) http.Handler {
 
 	disguiseEngine := disguise.NewEngine()
 
-	// No OAuth manager needed for bearer-only tests.
-	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, nil)
+	// Create OAuth manager with pre-saved tokens for all instances.
+	oauthMgr := buildIntegrationOAuthManager(t, cfg.Instances)
+	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
@@ -184,8 +185,6 @@ func makeConfig(upstreamURL string) *config.Config {
 		Instances: []config.InstanceConfig{
 			{
 				Name:           "test-instance",
-				AuthMode:       "bearer",
-				APIKey:         testUpstreamKey,
 				BaseURL:        upstreamURL,
 				MaxConcurrency: 5,
 				RequestTimeout: 10,
@@ -193,6 +192,27 @@ func makeConfig(upstreamURL string) *config.Config {
 			},
 		},
 	}
+}
+
+// buildIntegrationOAuthManager creates an oauth.Manager with pre-saved tokens for all instances.
+func buildIntegrationOAuthManager(t *testing.T, instances []config.InstanceConfig) *oauth.Manager {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := oauth.NewTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewTokenStore: %v", err)
+	}
+	for _, inst := range instances {
+		err = store.Save(inst.Name, oauth.OAuthToken{
+			AccessToken:  "fake-integration-token",
+			RefreshToken: "rt-ignored",
+			ExpiresAt:    time.Now().Add(1 * time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("store.Save(%q): %v", inst.Name, err)
+		}
+	}
+	return oauth.NewManager(instances, store)
 }
 
 // postMessages sends a POST /v1/messages to proxyURL with optional auth token
@@ -309,15 +329,15 @@ func TestIntegration_NonStreamingRequest(t *testing.T) {
 		t.Errorf("expected type 'message', got %v", result["type"])
 	}
 
-	// Verify upstream received the correct api key.
+	// Verify upstream received an OAuth Bearer token.
 	upstream.mu.Lock()
 	defer upstream.mu.Unlock()
 	if len(upstream.receivedHeaders) == 0 {
 		t.Fatal("upstream received no requests")
 	}
-	apiKey := upstream.receivedHeaders[0].Get("X-Api-Key")
-	if apiKey != testUpstreamKey {
-		t.Errorf("upstream expected X-Api-Key=%q, got %q", testUpstreamKey, apiKey)
+	authHeader := upstream.receivedHeaders[0].Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		t.Errorf("upstream expected Authorization: Bearer ..., got %q", authHeader)
 	}
 }
 
@@ -386,21 +406,15 @@ func TestIntegration_StreamingRequest(t *testing.T) {
 	}
 }
 
-// TestIntegration_DisguiseApplied verifies that when a bearer instance (acting
-// like an OAuth-disguised instance) is used, the disguise headers are set on
-// the upstream request.
-//
-// Note: the production disguise path is triggered only for oauth auth_mode
-// instances. We test it directly via the disguise.Engine to confirm the header
-// logic is exercised, and we also test that a bearer instance's requests reach
-// the upstream correctly (no disguise headers injected for bearer mode).
+// TestIntegration_DisguiseApplied verifies that the disguise engine applies
+// headers for OAuth instances when the client is not a real Claude Code client.
 func TestIntegration_DisguiseApplied(t *testing.T) {
 	upstream := newMockAnthropicServer(t, "ok")
 	cfg := makeConfig(upstream.srv.URL)
 	handler := buildHandler(t, cfg)
 	proxyURL := startProxyServer(t, handler)
 
-	// Send a normal request; for bearer instances disguise should NOT be applied.
+	// Send a normal request; disguise should be applied for OAuth instances.
 	resp := postMessages(t, proxyURL, testAPIKey, standardRequestBody())
 	defer func() { _ = resp.Body.Close() }()
 
@@ -417,27 +431,25 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 		t.Fatal("upstream received no requests")
 	}
 
-	// For bearer instances, disguise headers (User-Agent mirroring claude-cli,
-	// X-App: cli) should NOT be present on the upstream request.
+	// For OAuth instances, disguise headers should be applied.
 	userAgent := hdrs[0].Get("User-Agent")
-	xApp := hdrs[0].Get("X-App")
-	if strings.Contains(userAgent, "claude-cli") {
-		t.Errorf("disguise User-Agent should not be set for bearer instance, got: %q", userAgent)
+	if !strings.Contains(userAgent, "claude-cli") {
+		t.Errorf("expected disguise User-Agent containing 'claude-cli', got %q", userAgent)
 	}
-	if xApp == "cli" {
-		t.Errorf("disguise X-App header should not be set for bearer instance")
+	if hdrs[0].Get("X-App") != "cli" {
+		t.Errorf("expected X-App: cli, got %q", hdrs[0].Get("X-App"))
 	}
 
-	// Now verify that the Engine itself applies headers for OAuth use-case.
+	// Also verify the Engine directly applies headers.
 	engine := disguise.NewEngine()
 	origReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq.Header.Set("Content-Type", "application/json")
 
 	body := []byte(`{"model":"claude-3-5-haiku-20241022","messages":[{"role":"user","content":"hi"}]}`)
-	_, applied := engine.Apply(origReq, upstreamReq, body, true /* isOAuth */, false, "seed")
+	_, applied := engine.Apply(origReq, upstreamReq, body, false, "seed")
 	if !applied {
-		t.Error("expected disguise to be applied for OAuth mode without Claude Code client header")
+		t.Error("expected disguise to be applied without Claude Code client header")
 	}
 	if upstreamReq.Header.Get("User-Agent") == "" {
 		t.Error("expected User-Agent to be set after disguise")

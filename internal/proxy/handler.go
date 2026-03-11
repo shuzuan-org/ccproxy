@@ -56,7 +56,7 @@ func NewHandler(
 	instanceMap := make(map[string]config.InstanceConfig, len(instances))
 
 	for _, inst := range instances {
-		transport := proxytls.NewTransport(inst.TLSFingerprint)
+		transport := proxytls.NewTransport()
 		timeout := time.Duration(inst.RequestTimeout) * time.Second
 		if timeout == 0 {
 			timeout = 300 * time.Second
@@ -267,26 +267,21 @@ func (h *Handler) doRequest(
 ) (*http.Response, int, error) {
 	ctx := origReq.Context()
 
-	// Step 5a: Resolve auth token.
-	var authHeader string
-	if inst.IsOAuth() {
-		if h.oauthManager == nil {
-			slog.Error("oauth manager not configured", "instance", inst.Name)
-			return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
-		}
-		token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
-		if err != nil {
-			slog.Error("oauth token error", "instance", inst.Name, "error", err.Error())
-			return nil, 401, fmt.Errorf("get oauth token: %w", err)
-		}
-		slog.Debug("oauth token resolved",
-			"instance", inst.Name,
-			"expires_in", time.Until(token.ExpiresAt).String(),
-		)
-		authHeader = "Bearer " + token.AccessToken
-	} else {
-		authHeader = "" // will be set as x-api-key below
+	// Step 5a: Resolve OAuth token.
+	if h.oauthManager == nil {
+		slog.Error("oauth manager not configured", "instance", inst.Name)
+		return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
 	}
+	token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
+	if err != nil {
+		slog.Error("oauth token error", "instance", inst.Name, "error", err.Error())
+		return nil, 401, fmt.Errorf("get oauth token: %w", err)
+	}
+	slog.Debug("oauth token resolved",
+		"instance", inst.Name,
+		"expires_in", time.Until(token.ExpiresAt).String(),
+	)
+	authHeader := "Bearer " + token.AccessToken
 
 	// Step 5b: Apply disguise if needed (OAuth and not Claude Code client).
 	body := rawBody
@@ -314,16 +309,16 @@ func (h *Handler) doRequest(
 		upstreamReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Step 5b: Apply disguise for OAuth instances or bearer instances with disguise enabled.
+	// Step 5b: Apply disguise (all instances are OAuth).
 	// Use origReq for Claude Code client detection (upstreamReq lacks User-Agent, X-App headers).
 	disguised := false
-	if (inst.IsOAuth() || inst.Disguise) && h.disguise != nil {
+	if h.disguise != nil {
 		sessionSeed := origReq.Header.Get("X-Session-Seed")
 		if sessionSeed == "" {
 			sessionSeed = upstreamURL // fallback seed
 		}
 		var modifiedBody []byte
-		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, true, isStream, sessionSeed)
+		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed)
 		body = modifiedBody
 		slog.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
 	}
@@ -336,14 +331,9 @@ func (h *Handler) doRequest(
 		}
 	}
 
-	// Step 5e: Set auth header.
-	if inst.IsOAuth() {
-		upstreamReq.Header.Set("Authorization", authHeader)
-		upstreamReq.Header.Del("X-Api-Key")
-	} else {
-		upstreamReq.Header.Set("X-Api-Key", inst.APIKey)
-		upstreamReq.Header.Del("Authorization")
-	}
+	// Step 5e: Set auth header (always OAuth Bearer).
+	upstreamReq.Header.Set("Authorization", authHeader)
+	upstreamReq.Header.Del("X-Api-Key")
 
 	// Step 5f: Set request body.
 	upstreamReq.Body = io.NopCloser(bytes.NewReader(body))

@@ -14,6 +14,7 @@ import (
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
 	"github.com/binn/ccproxy/internal/proxy"
+	"github.com/binn/ccproxy/internal/ratelimit"
 )
 
 // Server holds the HTTP server and its dependencies.
@@ -39,43 +40,30 @@ func New(cfg *config.Config) (*Server, error) {
 	// 2. Create disguise engine.
 	disguiseEngine := disguise.NewEngine()
 
-	// 3. Create OAuth manager only when at least one instance uses oauth auth_mode.
-	var oauthMgr *oauth.Manager
-	for _, inst := range cfg.Instances {
-		if inst.IsOAuth() {
-			store, err := oauth.NewTokenStore("data")
-			if err != nil {
-				cancel()
-				return nil, fmt.Errorf("create oauth token store: %w", err)
-			}
-			oauthMgr = oauth.NewManager(cfg.Instances, store)
-			break
-		}
+	// 3. Create OAuth manager (all instances use OAuth).
+	store, err := oauth.NewTokenStore("data")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create oauth token store: %w", err)
 	}
+	oauthMgr := oauth.NewManager(cfg.Instances, store)
 
 	// 4. Create PKCE session store for browser-based OAuth login.
-	var oauthSessions *oauth.SessionStore
-	if oauthMgr != nil {
-		oauthSessions = oauth.NewSessionStore()
-		oauthSessions.StartCleanup(ctx, time.Minute)
-	}
+	oauthSessions := oauth.NewSessionStore()
+	oauthSessions.StartCleanup(ctx, time.Minute)
 
 	// Log instance configuration summary.
 	for _, inst := range cfg.Instances {
 		slog.Info("instance configured",
 			"name", inst.Name,
-			"auth_mode", inst.AuthMode,
 			"enabled", inst.IsEnabled(),
 			"max_concurrency", inst.MaxConcurrency,
-			"disguise", inst.Disguise,
 		)
 	}
 
 	// Start auto-refresh for OAuth tokens.
-	if oauthMgr != nil {
-		oauthMgr.StartAutoRefresh(ctx)
-		slog.Info("oauth auto-refresh started")
-	}
+	oauthMgr.StartAutoRefresh(ctx)
+	slog.Info("oauth auto-refresh started")
 
 	// 5. Create proxy handler.
 	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
@@ -89,21 +77,19 @@ func New(cfg *config.Config) (*Server, error) {
 	// API route — requires bearer token auth.
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
 
-	// Admin routes — optionally protected by basic auth.
-	var adminMiddleware func(http.Handler) http.Handler
-	if cfg.Server.AdminPassword != "" {
-		adminMiddleware = basicAuth(cfg.Server.AdminPassword)
-	} else {
-		adminMiddleware = noopMiddleware
-	}
+	// Admin routes — rate-limited and protected by basic auth.
+	limiter := ratelimit.NewLimiter(cfg.Server.RateLimit, time.Minute)
+	limiter.StartCleanup(ctx)
+	adminRL := ratelimit.Middleware(limiter)
+	adminAuth := basicAuth(cfg.Server.AdminPassword)
 
-	mux.Handle("/api/instances", adminMiddleware(http.HandlerFunc(adminHandler.HandleInstances)))
-	mux.Handle("/api/sessions", adminMiddleware(http.HandlerFunc(adminHandler.HandleSessions)))
-	mux.Handle("/api/oauth/login/start", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLoginStart)))
-	mux.Handle("/api/oauth/login/complete", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete)))
-	mux.Handle("/api/oauth/refresh", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthRefresh)))
-	mux.Handle("/api/oauth/logout", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLogout)))
-	mux.Handle("/admin/", adminMiddleware(http.StripPrefix("/admin", adminHandler.HandleDashboard())))
+	mux.Handle("/api/instances", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleInstances))))
+	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
+	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
+	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))
+	mux.Handle("/api/oauth/refresh", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthRefresh))))
+	mux.Handle("/api/oauth/logout", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLogout))))
+	mux.Handle("/admin/", adminRL(adminAuth(http.StripPrefix("/admin", adminHandler.HandleDashboard()))))
 
 	// Health check — no auth required.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -168,11 +154,6 @@ func basicAuth(password string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// noopMiddleware passes requests through unchanged.
-func noopMiddleware(next http.Handler) http.Handler {
-	return next
 }
 
 // requestLogMiddleware logs each incoming request method, path, and duration.

@@ -60,6 +60,7 @@ config.toml.example Reference configuration
 
 - `config.Load(path)` reads, parses, applies defaults, and validates in one call.
 - `config.Watch(path, callback)` starts a background fsnotify watcher with 500ms debounce.
+- All instances use OAuth authentication. There is no `auth_mode` or `api_key` field.
 - The `[[instances]]` `enabled` field is a `*bool` so that nil = default-true is distinguishable from explicit false.
 
 ### Concurrency
@@ -70,13 +71,13 @@ config.toml.example Reference configuration
 
 ### Disguise Engine
 
-Activation condition: `instance.IsOAuth() && !isClaudeCodeClient(request)`. Do not apply disguise to API-key instances or to real Claude Code clients.
+Activation condition: `!isClaudeCodeClient(request)`. All instances use OAuth; disguise is always applied for non-Claude Code clients. TLS fingerprint is always enabled.
 
 The `isClaudeCodeClient` detector in `internal/disguise/detector.go` checks five dimensions (User-Agent, X-App, anthropic-beta, metadata.user_id pattern, system prompt Dice coefficient). All five must pass before a request is considered native Claude Code traffic.
 
 ### OAuth
 
-Anthropic OAuth constants (ClientID, AuthURL, TokenURL, RedirectURI, Scopes) are hardcoded in `internal/oauth/provider.go`. There is no `[[oauth_providers]]` config section — only `auth_mode = "oauth"` on instances.
+All instances use OAuth authentication. Anthropic OAuth constants (ClientID, AuthURL, TokenURL, RedirectURI, Scopes) are hardcoded in `internal/oauth/provider.go`.
 
 Tokens are stored per-instance (not per-provider) at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
 

@@ -23,6 +23,7 @@ type ServerConfig struct {
 	Host          string `toml:"host"`
 	Port          int    `toml:"port"`
 	AdminPassword string `toml:"admin_password"`
+	RateLimit     int    `toml:"rate_limit"` // max requests per minute per IP for admin routes
 }
 
 type APIKeyConfig struct {
@@ -33,14 +34,10 @@ type APIKeyConfig struct {
 
 type InstanceConfig struct {
 	Name           string `toml:"name"`
-	AuthMode       string `toml:"auth_mode"`      // "oauth" | "bearer"
-	APIKey         string `toml:"api_key"`
 	MaxConcurrency int    `toml:"max_concurrency"`
 	BaseURL        string `toml:"base_url"`
 	RequestTimeout int    `toml:"request_timeout"` // seconds
-	TLSFingerprint bool   `toml:"tls_fingerprint"`
-	Disguise       bool   `toml:"disguise"` // apply Claude CLI headers even for bearer instances
-	Enabled        *bool  `toml:"enabled"`  // default true
+	Enabled        *bool  `toml:"enabled"`         // default true
 }
 
 // Load reads, parses, applies defaults, and validates the config file at path.
@@ -73,6 +70,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 3000
 	}
+	if cfg.Server.RateLimit == 0 {
+		cfg.Server.RateLimit = 60
+	}
 	// Instance defaults
 	for i := range cfg.Instances {
 		inst := &cfg.Instances[i]
@@ -92,6 +92,11 @@ func applyDefaults(cfg *Config) {
 // the first (or combined) violation found.
 func (c *Config) Validate() error {
 	var errs []error
+
+	// Admin password is required for security.
+	if c.Server.AdminPassword == "" {
+		errs = append(errs, errors.New("server.admin_password is required"))
+	}
 
 	// At least 1 enabled API key
 	enabledKeys := 0
@@ -124,21 +129,12 @@ func (c *Config) Validate() error {
 		}
 		names[inst.Name] = struct{}{}
 
-		// Bearer instances must have a non-empty api_key
-		if inst.AuthMode == "bearer" && inst.APIKey == "" {
-			errs = append(errs, fmt.Errorf("instance %q (bearer) requires non-empty api_key", inst.Name))
-		}
 	}
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
 	return nil
-}
-
-// IsOAuth returns true when the instance uses OAuth authentication.
-func (ic *InstanceConfig) IsOAuth() bool {
-	return ic.AuthMode == "oauth"
 }
 
 // IsEnabled returns true when Enabled is nil (default on) or explicitly true.

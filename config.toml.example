@@ -2,6 +2,7 @@
 host = "0.0.0.0"
 port = 3000
 admin_password = "tmLuqkQjJk2BhgyMW40vqEUKMCx10EMI"
+# rate_limit = 60  # max requests per minute per IP for admin routes (default: 60)
 
 [[api_keys]]
 key = "sk-ccproxy-987313a7b186d14afe045aa16335b032"
@@ -10,18 +11,6 @@ enabled = true
 
 [[instances]]
 name = "alice-oauth"
-auth_mode = "oauth"
 max_concurrency = 5
 base_url = "https://api.anthropic.com"
 request_timeout = 300
-tls_fingerprint = true
-
-[[instances]]
-name = "bob-apikey"
-auth_mode = "bearer"
-api_key = "sk-ant-api03-your-key-here"
-max_concurrency = 10
-base_url = "https://api.anthropic.com"
-request_timeout = 300
-tls_fingerprint = false
-enabled = false

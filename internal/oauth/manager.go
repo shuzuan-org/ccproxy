@@ -21,10 +21,8 @@ func NewManager(allInstances []config.InstanceConfig, store *TokenStore) *Manage
 	var names []string
 	refreshMu := make(map[string]*sync.Mutex)
 	for _, inst := range allInstances {
-		if inst.IsOAuth() {
-			names = append(names, inst.Name)
-			refreshMu[inst.Name] = &sync.Mutex{}
-		}
+		names = append(names, inst.Name)
+		refreshMu[inst.Name] = &sync.Mutex{}
 	}
 	return &Manager{
 		instances: names,

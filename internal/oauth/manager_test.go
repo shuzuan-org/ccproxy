@@ -22,7 +22,7 @@ func newTestManager(t *testing.T, tokenServerURL string) (*Manager, *TokenStore)
 		t.Fatalf("NewTokenStore: %v", err)
 	}
 	instances := []config.InstanceConfig{
-		{Name: "test-oauth", AuthMode: "oauth"},
+		{Name: "test-oauth"},
 	}
 	m := NewManager(instances, store)
 	// Override provider's tokenURL for testing

@@ -27,11 +27,7 @@ func NewEngine() *Engine {
 // 4. System prompt injection — inject Claude Code system prompt
 // 5. metadata.user_id — generate fake user_id
 // 6. Model ID normalization — short name → full versioned name
-func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isOAuth bool, isStream bool, sessionSeed string) ([]byte, bool) {
-	if !isOAuth {
-		return body, false
-	}
-
+func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string) ([]byte, bool) {
 	// Detect using origReq which has full client headers (User-Agent, X-App, etc.)
 	if IsClaudeCodeClient(origReq.Header, body) {
 		// Real CC client via OAuth: lightweight processing only.
@@ -74,7 +70,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	ApplyHeaders(upstreamReq, isStream)
 
 	// Layer 3: anthropic-beta
-	upstreamReq.Header.Set("Anthropic-Beta", BetaHeader(model, hasTools, isOAuth))
+	upstreamReq.Header.Set("Anthropic-Beta", BetaHeader(model, hasTools))
 
 	// Layer 4: System Prompt Injection (skip for Haiku)
 	if !IsHaikuModel(model) {

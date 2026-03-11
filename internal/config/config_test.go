@@ -37,20 +37,15 @@ enabled = true
 
 [[instances]]
 name = "alice-oauth"
-auth_mode = "oauth"
 max_concurrency = 3
 base_url = "https://api.anthropic.com"
 request_timeout = 120
-tls_fingerprint = true
 
 [[instances]]
-name = "bob-bearer"
-auth_mode = "bearer"
-api_key = "sk-ant-real-key"
+name = "bob-oauth"
 max_concurrency = 10
 base_url = "https://api.anthropic.com"
 request_timeout = 60
-tls_fingerprint = false
 `
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -90,44 +85,35 @@ func TestLoadConfig_Valid(t *testing.T) {
 	if alice.Name != "alice-oauth" {
 		t.Errorf("instance[0].name = %q, want alice-oauth", alice.Name)
 	}
-	if !alice.IsOAuth() {
-		t.Error("alice should be oauth")
-	}
 	if alice.MaxConcurrency != 3 {
 		t.Errorf("alice.max_concurrency = %d, want 3", alice.MaxConcurrency)
 	}
 	if alice.RequestTimeout != 120 {
 		t.Errorf("alice.request_timeout = %d, want 120", alice.RequestTimeout)
 	}
-	if !alice.TLSFingerprint {
-		t.Error("alice.tls_fingerprint should be true")
-	}
 	if !alice.IsEnabled() {
 		t.Error("alice should be enabled by default")
 	}
 
 	bob := cfg.Instances[1]
-	if bob.AuthMode != "bearer" {
-		t.Errorf("bob.auth_mode = %q, want bearer", bob.AuthMode)
+	if bob.Name != "bob-oauth" {
+		t.Errorf("instance[1].name = %q, want bob-oauth", bob.Name)
 	}
-	if bob.APIKey != "sk-ant-real-key" {
-		t.Errorf("bob.api_key = %q, want sk-ant-real-key", bob.APIKey)
-	}
-
 }
 
 // minimalConfig has only the required fields to pass validation; everything
 // else should be filled in by applyDefaults.
 const minimalConfigTOML = `
+[server]
+admin_password = "test-pass"
+
 [[api_keys]]
 key = "sk-min"
 name = "min"
 enabled = true
 
 [[instances]]
-name = "inst-bearer"
-auth_mode = "bearer"
-api_key = "sk-ant-min"
+name = "inst-oauth"
 `
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -165,18 +151,51 @@ func TestLoadConfig_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "no api keys",
+			name: "empty admin_password",
 			toml: `
+[server]
+admin_password = ""
+
+[[api_keys]]
+key = "sk-ok"
+name = "ok"
+enabled = true
+
 [[instances]]
 name = "x"
-auth_mode = "bearer"
-api_key = "sk-key"
+`,
+			wantErr: "server.admin_password is required",
+		},
+		{
+			name: "missing admin_password",
+			toml: `
+[[api_keys]]
+key = "sk-ok"
+name = "ok"
+enabled = true
+
+[[instances]]
+name = "x"
+`,
+			wantErr: "server.admin_password is required",
+		},
+		{
+			name: "no api keys",
+			toml: `
+[server]
+admin_password = "pass"
+
+[[instances]]
+name = "x"
 `,
 			wantErr: "at least one enabled api_key",
 		},
 		{
 			name: "api key disabled",
 			toml: `
+[server]
+admin_password = "pass"
+
 [[api_keys]]
 key = "sk-x"
 name = "x"
@@ -184,14 +203,15 @@ enabled = false
 
 [[instances]]
 name = "x"
-auth_mode = "bearer"
-api_key = "sk-key"
 `,
 			wantErr: "at least one enabled api_key",
 		},
 		{
 			name: "no instances",
 			toml: `
+[server]
+admin_password = "pass"
+
 [[api_keys]]
 key = "sk-ok"
 name = "ok"
@@ -200,22 +220,11 @@ enabled = true
 			wantErr: "at least one enabled instance",
 		},
 		{
-			name: "bearer without api_key",
-			toml: `
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-
-[[instances]]
-name = "x"
-auth_mode = "bearer"
-`,
-			wantErr: "requires non-empty api_key",
-		},
-		{
 			name: "duplicate instance names",
 			toml: `
+[server]
+admin_password = "pass"
+
 [[api_keys]]
 key = "sk-ok"
 name = "ok"
@@ -223,13 +232,9 @@ enabled = true
 
 [[instances]]
 name = "dup"
-auth_mode = "bearer"
-api_key = "sk-ant-1"
 
 [[instances]]
 name = "dup"
-auth_mode = "bearer"
-api_key = "sk-ant-2"
 `,
 			wantErr: "duplicate instance name",
 		},
@@ -274,6 +279,9 @@ func TestWatch(t *testing.T) {
 
 	// Modify the config file to trigger a reload
 	updatedTOML := `
+[server]
+admin_password = "test-pass"
+
 [[api_keys]]
 key = "sk-updated"
 name = "updated"
@@ -281,8 +289,6 @@ enabled = true
 
 [[instances]]
 name = "inst-updated"
-auth_mode = "bearer"
-api_key = "sk-ant-updated"
 `
 	if err := os.WriteFile(path, []byte(updatedTOML), 0o600); err != nil {
 		t.Fatal(err)

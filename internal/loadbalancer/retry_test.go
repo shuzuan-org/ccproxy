@@ -70,8 +70,6 @@ func TestRetryDelay(t *testing.T) {
 func makeRetryInstance(name string) config.InstanceConfig {
 	return config.InstanceConfig{
 		Name:           name,
-		AuthMode:       "bearer",
-		APIKey:         "test-key",
 		MaxConcurrency: 5,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,

@@ -47,35 +47,32 @@ func TestApplyHeaders_NoStreamNoHelperMethod(t *testing.T) {
 	}
 }
 
-func TestBetaHeader_OpusWithOAuth(t *testing.T) {
-	result := BetaHeader("claude-opus-4-6", false, true)
-	// Mimic mode: oauth + interleaved-thinking only (no claude-code per sub2api)
+func TestBetaHeader_Opus(t *testing.T) {
+	result := BetaHeader("claude-opus-4-6", false)
 	expected := BetaOAuth + "," + BetaInterleavedThinking
 	if result != expected {
-		t.Errorf("Opus+OAuth: expected %q, got %q", expected, result)
+		t.Errorf("Opus: expected %q, got %q", expected, result)
 	}
 }
 
-func TestBetaHeader_HaikuWithOAuth(t *testing.T) {
-	result := BetaHeader("claude-haiku-4-5-20251001", false, true)
+func TestBetaHeader_Haiku(t *testing.T) {
+	result := BetaHeader("claude-haiku-4-5-20251001", false)
 	expected := BetaOAuth + "," + BetaInterleavedThinking
 	if result != expected {
-		t.Errorf("Haiku+OAuth: expected %q, got %q", expected, result)
+		t.Errorf("Haiku: expected %q, got %q", expected, result)
 	}
 }
 
-func TestBetaHeader_SonnetNoOAuth(t *testing.T) {
-	result := BetaHeader("claude-sonnet-4-5", false, false)
-	if strings.Contains(result, BetaOAuth) {
-		t.Errorf("Sonnet+APIKey: expected no oauth token, got %q", result)
-	}
-	if result != BetaInterleavedThinking {
-		t.Errorf("Sonnet+APIKey: expected %q, got %q", BetaInterleavedThinking, result)
+func TestBetaHeader_Sonnet(t *testing.T) {
+	result := BetaHeader("claude-sonnet-4-5", false)
+	expected := BetaOAuth + "," + BetaInterleavedThinking
+	if result != expected {
+		t.Errorf("Sonnet: expected %q, got %q", expected, result)
 	}
 }
 
-func TestCountTokensBetaHeader_WithOAuth(t *testing.T) {
-	result := CountTokensBetaHeader(true)
+func TestCountTokensBetaHeader(t *testing.T) {
+	result := CountTokensBetaHeader()
 	if !strings.Contains(result, BetaTokenCounting) {
 		t.Errorf("expected token-counting in %q", result)
 	}

@@ -60,26 +60,11 @@ func buildBalancer(inst config.InstanceConfig) *loadbalancer.Balancer {
 	return loadbalancer.NewBalancer([]config.InstanceConfig{inst}, tracker)
 }
 
-// buildBearerInstance returns a bearer-mode InstanceConfig pointing at the given URL.
-func buildBearerInstance(baseURL string) config.InstanceConfig {
-	enabled := true
-	return config.InstanceConfig{
-		Name:           "test-bearer",
-		AuthMode:       "bearer",
-		APIKey:         "sk-test-apikey",
-		BaseURL:        baseURL,
-		MaxConcurrency: 10,
-		RequestTimeout: 10,
-		Enabled:        &enabled,
-	}
-}
-
-// buildOAuthInstance returns an oauth-mode InstanceConfig pointing at the given URL.
+// buildOAuthInstance returns an OAuth InstanceConfig pointing at the given URL.
 func buildOAuthInstance(baseURL string) config.InstanceConfig {
 	enabled := true
 	return config.InstanceConfig{
 		Name:           "test-oauth",
-		AuthMode:       "oauth",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
 		RequestTimeout: 10,
@@ -105,7 +90,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 	}
 
 	manager := oauth.NewManager([]config.InstanceConfig{
-		{Name: "test-oauth", AuthMode: "oauth"},
+		{Name: "test-oauth"},
 	}, store)
 	return manager
 }
@@ -145,9 +130,10 @@ func TestHandler_NonStreaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildBearerInstance(upstream.URL)
+	inst := buildOAuthInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
+	oauthMgr := buildOAuthManager(t, "fake-token")
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -195,9 +181,10 @@ func TestHandler_Streaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildBearerInstance(upstream.URL)
+	inst := buildOAuthInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
+	oauthMgr := buildOAuthManager(t, "fake-token")
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", true)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -266,78 +253,6 @@ func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 	}
 }
 
-// TestHandler_DisguiseNotAppliedForBearer verifies disguise is NOT applied for bearer instances.
-func TestHandler_DisguiseNotAppliedForBearer(t *testing.T) {
-	var capturedUA string
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUA = r.Header.Get("User-Agent")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"msg_03","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
-	}))
-	defer upstream.Close()
-
-	inst := buildBearerInstance(upstream.URL)
-	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
-
-	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	req = setAuthInfo(req, "default")
-
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	// For bearer mode, disguise should NOT modify User-Agent
-	// (the request doesn't set a UA, so upstream should receive empty or Go's default)
-	if strings.Contains(capturedUA, "claude-cli") {
-		t.Errorf("expected no claude-cli User-Agent for bearer mode, got %q", capturedUA)
-	}
-}
-
-// TestHandler_AuthHeaderBearer verifies that x-api-key is set for bearer instances.
-func TestHandler_AuthHeaderBearer(t *testing.T) {
-	var capturedAPIKey string
-	var capturedAuthHeader string
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedAPIKey = r.Header.Get("X-Api-Key")
-		capturedAuthHeader = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"msg_04","type":"message","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`))
-	}))
-	defer upstream.Close()
-
-	inst := buildBearerInstance(upstream.URL)
-	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
-
-	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	req = setAuthInfo(req, "default")
-
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if capturedAPIKey != "sk-test-apikey" {
-		t.Errorf("expected x-api-key=sk-test-apikey, got %q", capturedAPIKey)
-	}
-	if capturedAuthHeader != "" {
-		t.Errorf("expected no Authorization header for bearer mode, got %q", capturedAuthHeader)
-	}
-}
-
 // TestHandler_AuthHeaderOAuth verifies that Authorization: Bearer is set for OAuth instances.
 func TestHandler_AuthHeaderOAuth(t *testing.T) {
 	var capturedAuth string
@@ -396,9 +311,10 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		inst := buildBearerInstance(upstream.URL)
+		inst := buildOAuthInstance(upstream.URL)
 		balancer := buildBalancer(inst)
-		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
+		oauthMgr := buildOAuthManager(t, "fake-token")
+		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -433,9 +349,10 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		inst := buildBearerInstance(upstream.URL)
+		inst := buildOAuthInstance(upstream.URL)
 		balancer := buildBalancer(inst)
-		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
+		oauthMgr := buildOAuthManager(t, "fake-token")
+		h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -511,9 +428,10 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildBearerInstance(upstream.URL)
+	inst := buildOAuthInstance(upstream.URL)
 	balancer := buildBalancer(inst)
-	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), nil)
+	oauthMgr := buildOAuthManager(t, "fake-token")
+	h := NewHandler([]config.InstanceConfig{inst}, balancer, disguise.NewEngine(), oauthMgr)
 
 	// Use a request body that includes metadata.user_id with a session ID.
 	sessionUUID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

@@ -16,8 +16,6 @@ func boolPtr(b bool) *bool { return &b }
 func makeInstance(name string, maxConc int) config.InstanceConfig {
 	return config.InstanceConfig{
 		Name:           name,
-		AuthMode:       "bearer",
-		APIKey:         "test-key",
 		MaxConcurrency: maxConc,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,

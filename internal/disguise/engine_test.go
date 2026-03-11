@@ -47,7 +47,7 @@ func parseBody(t *testing.T, body []byte) map[string]interface{} {
 var metadataUserIDRegex = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account__session_[\w-]+$`)
 
 // TestEngineApply_OAuthNonClaudeCode verifies all 6 layers are applied
-// when isOAuth=true and the client is not a real Claude Code client.
+// when the client is not a real Claude Code client.
 func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	e := NewEngine()
 	origReq, upstreamReq := newTestRequestPair(t)
@@ -57,7 +57,7 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "test-session")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "test-session")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -144,7 +144,7 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	// Should be applied=true so handler appends ?beta=true
 	if !applied {
@@ -220,42 +220,17 @@ func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
 	}
 
 	origReq1, upReq1, body1 := makeReq()
-	out1, _ := e.Apply(origReq1, upReq1, body1, true, false, "same-seed")
+	out1, _ := e.Apply(origReq1, upReq1, body1, false, "same-seed")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upReq2, body2 := makeReq()
-	out2, _ := e.Apply(origReq2, upReq2, body2, true, false, "same-seed")
+	out2, _ := e.Apply(origReq2, upReq2, body2, false, "same-seed")
 	parsed2 := parseBody(t, out2)
 
 	uid1 := parsed1["metadata"].(map[string]interface{})["user_id"].(string)
 	uid2 := parsed2["metadata"].(map[string]interface{})["user_id"].(string)
 	if uid1 != uid2 {
 		t.Errorf("expected deterministic user_id, got %q vs %q", uid1, uid2)
-	}
-}
-
-// TestEngineApply_BearerNonOAuth verifies no disguise is applied when isOAuth=false,
-// regardless of client type.
-func TestEngineApply_BearerNonOAuth(t *testing.T) {
-	e := NewEngine()
-	origReq, upstreamReq := newTestRequestPair(t)
-
-	body := buildEngineBody(t, map[string]interface{}{
-		"model":    "claude-sonnet-4-5",
-		"messages": []interface{}{},
-	})
-
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, false, "seed")
-
-	if applied {
-		t.Error("expected disguise NOT to be applied for non-OAuth (Bearer) client")
-	}
-	if string(outBody) != string(body) {
-		t.Error("expected original body returned unchanged for Bearer auth")
-	}
-	// No Claude CLI headers should be set
-	if ua := upstreamReq.Header.Get("User-Agent"); strings.HasPrefix(ua, "claude-cli/") {
-		t.Errorf("expected no claude-cli User-Agent for Bearer auth, got %q", ua)
 	}
 }
 
@@ -271,7 +246,7 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -304,7 +279,7 @@ func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -394,7 +369,7 @@ func TestEngineApply_ModelNormalization(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -418,7 +393,7 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	_, applied := e.Apply(origReq, upstreamReq, body, true, true, "seed")
+	_, applied := e.Apply(origReq, upstreamReq, body, true, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -441,11 +416,11 @@ func TestEngineApply_SessionSeedDeterminism(t *testing.T) {
 	})
 
 	origReq1, upstreamReq1 := newTestRequestPair(t)
-	out1, _ := e.Apply(origReq1, upstreamReq1, body, true, false, "fixed-seed")
+	out1, _ := e.Apply(origReq1, upstreamReq1, body, false, "fixed-seed")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upstreamReq2 := newTestRequestPair(t)
-	out2, _ := e.Apply(origReq2, upstreamReq2, body, true, false, "fixed-seed")
+	out2, _ := e.Apply(origReq2, upstreamReq2, body, false, "fixed-seed")
 	parsed2 := parseBody(t, out2)
 
 	meta1 := parsed1["metadata"].(map[string]interface{})
@@ -488,7 +463,7 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -534,7 +509,7 @@ func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -564,7 +539,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -593,7 +568,7 @@ func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 		"tool_choice": map[string]interface{}{"type": "auto"},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")

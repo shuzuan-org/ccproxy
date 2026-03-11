@@ -1,23 +1,11 @@
 package tls
 
 import (
-	"net/http"
 	"testing"
 )
 
-func TestNewTransport_Standard(t *testing.T) {
-	tr := NewTransport(false)
-	if tr == nil {
-		t.Fatal("expected non-nil transport")
-	}
-	_, ok := tr.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", tr)
-	}
-}
-
-func TestNewTransport_Fingerprinted(t *testing.T) {
-	tr := NewTransport(true)
+func TestNewTransport(t *testing.T) {
+	tr := NewTransport()
 	if tr == nil {
 		t.Fatal("expected non-nil transport")
 	}

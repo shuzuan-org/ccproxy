@@ -84,10 +84,6 @@ func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 	// Read all OAuth instances from config (includes disabled)
 	states := make([]InstanceState, 0)
 	for _, inst := range h.cfg.Instances {
-		if !inst.IsOAuth() {
-			continue
-		}
-
 		var loadRate, activeSlots int
 		if inst.IsEnabled() {
 			activeSlots, _, loadRate = tracker.LoadInfo(inst.Name, inst.MaxConcurrency)
@@ -95,7 +91,7 @@ func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 
 		state := InstanceState{
 			Name:           inst.Name,
-			AuthMode:       inst.AuthMode,
+			AuthMode:       "oauth",
 			LoadRate:       loadRate,
 			ActiveSlots:    activeSlots,
 			MaxConcurrency: inst.MaxConcurrency,
@@ -284,10 +280,10 @@ func (h *Handler) HandleDashboard() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-// isOAuthInstance checks if the given name is a configured OAuth instance.
+// isOAuthInstance checks if the given name is a configured instance.
 func (h *Handler) isOAuthInstance(name string) bool {
 	for _, inst := range h.cfg.Instances {
-		if inst.Name == name && inst.IsOAuth() {
+		if inst.Name == name {
 			return true
 		}
 	}

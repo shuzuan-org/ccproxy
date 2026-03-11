@@ -37,9 +37,9 @@ var oauthLoginCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		// Find the requested instance and verify it is OAuth
-		if !findOAuthInstance(cfg, instanceName) {
-			return fmt.Errorf("instance %q not found or not an oauth instance", instanceName)
+		// Find the requested instance
+		if !findInstance(cfg, instanceName) {
+			return fmt.Errorf("instance %q not found", instanceName)
 		}
 
 		// Build provider and token store
@@ -131,9 +131,6 @@ var oauthStatusCmd = &cobra.Command{
 
 		found := false
 		for _, inst := range cfg.Instances {
-			if !inst.IsOAuth() {
-				continue
-			}
 			found = true
 
 			token, err := store.Load(inst.Name)
@@ -178,8 +175,8 @@ var oauthRefreshCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		if !findOAuthInstance(cfg, instanceName) {
-			return fmt.Errorf("instance %q not found or not an oauth instance", instanceName)
+		if !findInstance(cfg, instanceName) {
+			return fmt.Errorf("instance %q not found", instanceName)
 		}
 
 		store, err := oauth.NewTokenStore(dataDir)
@@ -246,10 +243,10 @@ func init() {
 	rootCmd.AddCommand(oauthCmd)
 }
 
-// findOAuthInstance checks if the given name exists as an OAuth instance in config.
-func findOAuthInstance(cfg *config.Config, name string) bool {
+// findInstance checks if the given name exists as an instance in config.
+func findInstance(cfg *config.Config, name string) bool {
 	for _, inst := range cfg.Instances {
-		if inst.Name == name && inst.IsOAuth() {
+		if inst.Name == name {
 			return true
 		}
 	}

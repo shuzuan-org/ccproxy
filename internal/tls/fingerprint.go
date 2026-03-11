@@ -10,23 +10,20 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// NewTransport creates an HTTP transport. If fingerprintEnabled is true,
-// it uses utls to mimic Claude CLI's TLS fingerprint (Node.js 20.x + OpenSSL 3.x).
-func NewTransport(fingerprintEnabled bool) http.RoundTripper {
-	if !fingerprintEnabled {
-		return &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		}
-	}
-
+// NewTransport creates an HTTP transport that uses utls to mimic
+// Claude CLI's TLS fingerprint (Node.js 20.x + OpenSSL 3.x).
+func NewTransport() http.RoundTripper {
 	return &fingerprintTransport{}
 }
 
 type fingerprintTransport struct{}
 
 func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// For non-HTTPS requests, fall back to standard transport.
+	if req.URL.Scheme != "https" {
+		return http.DefaultTransport.RoundTrip(req)
+	}
+
 	// Dial TCP
 	host := req.URL.Hostname()
 	port := req.URL.Port()
