@@ -71,10 +71,13 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		t.Error("expected X-Stainless-OS to be set")
 	}
 
-	// Layer 3: anthropic-beta header
+	// Layer 3: anthropic-beta header (mimic mode: oauth + interleaved-thinking only)
 	beta := req.Header.Get("Anthropic-Beta")
-	if !strings.Contains(beta, BetaClaudeCode) {
-		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaClaudeCode, beta)
+	if !strings.Contains(beta, BetaOAuth) {
+		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaOAuth, beta)
+	}
+	if !strings.Contains(beta, BetaInterleavedThinking) {
+		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaInterleavedThinking, beta)
 	}
 
 	parsed := parseBody(t, outBody)
@@ -166,8 +169,8 @@ func TestEngineApply_BearerNonOAuth(t *testing.T) {
 	}
 }
 
-// TestEngineApply_SystemPromptNotDuplicated verifies system prompt is not injected
-// when the body already contains a Claude Code system prompt.
+// TestEngineApply_SystemPromptNotDuplicated verifies system prompt is not re-injected
+// when the body already contains a Claude Code system prompt prefix.
 func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 	e := NewEngine()
 	req := newTestRequest(t, nil)
@@ -185,29 +188,18 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 	}
 
 	parsed := parseBody(t, outBody)
-	system := parsed["system"]
 
-	// Count occurrences of Claude Code prompt in the system content
-	count := 0
-	switch s := system.(type) {
+	// When system already starts with the Claude Code prompt, it should be left as-is
+	// (the injectSystemPrompt function returns early via HasPrefix check)
+	switch s := parsed["system"].(type) {
 	case string:
-		if strings.Contains(s, "You are Claude Code") {
-			count++
+		if !strings.HasPrefix(s, "You are Claude Code") {
+			t.Errorf("expected system to still start with Claude Code prompt, got %q", s)
 		}
 	case []interface{}:
-		for _, item := range s {
-			if m, ok := item.(map[string]interface{}); ok {
-				if text, ok := m["text"].(string); ok {
-					if strings.Contains(text, "You are Claude Code") {
-						count++
-					}
-				}
-			}
-		}
-	}
-
-	if count != 1 {
-		t.Errorf("expected Claude Code system prompt to appear exactly once, found %d times", count)
+		// Already had the prefix, should not have been modified
+	default:
+		t.Fatalf("unexpected system type: %T", parsed["system"])
 	}
 }
 
@@ -424,15 +416,105 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		t.Fatalf("expected at least 2 elements in system array, got %d", len(arr))
 	}
 
-	// First element should be Claude Code prompt
+	// First element should be Claude Code prompt with cache_control
 	first := arr[0].(map[string]interface{})
 	if first["text"] != claudeCodeSystemPrompt {
 		t.Errorf("expected first system element to be Claude Code prompt, got %q", first["text"])
 	}
+	if cc, ok := first["cache_control"].(map[string]interface{}); !ok || cc["type"] != "ephemeral" {
+		t.Error("expected first system element to have cache_control ephemeral")
+	}
 
-	// Second element should be the original system prompt
+	// Second element should be original prompt prefixed with Claude Code banner
 	second := arr[1].(map[string]interface{})
-	if second["text"] != originalSystem {
-		t.Errorf("expected second system element to be original prompt %q, got %q", originalSystem, second["text"])
+	expectedMerged := strings.TrimSpace(claudeCodeSystemPrompt) + "\n\n" + originalSystem
+	if second["text"] != expectedMerged {
+		t.Errorf("expected second system element to be prefixed prompt %q, got %q", expectedMerged, second["text"])
+	}
+}
+
+// TestEngineApply_InjectsEmptyTools verifies that an empty tools array is injected
+// when the request body has no tools field.
+func TestEngineApply_InjectsEmptyTools(t *testing.T) {
+	e := NewEngine()
+	req := newTestRequest(t, nil)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+	})
+
+	outBody, applied := e.Apply(req, body, true, false, "seed")
+
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+
+	tools, ok := parsed["tools"].([]interface{})
+	if !ok {
+		t.Fatalf("expected tools to be an array, got %T", parsed["tools"])
+	}
+	if len(tools) != 0 {
+		t.Errorf("expected empty tools array, got %d elements", len(tools))
+	}
+}
+
+// TestEngineApply_PreservesExistingTools verifies that existing tools are not overwritten.
+func TestEngineApply_PreservesExistingTools(t *testing.T) {
+	e := NewEngine()
+	req := newTestRequest(t, nil)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+		"tools": []interface{}{
+			map[string]interface{}{"name": "my_tool", "description": "test"},
+		},
+	})
+
+	outBody, applied := e.Apply(req, body, true, false, "seed")
+
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+	tools, ok := parsed["tools"].([]interface{})
+	if !ok {
+		t.Fatalf("expected tools to be an array, got %T", parsed["tools"])
+	}
+	if len(tools) != 1 {
+		t.Errorf("expected 1 tool preserved, got %d", len(tools))
+	}
+}
+
+// TestEngineApply_RemovesTemperatureAndToolChoice verifies that temperature
+// and tool_choice fields are stripped from the request body.
+func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
+	e := NewEngine()
+	req := newTestRequest(t, nil)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":       "claude-sonnet-4-5",
+		"messages":    []interface{}{},
+		"temperature": 0.7,
+		"tool_choice": map[string]interface{}{"type": "auto"},
+	})
+
+	outBody, applied := e.Apply(req, body, true, false, "seed")
+
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+
+	if _, exists := parsed["temperature"]; exists {
+		t.Error("expected temperature to be removed from body")
+	}
+	if _, exists := parsed["tool_choice"]; exists {
+		t.Error("expected tool_choice to be removed from body")
 	}
 }

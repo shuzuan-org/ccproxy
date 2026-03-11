@@ -39,7 +39,6 @@ enabled = true
 [[instances]]
 name = "alice-oauth"
 auth_mode = "oauth"
-oauth_provider = "anthropic"
 priority = 2
 weight = 50
 max_concurrency = 3
@@ -57,14 +56,6 @@ max_concurrency = 10
 base_url = "https://api.anthropic.com"
 request_timeout = 60
 tls_fingerprint = false
-
-[[oauth_providers]]
-name = "anthropic"
-client_id = "my-client-id"
-auth_url = "https://claude.ai/oauth/authorize"
-token_url = "https://platform.claude.com/v1/oauth/token"
-redirect_uri = "https://platform.claude.com/oauth/code/callback"
-scopes = ["org:create_api_key", "user:profile"]
 `
 
 func TestLoadConfig_Valid(t *testing.T) {
@@ -110,9 +101,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 	if !alice.IsOAuth() {
 		t.Error("alice should be oauth")
 	}
-	if alice.OAuthProvider != "anthropic" {
-		t.Errorf("alice.oauth_provider = %q, want anthropic", alice.OAuthProvider)
-	}
 	if alice.Priority != 2 {
 		t.Errorf("alice.priority = %d, want 2", alice.Priority)
 	}
@@ -138,18 +126,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 	if bob.APIKey != "sk-ant-real-key" {
 		t.Errorf("bob.api_key = %q, want sk-ant-real-key", bob.APIKey)
-	}
-
-	// OAuth providers
-	if len(cfg.OAuthProviders) != 1 {
-		t.Fatalf("oauth_providers len = %d, want 1", len(cfg.OAuthProviders))
-	}
-	prov := cfg.OAuthProviders[0]
-	if prov.Name != "anthropic" {
-		t.Errorf("provider.name = %q, want anthropic", prov.Name)
-	}
-	if len(prov.Scopes) != 2 {
-		t.Errorf("provider.scopes len = %d, want 2", len(prov.Scopes))
 	}
 
 }
@@ -245,21 +221,6 @@ name = "ok"
 enabled = true
 `,
 			wantErr: "at least one enabled instance",
-		},
-		{
-			name: "oauth without configured provider",
-			toml: `
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-
-[[instances]]
-name = "x"
-auth_mode = "oauth"
-oauth_provider = "missing-provider"
-`,
-			wantErr: "unknown oauth_provider",
 		},
 		{
 			name: "bearer without api_key",

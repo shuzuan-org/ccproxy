@@ -14,10 +14,9 @@ import (
 )
 
 type Config struct {
-	Server         ServerConfig          `toml:"server"`
-	APIKeys        []APIKeyConfig        `toml:"api_keys"`
-	Instances      []InstanceConfig      `toml:"instances"`
-	OAuthProviders []OAuthProviderConfig `toml:"oauth_providers"`
+	Server    ServerConfig     `toml:"server"`
+	APIKeys   []APIKeyConfig   `toml:"api_keys"`
+	Instances []InstanceConfig `toml:"instances"`
 }
 
 type ServerConfig struct {
@@ -36,7 +35,6 @@ type APIKeyConfig struct {
 type InstanceConfig struct {
 	Name           string `toml:"name"`
 	AuthMode       string `toml:"auth_mode"`      // "oauth" | "bearer"
-	OAuthProvider  string `toml:"oauth_provider"`
 	APIKey         string `toml:"api_key"`
 	Priority       int    `toml:"priority"`
 	Weight         int    `toml:"weight"`
@@ -46,15 +44,6 @@ type InstanceConfig struct {
 	TLSFingerprint bool   `toml:"tls_fingerprint"`
 	Disguise       bool   `toml:"disguise"` // apply Claude CLI headers even for bearer instances
 	Enabled        *bool  `toml:"enabled"`  // default true
-}
-
-type OAuthProviderConfig struct {
-	Name        string   `toml:"name"`
-	ClientID    string   `toml:"client_id"`
-	AuthURL     string   `toml:"auth_url"`
-	TokenURL    string   `toml:"token_url"`
-	RedirectURI string   `toml:"redirect_uri"`
-	Scopes      []string `toml:"scopes"`
 }
 
 // Load reads, parses, applies defaults, and validates the config file at path.
@@ -139,12 +128,6 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("at least one enabled instance is required"))
 	}
 
-	// Build oauth provider name set for reference checks
-	oauthProviders := make(map[string]struct{}, len(c.OAuthProviders))
-	for _, p := range c.OAuthProviders {
-		oauthProviders[p.Name] = struct{}{}
-	}
-
 	// Instance-level validations
 	names := make(map[string]struct{}, len(c.Instances))
 	for _, inst := range c.Instances {
@@ -153,15 +136,6 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("duplicate instance name: %q", inst.Name))
 		}
 		names[inst.Name] = struct{}{}
-
-		// OAuth instances must reference a configured provider
-		if inst.IsOAuth() {
-			if _, ok := oauthProviders[inst.OAuthProvider]; !ok {
-				errs = append(errs, fmt.Errorf(
-					"instance %q references unknown oauth_provider %q", inst.Name, inst.OAuthProvider,
-				))
-			}
-		}
 
 		// Bearer instances must have a non-empty api_key
 		if inst.AuthMode == "bearer" && inst.APIKey == "" {

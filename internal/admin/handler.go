@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"time"
 
+	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/loadbalancer"
+	"github.com/binn/ccproxy/internal/oauth"
 )
 
 //go:embed static
@@ -15,12 +18,18 @@ var staticFiles embed.FS
 // Handler provides HTTP handlers for the admin dashboard.
 type Handler struct {
 	balancer *loadbalancer.Balancer
+	oauthMgr *oauth.Manager
+	sessions *oauth.SessionStore
+	cfg      *config.Config
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(balancer *loadbalancer.Balancer) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config) *Handler {
 	return &Handler{
 		balancer: balancer,
+		oauthMgr: oauthMgr,
+		sessions: sessions,
+		cfg:      cfg,
 	}
 }
 
@@ -32,50 +41,219 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
-// InstanceState holds the runtime state of a single backend instance.
-type InstanceState struct {
-	Name           string `json:"name"`
-	AuthMode       string `json:"auth_mode"`
-	LoadRate       int    `json:"load_rate"`
-	ActiveSlots    int    `json:"active_slots"`
-	MaxConcurrency int    `json:"max_concurrency"`
-	Priority       int    `json:"priority"`
-	Enabled        bool   `json:"enabled"`
+// writeError writes a JSON error response.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// HandleInstances returns instance health status and load info.
+// InstanceState holds the runtime state of a single backend instance.
+type InstanceState struct {
+	Name           string  `json:"name"`
+	AuthMode       string  `json:"auth_mode"`
+	LoadRate       int     `json:"load_rate"`
+	ActiveSlots    int     `json:"active_slots"`
+	MaxConcurrency int     `json:"max_concurrency"`
+	Priority       int     `json:"priority"`
+	Enabled        bool    `json:"enabled"`
+	TokenStatus    string  `json:"token_status,omitempty"`
+	TokenExpiresAt *string `json:"token_expires_at,omitempty"`
+}
+
+// tokenStatus returns a human-readable status for an OAuth token.
+func tokenStatus(token *oauth.OAuthToken) string {
+	if token == nil {
+		return "no token"
+	}
+	remaining := time.Until(token.ExpiresAt)
+	if remaining < 0 {
+		return "expired"
+	}
+	if remaining < 5*time.Minute {
+		return "expiring soon"
+	}
+	return "valid"
+}
+
+// HandleInstances returns instance status with token info for OAuth instances.
 // GET /api/instances
 func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
-	instances := h.balancer.GetInstances()
 	tracker := h.balancer.GetTracker()
 
-	states := make([]InstanceState, 0, len(instances))
-	for _, inst := range instances {
-		active, _, rate := tracker.LoadInfo(inst.Name, inst.MaxConcurrency)
-		states = append(states, InstanceState{
+	// Read all OAuth instances from config (includes disabled)
+	states := make([]InstanceState, 0)
+	for _, inst := range h.cfg.Instances {
+		if !inst.IsOAuth() {
+			continue
+		}
+
+		var loadRate, activeSlots int
+		if inst.IsEnabled() {
+			activeSlots, _, loadRate = tracker.LoadInfo(inst.Name, inst.MaxConcurrency)
+		}
+
+		state := InstanceState{
 			Name:           inst.Name,
 			AuthMode:       inst.AuthMode,
-			LoadRate:       rate,
-			ActiveSlots:    active,
+			LoadRate:       loadRate,
+			ActiveSlots:    activeSlots,
 			MaxConcurrency: inst.MaxConcurrency,
 			Priority:       inst.Priority,
 			Enabled:        inst.IsEnabled(),
-		})
+		}
+
+		// Add token info
+		if h.oauthMgr != nil {
+			token, _ := h.oauthMgr.Status(inst.Name)
+			state.TokenStatus = tokenStatus(token)
+			if token != nil {
+				exp := token.ExpiresAt.Format(time.RFC3339)
+				state.TokenExpiresAt = &exp
+			}
+		}
+
+		states = append(states, state)
 	}
 	writeJSON(w, states)
 }
 
-// SessionState holds minimal info about an active sticky session.
-type SessionState struct {
-	SessionKey   string `json:"session_key"`
-	InstanceName string `json:"instance_name"`
+// HandleOAuthLoginStart starts a PKCE OAuth flow for an instance.
+// POST /api/oauth/login/start
+func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Instance string `json:"instance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if !h.isOAuthInstance(req.Instance) {
+		writeError(w, http.StatusBadRequest, "instance not found or not oauth")
+		return
+	}
+
+	sessionID, authURL, err := h.sessions.Create(req.Instance)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+
+	writeJSON(w, map[string]string{
+		"session_id":        sessionID,
+		"authorization_url": authURL,
+	})
 }
 
-// HandleSessions returns active session list.
+// HandleOAuthLoginComplete completes a PKCE OAuth flow.
+// POST /api/oauth/login/complete
+func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		Code      string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	session, ok := h.sessions.Get(req.SessionID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "session not found or expired")
+		return
+	}
+
+	// Exchange code for token
+	provider := h.oauthMgr.GetProvider()
+	token, err := provider.ExchangeCode(r.Context(), req.Code, session.Verifier)
+	if err != nil {
+		h.sessions.Delete(req.SessionID)
+		writeError(w, http.StatusBadGateway, "code exchange failed: "+err.Error())
+		return
+	}
+
+	// Save token keyed by instance name
+	if err := h.oauthMgr.GetStore().Save(session.InstanceName, *token); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save token")
+		return
+	}
+
+	h.sessions.Delete(req.SessionID)
+
+	writeJSON(w, map[string]any{
+		"ok":         true,
+		"expires_at": token.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// HandleOAuthRefresh forces a token refresh for an instance.
+// POST /api/oauth/refresh
+func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Instance string `json:"instance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if !h.isOAuthInstance(req.Instance) {
+		writeError(w, http.StatusBadRequest, "instance not found or not oauth")
+		return
+	}
+
+	existing, err := h.oauthMgr.GetStore().Load(req.Instance)
+	if err != nil || existing == nil {
+		writeError(w, http.StatusBadRequest, "no token stored for this instance")
+		return
+	}
+	if existing.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "no refresh token available")
+		return
+	}
+
+	provider := h.oauthMgr.GetProvider()
+	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
+		return
+	}
+
+	if err := h.oauthMgr.GetStore().Save(req.Instance, *newToken); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save token")
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"ok":         true,
+		"expires_at": newToken.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// HandleOAuthLogout deletes the token for an instance.
+// POST /api/oauth/logout
+func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Instance string `json:"instance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.oauthMgr.GetStore().Delete(req.Instance); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete token")
+		return
+	}
+
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// HandleSessions returns active session list (placeholder).
 // GET /api/sessions
 func (h *Handler) HandleSessions(w http.ResponseWriter, r *http.Request) {
-	// Balancer does not expose individual session details; return empty list.
-	writeJSON(w, []SessionState{})
+	writeJSON(w, []struct{}{})
 }
 
 // HandleDashboard serves the embedded static HTML dashboard.
@@ -86,4 +264,14 @@ func (h *Handler) HandleDashboard() http.Handler {
 		panic("admin: failed to sub static fs: " + err.Error())
 	}
 	return http.FileServer(http.FS(sub))
+}
+
+// isOAuthInstance checks if the given name is a configured OAuth instance.
+func (h *Handler) isOAuthInstance(name string) bool {
+	for _, inst := range h.cfg.Instances {
+		if inst.Name == name && inst.IsOAuth() {
+			return true
+		}
+	}
+	return false
 }

@@ -66,7 +66,7 @@ config.toml.example Reference configuration
 
 - `ConcurrencyTracker` in `internal/loadbalancer/concurrency.go` uses `sync.Mutex` and a `map[instanceName]map[requestID]time.Time` for slot tracking. No Redis.
 - Session affinity uses `sync.Map` with `{apiKeyName}:{sessionID}` keys and 1h TTL.
-- OAuth token store uses per-provider mutexes to prevent concurrent refresh races.
+- OAuth token store uses per-instance mutexes to prevent concurrent refresh races.
 
 ### Disguise Engine
 
@@ -74,9 +74,13 @@ Activation condition: `instance.IsOAuth() && !isClaudeCodeClient(request)`. Do n
 
 The `isClaudeCodeClient` detector in `internal/disguise/detector.go` checks five dimensions (User-Agent, X-App, anthropic-beta, metadata.user_id pattern, system prompt Dice coefficient). All five must pass before a request is considered native Claude Code traffic.
 
-### OAuth Tokens
+### OAuth
 
-Token files are stored at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
+Anthropic OAuth constants (ClientID, AuthURL, TokenURL, RedirectURI, Scopes) are hardcoded in `internal/oauth/provider.go`. There is no `[[oauth_providers]]` config section — only `auth_mode = "oauth"` on instances.
+
+Tokens are stored per-instance (not per-provider) at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
+
+The admin dashboard at `/admin/` provides a web UI for OAuth instance management: login (PKCE flow with manual code paste), refresh, and logout. PKCE sessions are stored in-memory with 10-minute TTL.
 
 ### SSE Streaming
 

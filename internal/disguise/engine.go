@@ -65,6 +65,13 @@ func (e *Engine) Apply(req *http.Request, body []byte, isOAuth bool, isStream bo
 
 	// Layer 6: Model ID normalization
 	body = normalizeModelInBody(parsed, body)
+	// Re-parse for sanitization
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return body, true
+	}
+
+	// Layer 7: Body sanitization (match sub2api's normalizeClaudeOAuthRequestBody)
+	body = sanitizeRequestBody(parsed, body)
 
 	return body, true
 }
@@ -99,6 +106,9 @@ func (e *Engine) ApplyResponseModelID(body []byte) []byte {
 
 const claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 
+// injectSystemPrompt injects the Claude Code system prompt into the request body.
+// Matches sub2api's injectClaudeCodePrompt: uses cache_control ephemeral block
+// and prefixes the next text block with the banner.
 func injectSystemPrompt(parsed map[string]interface{}, body []byte) []byte {
 	// Check if system prompt already contains Claude Code prompt
 	if system, ok := parsed["system"]; ok {
@@ -110,26 +120,55 @@ func injectSystemPrompt(parsed map[string]interface{}, body []byte) []byte {
 		}
 	}
 
-	// Inject as first element in system array.
-	// If system is a string, convert to array format.
-	// If system is missing, add it.
+	claudeCodeBlock := map[string]interface{}{
+		"type":          "text",
+		"text":          claudeCodeSystemPrompt,
+		"cache_control": map[string]string{"type": "ephemeral"},
+	}
+	claudeCodePrefix := strings.TrimSpace(claudeCodeSystemPrompt)
+
+	var newSystem []interface{}
+
 	switch system := parsed["system"].(type) {
+	case nil:
+		newSystem = []interface{}{claudeCodeBlock}
 	case string:
-		parsed["system"] = []interface{}{
-			map[string]interface{}{"type": "text", "text": claudeCodeSystemPrompt},
-			map[string]interface{}{"type": "text", "text": system},
+		trimmed := strings.TrimSpace(system)
+		if trimmed == "" || trimmed == claudeCodePrefix {
+			newSystem = []interface{}{claudeCodeBlock}
+		} else {
+			merged := system
+			if !strings.HasPrefix(system, claudeCodePrefix) {
+				merged = claudeCodePrefix + "\n\n" + system
+			}
+			newSystem = []interface{}{claudeCodeBlock, map[string]interface{}{"type": "text", "text": merged}}
 		}
 	case []interface{}:
-		newSystem := make([]interface{}, 0, len(system)+1)
-		newSystem = append(newSystem, map[string]interface{}{"type": "text", "text": claudeCodeSystemPrompt})
-		newSystem = append(newSystem, system...)
-		parsed["system"] = newSystem
-	default:
-		parsed["system"] = []interface{}{
-			map[string]interface{}{"type": "text", "text": claudeCodeSystemPrompt},
+		newSystem = make([]interface{}, 0, len(system)+1)
+		newSystem = append(newSystem, claudeCodeBlock)
+		prefixedNext := false
+		for _, item := range system {
+			if m, ok := item.(map[string]interface{}); ok {
+				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) == claudeCodePrefix {
+					continue // skip duplicate Claude Code block
+				}
+				// Prefix the first subsequent text block once
+				if !prefixedNext {
+					if blockType, _ := m["type"].(string); blockType == "text" {
+						if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" && !strings.HasPrefix(text, claudeCodePrefix) {
+							m["text"] = claudeCodePrefix + "\n\n" + text
+							prefixedNext = true
+						}
+					}
+				}
+			}
+			newSystem = append(newSystem, item)
 		}
+	default:
+		newSystem = []interface{}{claudeCodeBlock}
 	}
 
+	parsed["system"] = newSystem
 	result, err := json.Marshal(parsed)
 	if err != nil {
 		return body
@@ -144,6 +183,41 @@ func injectMetadataUserID(parsed map[string]interface{}, body []byte, sessionSee
 	}
 	metadata["user_id"] = GenerateUserID(sessionSeed)
 	parsed["metadata"] = metadata
+
+	result, err := json.Marshal(parsed)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+// sanitizeRequestBody ensures the request body matches Claude Code client patterns.
+// Matches sub2api's normalizeClaudeOAuthRequestBody: inject empty tools array,
+// remove temperature and tool_choice fields.
+func sanitizeRequestBody(parsed map[string]interface{}, body []byte) []byte {
+	modified := false
+
+	// Ensure tools field exists (even as empty array)
+	if _, exists := parsed["tools"]; !exists {
+		parsed["tools"] = []interface{}{}
+		modified = true
+	}
+
+	// Remove temperature (Claude Code does not send it)
+	if _, exists := parsed["temperature"]; exists {
+		delete(parsed, "temperature")
+		modified = true
+	}
+
+	// Remove tool_choice (Claude Code does not send it)
+	if _, exists := parsed["tool_choice"]; exists {
+		delete(parsed, "tool_choice")
+		modified = true
+	}
+
+	if !modified {
+		return body
+	}
 
 	result, err := json.Marshal(parsed)
 	if err != nil {

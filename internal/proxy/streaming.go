@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/binn/ccproxy/internal/disguise"
 )
 
 // UsageInfo holds token usage extracted from SSE events.
@@ -16,6 +18,8 @@ type UsageInfo struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
+	SSEError                 bool
+	SSEErrorData             string
 }
 
 // sseEvent represents a single Server-Sent Event.
@@ -42,24 +46,28 @@ type messageDeltaPayload struct {
 	} `json:"usage"`
 }
 
+// maxSSELineSize is the maximum size of a single SSE line.
+// Claude thinking blocks can produce single lines exceeding 100KB.
+const maxSSELineSize = 1 << 20 // 1MB
+
 // ForwardSSE reads SSE events from upstream and writes them verbatim to downstream.
 // It parses message_start and message_delta events to accumulate token usage.
 // Forwarding stops when upstream is exhausted or ctx is cancelled.
-func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.ResponseWriter) (*UsageInfo, error) {
+func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.ResponseWriter, originalModel string) (*UsageInfo, error) {
 	usage := &UsageInfo{}
 
-	// Use a context-aware reader so slow upstreams respect cancellation.
-	reader := bufio.NewReader(upstream)
+	scanner := bufio.NewScanner(upstream)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 
 	// Buffers for the current event being assembled.
 	var currentEvent, currentData strings.Builder
 
-	flushEvent := func() {
+	flushEvent := func() error {
 		event := strings.TrimSpace(currentEvent.String())
 		data := strings.TrimSpace(currentData.String())
 
 		if event == "" && data == "" {
-			return
+			return nil
 		}
 
 		// Parse usage from known event types before forwarding.
@@ -71,21 +79,43 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 				usage.CacheCreationInputTokens = p.Message.Usage.CacheCreationInputTokens
 				usage.CacheReadInputTokens = p.Message.Usage.CacheReadInputTokens
 			}
+			// Reverse-map model ID so downstream sees the original short name.
+			if originalModel != "" {
+				normalized := disguise.NormalizeModelID(originalModel)
+				if normalized != originalModel {
+					data = strings.Replace(data, `"`+normalized+`"`, `"`+originalModel+`"`, 1)
+				}
+			}
 		case "message_delta":
 			var p messageDeltaPayload
 			if err := json.Unmarshal([]byte(data), &p); err == nil {
 				usage.OutputTokens = p.Usage.OutputTokens
 			}
+		case "error":
+			usage.SSEError = true
+			usage.SSEErrorData = data
 		}
 
 		// Forward the event verbatim to the downstream client.
 		if event != "" {
-			_, _ = fmt.Fprintf(downstream, "event: %s\n", event)
+			if _, err := fmt.Fprintf(downstream, "event: %s\n", event); err != nil {
+				currentEvent.Reset()
+				currentData.Reset()
+				return err
+			}
 		}
 		if data != "" {
-			_, _ = fmt.Fprintf(downstream, "data: %s\n", data)
+			if _, err := fmt.Fprintf(downstream, "data: %s\n", data); err != nil {
+				currentEvent.Reset()
+				currentData.Reset()
+				return err
+			}
 		}
-		_, _ = fmt.Fprint(downstream, "\n")
+		if _, err := fmt.Fprint(downstream, "\n"); err != nil {
+			currentEvent.Reset()
+			currentData.Reset()
+			return err
+		}
 
 		// Flush immediately if the writer supports it.
 		if f, ok := downstream.(http.Flusher); ok {
@@ -95,25 +125,21 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 		// Reset buffers for the next event.
 		currentEvent.Reset()
 		currentData.Reset()
+		return nil
 	}
 
-	for {
-		// Check for context cancellation before each read.
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
+			_ = flushEvent()
 			return usage, nil
 		default:
 		}
 
-		line, err := reader.ReadString('\n')
-
-		// Process whatever we read before handling the error.
-		// Strip the trailing newline for easier comparison.
-		line = strings.TrimRight(line, "\r\n")
+		line := strings.TrimRight(scanner.Text(), "\r")
 
 		switch {
 		case strings.HasPrefix(line, "event:"):
-			// Trim the "event:" prefix and leading space.
 			val := strings.TrimSpace(line[len("event:"):])
 			currentEvent.Reset()
 			currentEvent.WriteString(val)
@@ -125,20 +151,20 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 
 		case line == "":
 			// Empty line signals the end of an SSE event block.
-			flushEvent()
-		}
-
-		if err != nil {
-			if err == io.EOF {
-				// Flush any trailing event that wasn't terminated by \n\n.
-				flushEvent()
-				return usage, nil
+			if err := flushEvent(); err != nil {
+				return usage, nil // client disconnected, return collected usage
 			}
-			// Context cancellation surfaces as a pipe error from upstream.
-			if ctx.Err() != nil {
-				return usage, nil
-			}
-			return usage, err
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return usage, nil
+		}
+		return usage, err
+	}
+
+	// Best-effort flush of any trailing event.
+	_ = flushEvent()
+	return usage, nil
 }

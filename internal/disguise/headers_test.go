@@ -49,32 +49,18 @@ func TestApplyHeaders_NoStreamNoHelperMethod(t *testing.T) {
 
 func TestBetaHeader_OpusWithOAuth(t *testing.T) {
 	result := BetaHeader("claude-opus-4-6", false, true)
-	for _, expected := range []string{
-		BetaClaudeCode,
-		BetaOAuth,
-		BetaAdaptiveThinking,
-		BetaContextManagement,
-		BetaPromptCaching,
-		BetaEffort,
-	} {
-		if !strings.Contains(result, expected) {
-			t.Errorf("Opus+OAuth: expected %q in beta header %q", expected, result)
-		}
+	// Mimic mode: oauth + interleaved-thinking only (no claude-code per sub2api)
+	expected := BetaOAuth + "," + BetaInterleavedThinking
+	if result != expected {
+		t.Errorf("Opus+OAuth: expected %q, got %q", expected, result)
 	}
 }
 
 func TestBetaHeader_HaikuWithOAuth(t *testing.T) {
 	result := BetaHeader("claude-haiku-4-5-20251001", false, true)
-	for _, expected := range []string{
-		BetaInterleavedThinking,
-		BetaContextManagement,
-		BetaPromptCaching,
-		BetaClaudeCode,
-		BetaOAuth,
-	} {
-		if !strings.Contains(result, expected) {
-			t.Errorf("Haiku+OAuth: expected %q in beta header %q", expected, result)
-		}
+	expected := BetaOAuth + "," + BetaInterleavedThinking
+	if result != expected {
+		t.Errorf("Haiku+OAuth: expected %q, got %q", expected, result)
 	}
 }
 
@@ -83,9 +69,8 @@ func TestBetaHeader_SonnetNoOAuth(t *testing.T) {
 	if strings.Contains(result, BetaOAuth) {
 		t.Errorf("Sonnet+APIKey: expected no oauth token, got %q", result)
 	}
-	// Should still have claude-code and other tokens.
-	if !strings.Contains(result, BetaClaudeCode) {
-		t.Errorf("Sonnet+APIKey: expected claude-code in beta header %q", result)
+	if result != BetaInterleavedThinking {
+		t.Errorf("Sonnet+APIKey: expected %q, got %q", BetaInterleavedThinking, result)
 	}
 }
 
@@ -96,6 +81,9 @@ func TestCountTokensBetaHeader_WithOAuth(t *testing.T) {
 	}
 	if !strings.Contains(result, BetaOAuth) {
 		t.Errorf("expected oauth in %q", result)
+	}
+	if !strings.Contains(result, BetaClaudeCode) {
+		t.Errorf("expected claude-code in %q", result)
 	}
 }
 

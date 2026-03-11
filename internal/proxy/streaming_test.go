@@ -68,7 +68,7 @@ func TestForwardSSE_BasicForwarding(t *testing.T) {
 	w := newResponseRecorder()
 
 	ctx := context.Background()
-	usage, err := ForwardSSE(ctx, upstream, w)
+	usage, err := ForwardSSE(ctx, upstream, w, "")
 	if err != nil {
 		t.Fatalf("ForwardSSE returned error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestForwardSSE_UsageExtraction(t *testing.T) {
 	}
 
 	raw := buildSSEStream(events)
-	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), newResponseRecorder())
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), newResponseRecorder(), "")
 	if err != nil {
 		t.Fatalf("ForwardSSE error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestForwardSSE_ContextCancellation(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ForwardSSE(ctx, pr, w) //nolint:errcheck
+		ForwardSSE(ctx, pr, w, "") //nolint:errcheck
 	}()
 
 	// Write one event then cancel.
@@ -194,7 +194,7 @@ func TestForwardSSE_IncompleteChunks(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		usage, fwErr = ForwardSSE(context.Background(), pr, w)
+		usage, fwErr = ForwardSSE(context.Background(), pr, w, "")
 	}()
 
 	// Send bytes in tiny pieces.
@@ -235,7 +235,7 @@ func TestForwardSSE_IncompleteChunks(t *testing.T) {
 
 // TestForwardSSE_EmptyStream verifies that an empty upstream returns nil usage without error.
 func TestForwardSSE_EmptyStream(t *testing.T) {
-	usage, err := ForwardSSE(context.Background(), strings.NewReader(""), newResponseRecorder())
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(""), newResponseRecorder(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestForwardSSE_NoUsageEvents(t *testing.T) {
 		{Event: "ping", Data: `{}`},
 	}
 	raw := buildSSEStream(events)
-	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), newResponseRecorder())
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), newResponseRecorder(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestForwardSSE_RealHTTPServer(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	w := newResponseRecorder()
-	usage, err := ForwardSSE(context.Background(), resp.Body, w)
+	usage, err := ForwardSSE(context.Background(), resp.Body, w, "")
 	if err != nil {
 		t.Fatalf("ForwardSSE error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestForwardSSE_EventOrdering(t *testing.T) {
 
 	raw := buildSSEStream(events)
 	w := newResponseRecorder()
-	_, err := ForwardSSE(context.Background(), strings.NewReader(raw), w)
+	_, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "")
 	if err != nil {
 		t.Fatalf("ForwardSSE error: %v", err)
 	}
@@ -326,5 +326,174 @@ func TestForwardSSE_EventOrdering(t *testing.T) {
 			t.Errorf("event %q appears out of order in output", name)
 		}
 		lastIdx = idx
+	}
+}
+
+// TestForwardSSE_LargeThinkingBlock verifies that a 200KB data line is not truncated.
+func TestForwardSSE_LargeThinkingBlock(t *testing.T) {
+	t.Parallel()
+
+	// Build a ~200KB thinking text payload.
+	largeText := strings.Repeat("x", 200*1024)
+	data := fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"%s"}}`, largeText)
+
+	events := []sseEvent{
+		{Event: "message_start", Data: `{"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`},
+		{Event: "content_block_delta", Data: data},
+		{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
+	}
+
+	raw := buildSSEStream(events)
+	w := newResponseRecorder()
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "")
+	if err != nil {
+		t.Fatalf("ForwardSSE error: %v", err)
+	}
+
+	body := w.BodyString()
+
+	// Verify the large data line was forwarded completely.
+	if !strings.Contains(body, largeText) {
+		t.Errorf("large thinking block was truncated: body length = %d, expected to contain %d chars of 'x'", len(body), len(largeText))
+	}
+
+	if usage.InputTokens != 1 {
+		t.Errorf("InputTokens = %d, want 1", usage.InputTokens)
+	}
+}
+
+// TestForwardSSE_ModelDenormalization verifies model ID is reversed in message_start.
+func TestForwardSSE_ModelDenormalization(t *testing.T) {
+	t.Parallel()
+
+	events := []sseEvent{
+		{
+			Event: "message_start",
+			Data:  `{"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`,
+		},
+		{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`},
+	}
+
+	raw := buildSSEStream(events)
+	w := newResponseRecorder()
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("ForwardSSE error: %v", err)
+	}
+
+	body := w.BodyString()
+
+	// Should contain the short model name, not the versioned one.
+	if !strings.Contains(body, `"claude-sonnet-4-5"`) {
+		t.Errorf("expected short model name in output, got:\n%s", body)
+	}
+	if strings.Contains(body, `"claude-sonnet-4-5-20250929"`) {
+		t.Errorf("versioned model name should have been replaced, got:\n%s", body)
+	}
+
+	if usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", usage.InputTokens)
+	}
+}
+
+// TestForwardSSE_ModelDenormalization_NoOp verifies no replacement when model is already short.
+func TestForwardSSE_ModelDenormalization_NoOp(t *testing.T) {
+	t.Parallel()
+
+	events := []sseEvent{
+		{
+			Event: "message_start",
+			Data:  `{"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`,
+		},
+	}
+
+	raw := buildSSEStream(events)
+	w := newResponseRecorder()
+	// Pass the already-versioned name — NormalizeModelID returns itself, so no replacement.
+	_, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "claude-sonnet-4-5-20250929")
+	if err != nil {
+		t.Fatalf("ForwardSSE error: %v", err)
+	}
+
+	body := w.BodyString()
+	if !strings.Contains(body, `"claude-sonnet-4-5-20250929"`) {
+		t.Errorf("versioned model name should remain unchanged, got:\n%s", body)
+	}
+}
+
+// errorAfterNWriter is a ResponseWriter that returns an error after n writes.
+type errorAfterNWriter struct {
+	*httptest.ResponseRecorder
+	remaining int
+}
+
+func (w *errorAfterNWriter) Write(b []byte) (int, error) {
+	if w.remaining <= 0 {
+		return 0, fmt.Errorf("simulated client disconnect")
+	}
+	w.remaining--
+	return w.ResponseRecorder.Write(b)
+}
+
+// TestForwardSSE_ClientDisconnect verifies ForwardSSE returns cleanly on write error.
+func TestForwardSSE_ClientDisconnect(t *testing.T) {
+	t.Parallel()
+
+	events := []sseEvent{
+		{Event: "message_start", Data: `{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`},
+		{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`},
+		{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`},
+	}
+
+	raw := buildSSEStream(events)
+
+	// Allow first event's writes (event + data + newline = 3 writes), fail on second event.
+	w := &errorAfterNWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		remaining:        3,
+	}
+
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "")
+	if err != nil {
+		t.Fatalf("expected nil error on client disconnect, got: %v", err)
+	}
+
+	// Should have collected usage from the first event (message_start).
+	if usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", usage.InputTokens)
+	}
+}
+
+// TestForwardSSE_ErrorEvent verifies error events are detected and still forwarded.
+func TestForwardSSE_ErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	errData := `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
+	events := []sseEvent{
+		{Event: "message_start", Data: `{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`},
+		{Event: "error", Data: errData},
+	}
+
+	raw := buildSSEStream(events)
+	w := newResponseRecorder()
+	usage, err := ForwardSSE(context.Background(), strings.NewReader(raw), w, "")
+	if err != nil {
+		t.Fatalf("ForwardSSE error: %v", err)
+	}
+
+	if !usage.SSEError {
+		t.Error("expected SSEError=true")
+	}
+	if usage.SSEErrorData != errData {
+		t.Errorf("SSEErrorData = %q, want %q", usage.SSEErrorData, errData)
+	}
+
+	// Verify the error event was still forwarded to downstream.
+	body := w.BodyString()
+	if !strings.Contains(body, "event: error") {
+		t.Error("error event not forwarded to downstream")
+	}
+	if !strings.Contains(body, errData) {
+		t.Error("error event data not forwarded to downstream")
 	}
 }

@@ -2,15 +2,16 @@ package disguise
 
 import "net/http"
 
-// DefaultHeaders are the HTTP headers that mimic Claude CLI 2.1.71
+// DefaultHeaders are the HTTP headers that mimic Claude CLI.
+// Keep these in sync with sub2api/internal/pkg/claude/constants.go.
 var DefaultHeaders = map[string]string{
-	"User-Agent":                                "claude-cli/2.1.71 (external, cli)",
+	"User-Agent":                                "claude-cli/2.1.22 (external, cli)",
 	"X-Stainless-Lang":                          "js",
-	"X-Stainless-Package-Version":               "0.74.0",
+	"X-Stainless-Package-Version":               "0.70.0",
 	"X-Stainless-OS":                            "Linux",
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Runtime":                       "node",
-	"X-Stainless-Runtime-Version":               "v24.3.0",
+	"X-Stainless-Runtime-Version":               "v24.13.0",
 	"X-Stainless-Retry-Count":                   "0",
 	"X-Stainless-Timeout":                       "600",
 	"X-App":                                     "cli",

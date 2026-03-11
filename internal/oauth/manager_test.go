@@ -21,17 +21,12 @@ func newTestManager(t *testing.T, tokenServerURL string) (*Manager, *TokenStore)
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	cfg := []config.OAuthProviderConfig{
-		{
-			Name:        "anthropic",
-			ClientID:    "test-client",
-			AuthURL:     "https://auth.example.com/oauth/authorize",
-			TokenURL:    tokenServerURL,
-			RedirectURI: "http://localhost:8080/callback",
-			Scopes:      []string{"user:inference"},
-		},
+	instances := []config.InstanceConfig{
+		{Name: "test-oauth", AuthMode: "oauth"},
 	}
-	m := NewManager(cfg, store)
+	m := NewManager(instances, store)
+	// Override provider's tokenURL for testing
+	m.provider.tokenURL = tokenServerURL
 	return m, store
 }
 
@@ -62,11 +57,11 @@ func TestManager_GetValidToken_FreshToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(10 * time.Minute),
 		Scope:        "user:inference",
 	}
-	if err := store.Save("anthropic", tok); err != nil {
+	if err := store.Save("test-oauth", tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := m.GetValidToken(context.Background(), "anthropic")
+	got, err := m.GetValidToken(context.Background(), "test-oauth")
 	if err != nil {
 		t.Fatalf("GetValidToken: %v", err)
 	}
@@ -89,11 +84,11 @@ func TestManager_GetValidToken_ExpiredToken_TriggersRefresh(t *testing.T) {
 		ExpiresAt:    time.Now().Add(30 * time.Second),
 		Scope:        "user:inference",
 	}
-	if err := store.Save("anthropic", tok); err != nil {
+	if err := store.Save("test-oauth", tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := m.GetValidToken(context.Background(), "anthropic")
+	got, err := m.GetValidToken(context.Background(), "test-oauth")
 	if err != nil {
 		t.Fatalf("GetValidToken: %v", err)
 	}
@@ -109,12 +104,12 @@ func TestManager_GetValidToken_NoToken_ReturnsError(t *testing.T) {
 
 	m, _ := newTestManager(t, srv.URL)
 
-	_, err := m.GetValidToken(context.Background(), "anthropic")
+	_, err := m.GetValidToken(context.Background(), "test-oauth")
 	if err == nil {
 		t.Fatal("expected error when no token stored")
 	}
-	if !strings.Contains(err.Error(), "ccproxy oauth login") {
-		t.Errorf("expected login hint in error, got: %v", err)
+	if !strings.Contains(err.Error(), "no token for instance") {
+		t.Errorf("expected instance hint in error, got: %v", err)
 	}
 }
 
@@ -131,11 +126,11 @@ func TestManager_Status_ReturnsTokenWithoutRefresh(t *testing.T) {
 		ExpiresAt:    time.Now().Add(10 * time.Second),
 		Scope:        "user:inference",
 	}
-	if err := store.Save("anthropic", tok); err != nil {
+	if err := store.Save("test-oauth", tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := m.Status("anthropic")
+	got, err := m.Status("test-oauth")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -158,15 +153,15 @@ func TestManager_Logout_RemovesToken(t *testing.T) {
 		AccessToken: "to-be-removed",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
-	if err := store.Save("anthropic", tok); err != nil {
+	if err := store.Save("test-oauth", tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := m.Logout("anthropic"); err != nil {
+	if err := m.Logout("test-oauth"); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 
-	got, err := store.Load("anthropic")
+	got, err := store.Load("test-oauth")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -176,15 +171,7 @@ func TestManager_Logout_RemovesToken(t *testing.T) {
 }
 
 func TestProvider_AuthorizationURL(t *testing.T) {
-	cfg := config.OAuthProviderConfig{
-		Name:        "anthropic",
-		ClientID:    "my-client-id",
-		AuthURL:     "https://auth.example.com/oauth/authorize",
-		TokenURL:    "https://auth.example.com/oauth/token",
-		RedirectURI: "http://localhost:8080/callback",
-		Scopes:      []string{"user:inference", "org:read"},
-	}
-	p := NewAnthropicProvider(cfg)
+	p := NewAnthropicProvider()
 
 	state := "test-state-value"
 	challenge := "test-challenge-value"
@@ -197,8 +184,8 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 	q := parsed.Query()
 
 	checks := map[string]string{
-		"client_id":             "my-client-id",
-		"redirect_uri":          "http://localhost:8080/callback",
+		"client_id":             ClientID,
+		"redirect_uri":          RedirectURI,
 		"response_type":         "code",
 		"code_challenge":        challenge,
 		"code_challenge_method": "S256",
@@ -211,7 +198,7 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 	}
 
 	scope := q.Get("scope")
-	if !strings.Contains(scope, "user:inference") || !strings.Contains(scope, "org:read") {
-		t.Errorf("scope %q missing expected values", scope)
+	if !strings.Contains(scope, "user:inference") {
+		t.Errorf("scope %q missing user:inference", scope)
 	}
 }

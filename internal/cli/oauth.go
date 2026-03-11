@@ -23,34 +23,27 @@ var oauthCmd = &cobra.Command{
 	Short: "Manage OAuth tokens",
 }
 
-// oauthLoginCmd starts a PKCE authorization flow for a given provider.
+// oauthLoginCmd starts a PKCE authorization flow for a given instance.
 var oauthLoginCmd = &cobra.Command{
-	Use:   "login <provider>",
-	Short: "Authenticate with an OAuth provider",
+	Use:   "login <instance>",
+	Short: "Authenticate an OAuth instance",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		providerName := args[0]
+		instanceName := args[0]
 
-		// Load config to get provider settings
+		// Load config to validate instance
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		// Find the requested provider
-		var providerCfg *config.OAuthProviderConfig
-		for i := range cfg.OAuthProviders {
-			if cfg.OAuthProviders[i].Name == providerName {
-				providerCfg = &cfg.OAuthProviders[i]
-				break
-			}
-		}
-		if providerCfg == nil {
-			return fmt.Errorf("provider %q not found in config", providerName)
+		// Find the requested instance and verify it is OAuth
+		if !findOAuthInstance(cfg, instanceName) {
+			return fmt.Errorf("instance %q not found or not an oauth instance", instanceName)
 		}
 
 		// Build provider and token store
-		provider := oauth.NewAnthropicProvider(*providerCfg)
+		provider := oauth.NewAnthropicProvider()
 		store, err := oauth.NewTokenStore(dataDir)
 		if err != nil {
 			return fmt.Errorf("open token store: %w", err)
@@ -107,44 +100,49 @@ var oauthLoginCmd = &cobra.Command{
 			return fmt.Errorf("exchange code: %w", err)
 		}
 
-		// Save tokens to the encrypted store
-		if err := store.Save(providerName, *token); err != nil {
+		// Save tokens to the encrypted store keyed by instance name
+		if err := store.Save(instanceName, *token); err != nil {
 			return fmt.Errorf("save token: %w", err)
 		}
 
-		fmt.Printf("Successfully logged in to %q. Token expires at %s.\n",
-			providerName, token.ExpiresAt.Local().Format(time.RFC3339))
+		fmt.Printf("Successfully logged in instance %q. Token expires at %s.\n",
+			instanceName, token.ExpiresAt.Local().Format(time.RFC3339))
 		return nil
 	},
 }
 
-// oauthStatusCmd shows the token status for all providers that have stored tokens.
+// oauthStatusCmd shows the token status for all OAuth instances.
 var oauthStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show OAuth token status for all providers",
+	Short: "Show OAuth token status for all instances",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cfgFile)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+
 		store, err := oauth.NewTokenStore(dataDir)
 		if err != nil {
 			return fmt.Errorf("open token store: %w", err)
 		}
 
-		providers := store.List()
-		if len(providers) == 0 {
-			fmt.Println("No stored OAuth tokens found.")
-			return nil
-		}
-
-		fmt.Printf("%-20s %-30s %s\n", "PROVIDER", "EXPIRES AT", "STATUS")
+		fmt.Printf("%-20s %-30s %s\n", "INSTANCE", "EXPIRES AT", "STATUS")
 		fmt.Printf("%-20s %-30s %s\n", "--------------------", "------------------------------", "-------")
 
-		for _, name := range providers {
-			token, err := store.Load(name)
+		found := false
+		for _, inst := range cfg.Instances {
+			if !inst.IsOAuth() {
+				continue
+			}
+			found = true
+
+			token, err := store.Load(inst.Name)
 			if err != nil {
-				fmt.Printf("%-20s %-30s %s\n", name, "—", fmt.Sprintf("error: %v", err))
+				fmt.Printf("%-20s %-30s %s\n", inst.Name, "—", fmt.Sprintf("error: %v", err))
 				continue
 			}
 			if token == nil {
-				fmt.Printf("%-20s %-30s %s\n", name, "—", "no token")
+				fmt.Printf("%-20s %-30s %s\n", inst.Name, "—", "no token")
 				continue
 			}
 
@@ -156,24 +154,32 @@ var oauthStatusCmd = &cobra.Command{
 				status = "expiring soon"
 			}
 
-			fmt.Printf("%-20s %-30s %s\n", name, expiryStr, status)
+			fmt.Printf("%-20s %-30s %s\n", inst.Name, expiryStr, status)
+		}
+
+		if !found {
+			fmt.Println("No OAuth instances configured.")
 		}
 
 		return nil
 	},
 }
 
-// oauthRefreshCmd forces a token refresh for the given provider.
+// oauthRefreshCmd forces a token refresh for the given instance.
 var oauthRefreshCmd = &cobra.Command{
-	Use:   "refresh <provider>",
-	Short: "Force refresh the OAuth token for a provider",
+	Use:   "refresh <instance>",
+	Short: "Force refresh the OAuth token for an instance",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		providerName := args[0]
+		instanceName := args[0]
 
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
+		}
+
+		if !findOAuthInstance(cfg, instanceName) {
+			return fmt.Errorf("instance %q not found or not an oauth instance", instanceName)
 		}
 
 		store, err := oauth.NewTokenStore(dataDir)
@@ -182,38 +188,26 @@ var oauthRefreshCmd = &cobra.Command{
 		}
 
 		// Load existing token to get the refresh token
-		existing, err := store.Load(providerName)
+		existing, err := store.Load(instanceName)
 		if err != nil {
 			return fmt.Errorf("load token: %w", err)
 		}
 		if existing == nil {
-			return fmt.Errorf("no stored token for %q — run 'ccproxy oauth login %s' first", providerName, providerName)
+			return fmt.Errorf("no stored token for %q — run 'ccproxy oauth login %s' first", instanceName, instanceName)
 		}
 		if existing.RefreshToken == "" {
-			return fmt.Errorf("provider %q has no refresh token stored", providerName)
+			return fmt.Errorf("instance %q has no refresh token stored", instanceName)
 		}
 
-		// Find provider config
-		var providerCfg *config.OAuthProviderConfig
-		for i := range cfg.OAuthProviders {
-			if cfg.OAuthProviders[i].Name == providerName {
-				providerCfg = &cfg.OAuthProviders[i]
-				break
-			}
-		}
-		if providerCfg == nil {
-			return fmt.Errorf("provider %q not found in config", providerName)
-		}
+		provider := oauth.NewAnthropicProvider()
 
-		provider := oauth.NewAnthropicProvider(*providerCfg)
-
-		fmt.Printf("Refreshing token for %q...\n", providerName)
+		fmt.Printf("Refreshing token for %q...\n", instanceName)
 		newToken, err := provider.RefreshToken(context.Background(), existing.RefreshToken)
 		if err != nil {
 			return fmt.Errorf("refresh token: %w", err)
 		}
 
-		if err := store.Save(providerName, *newToken); err != nil {
+		if err := store.Save(instanceName, *newToken); err != nil {
 			return fmt.Errorf("save token: %w", err)
 		}
 
@@ -222,24 +216,24 @@ var oauthRefreshCmd = &cobra.Command{
 	},
 }
 
-// oauthLogoutCmd deletes the stored token for the given provider.
+// oauthLogoutCmd deletes the stored token for the given instance.
 var oauthLogoutCmd = &cobra.Command{
-	Use:   "logout <provider>",
-	Short: "Remove stored OAuth token for a provider",
+	Use:   "logout <instance>",
+	Short: "Remove stored OAuth token for an instance",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		providerName := args[0]
+		instanceName := args[0]
 
 		store, err := oauth.NewTokenStore(dataDir)
 		if err != nil {
 			return fmt.Errorf("open token store: %w", err)
 		}
 
-		if err := store.Delete(providerName); err != nil {
+		if err := store.Delete(instanceName); err != nil {
 			return fmt.Errorf("delete token: %w", err)
 		}
 
-		fmt.Printf("Logged out from %q.\n", providerName)
+		fmt.Printf("Logged out from %q.\n", instanceName)
 		return nil
 	},
 }
@@ -250,6 +244,16 @@ func init() {
 	oauthCmd.AddCommand(oauthRefreshCmd)
 	oauthCmd.AddCommand(oauthLogoutCmd)
 	rootCmd.AddCommand(oauthCmd)
+}
+
+// findOAuthInstance checks if the given name exists as an OAuth instance in config.
+func findOAuthInstance(cfg *config.Config, name string) bool {
+	for _, inst := range cfg.Instances {
+		if inst.Name == name && inst.IsOAuth() {
+			return true
+		}
+	}
+	return false
 }
 
 // copyToClipboard tries to copy text to the system clipboard.

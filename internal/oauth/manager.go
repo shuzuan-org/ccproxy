@@ -11,86 +11,83 @@ import (
 )
 
 type Manager struct {
-	providers map[string]*AnthropicProvider
+	instances []string // names of oauth instances
+	provider  *AnthropicProvider
 	store     *TokenStore
 	refreshMu map[string]*sync.Mutex
 }
 
-func NewManager(providerConfigs []config.OAuthProviderConfig, store *TokenStore) *Manager {
-	providers := make(map[string]*AnthropicProvider)
+func NewManager(allInstances []config.InstanceConfig, store *TokenStore) *Manager {
+	var names []string
 	refreshMu := make(map[string]*sync.Mutex)
-	for _, cfg := range providerConfigs {
-		providers[cfg.Name] = NewAnthropicProvider(cfg)
-		refreshMu[cfg.Name] = &sync.Mutex{}
+	for _, inst := range allInstances {
+		if inst.IsOAuth() {
+			names = append(names, inst.Name)
+			refreshMu[inst.Name] = &sync.Mutex{}
+		}
 	}
 	return &Manager{
-		providers: providers,
+		instances: names,
+		provider:  NewAnthropicProvider(),
 		store:     store,
 		refreshMu: refreshMu,
 	}
 }
 
-// GetValidToken returns a valid access token for the given provider.
+// GetValidToken returns a valid access token for the given instance.
 // If the token is about to expire (within 60s), it triggers a refresh.
-func (m *Manager) GetValidToken(ctx context.Context, providerName string) (*OAuthToken, error) {
-	token, err := m.store.Load(providerName)
+func (m *Manager) GetValidToken(ctx context.Context, instanceName string) (*OAuthToken, error) {
+	token, err := m.store.Load(instanceName)
 	if err != nil {
 		return nil, fmt.Errorf("load token: %w", err)
 	}
 	if token == nil {
-		return nil, fmt.Errorf("no token for provider %q, run 'ccproxy oauth login %s'", providerName, providerName)
+		return nil, fmt.Errorf("no token for instance %q, run 'ccproxy oauth login %s'", instanceName, instanceName)
 	}
 
-	// Check if token needs refresh (expires within 60 seconds)
 	if time.Until(token.ExpiresAt) > 60*time.Second {
 		return token, nil
 	}
 
-	// Refresh token
-	return m.refreshToken(ctx, providerName, token.RefreshToken)
+	return m.refreshToken(ctx, instanceName, token.RefreshToken)
 }
 
-func (m *Manager) refreshToken(ctx context.Context, providerName, refreshTokenStr string) (*OAuthToken, error) {
-	mu, ok := m.refreshMu[providerName]
+func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenStr string) (*OAuthToken, error) {
+	mu, ok := m.refreshMu[instanceName]
 	if !ok {
-		return nil, fmt.Errorf("unknown provider: %s", providerName)
+		return nil, fmt.Errorf("unknown instance: %s", instanceName)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Double-check after acquiring lock (another goroutine may have refreshed)
-	token, _ := m.store.Load(providerName)
+	// Double-check after acquiring lock
+	token, _ := m.store.Load(instanceName)
 	if token != nil && time.Until(token.ExpiresAt) > 60*time.Second {
 		return token, nil
 	}
 
-	provider, ok := m.providers[providerName]
-	if !ok {
-		return nil, fmt.Errorf("unknown provider: %s", providerName)
-	}
-
-	newToken, err := provider.RefreshToken(ctx, refreshTokenStr)
+	newToken, err := m.provider.RefreshToken(ctx, refreshTokenStr)
 	if err != nil {
 		return nil, fmt.Errorf("refresh token: %w", err)
 	}
 
-	if err := m.store.Save(providerName, *newToken); err != nil {
+	if err := m.store.Save(instanceName, *newToken); err != nil {
 		return nil, fmt.Errorf("save token: %w", err)
 	}
 
-	slog.Info("token refreshed", "provider", providerName, "expires_at", newToken.ExpiresAt)
+	slog.Info("token refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
 	return newToken, nil
 }
 
-// Status returns the token info for a provider (without triggering refresh).
-func (m *Manager) Status(providerName string) (*OAuthToken, error) {
-	return m.store.Load(providerName)
+// Status returns the token info for an instance (without triggering refresh).
+func (m *Manager) Status(instanceName string) (*OAuthToken, error) {
+	return m.store.Load(instanceName)
 }
 
-// Logout removes the stored token for a provider.
-func (m *Manager) Logout(providerName string) error {
-	return m.store.Delete(providerName)
+// Logout removes the stored token for an instance.
+func (m *Manager) Logout(instanceName string) error {
+	return m.store.Delete(instanceName)
 }
 
 // StartAutoRefresh starts a background goroutine that checks and refreshes tokens.
@@ -103,15 +100,15 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				for providerName := range m.providers {
-					token, err := m.store.Load(providerName)
+				for _, name := range m.instances {
+					token, err := m.store.Load(name)
 					if err != nil || token == nil {
 						continue
 					}
 					if time.Until(token.ExpiresAt) < 60*time.Second {
-						_, err := m.refreshToken(ctx, providerName, token.RefreshToken)
+						_, err := m.refreshToken(ctx, name, token.RefreshToken)
 						if err != nil {
-							slog.Error("auto-refresh failed", "provider", providerName, "error", err)
+							slog.Error("auto-refresh failed", "instance", name, "error", err)
 						}
 					}
 				}
@@ -120,10 +117,9 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 	}()
 }
 
-// GetProvider returns the provider by name (for login flow).
-func (m *Manager) GetProvider(name string) (*AnthropicProvider, bool) {
-	p, ok := m.providers[name]
-	return p, ok
+// GetProvider returns the shared provider (for login flow).
+func (m *Manager) GetProvider() *AnthropicProvider {
+	return m.provider
 }
 
 // GetStore returns the token store.
