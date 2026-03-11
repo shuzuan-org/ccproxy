@@ -17,6 +17,12 @@ func newTestRequest(t *testing.T, body []byte) *http.Request {
 	return req
 }
 
+// newTestRequestPair creates an origReq (for detection) and upstreamReq (for modification).
+func newTestRequestPair(t *testing.T) (origReq, upstreamReq *http.Request) {
+	t.Helper()
+	return newTestRequest(t, nil), newTestRequest(t, nil)
+}
+
 // buildEngineBody builds a JSON body for engine tests.
 func buildEngineBody(t *testing.T, fields map[string]interface{}) []byte {
 	t.Helper()
@@ -44,35 +50,35 @@ var metadataUserIDRegex = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account__ses
 // when isOAuth=true and the client is not a real Claude Code client.
 func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "test-session")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "test-session")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	// Layer 2: HTTP headers
-	if ua := req.Header.Get("User-Agent"); !strings.HasPrefix(ua, "claude-cli/") {
+	// Layer 2: HTTP headers (set on upstreamReq)
+	if ua := upstreamReq.Header.Get("User-Agent"); !strings.HasPrefix(ua, "claude-cli/") {
 		t.Errorf("expected claude-cli User-Agent, got %q", ua)
 	}
-	if req.Header.Get("X-App") != "cli" {
-		t.Errorf("expected X-App=cli, got %q", req.Header.Get("X-App"))
+	if upstreamReq.Header.Get("X-App") != "cli" {
+		t.Errorf("expected X-App=cli, got %q", upstreamReq.Header.Get("X-App"))
 	}
-	if req.Header.Get("X-Stainless-Lang") != "js" {
-		t.Errorf("expected X-Stainless-Lang=js, got %q", req.Header.Get("X-Stainless-Lang"))
+	if upstreamReq.Header.Get("X-Stainless-Lang") != "js" {
+		t.Errorf("expected X-Stainless-Lang=js, got %q", upstreamReq.Header.Get("X-Stainless-Lang"))
 	}
-	if req.Header.Get("X-Stainless-OS") == "" {
+	if upstreamReq.Header.Get("X-Stainless-OS") == "" {
 		t.Error("expected X-Stainless-OS to be set")
 	}
 
 	// Layer 3: anthropic-beta header (mimic mode: oauth + interleaved-thinking only)
-	beta := req.Header.Get("Anthropic-Beta")
+	beta := upstreamReq.Header.Get("Anthropic-Beta")
 	if !strings.Contains(beta, BetaOAuth) {
 		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaOAuth, beta)
 	}
@@ -109,38 +115,122 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	}
 }
 
-// TestEngineApply_OAuthRealClaudeCode verifies no disguise is applied
-// when the request already has 3+ Claude Code signals (real Claude Code client).
+// TestEngineApply_OAuthRealClaudeCode verifies that for real CC clients via OAuth:
+// - applied=true (so handler appends ?beta=true)
+// - beta header is supplemented with oauth token
+// - metadata.user_id is rewritten (different from original)
+// - model, system prompt, and other body fields are NOT modified
 func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 	e := NewEngine()
 
-	// Build a real Claude Code-looking request with all 5 signals.
-	req := newTestRequest(t, nil)
-	req.Header.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
-	req.Header.Set("X-App", "cli")
-	req.Header.Set("Anthropic-Beta", BetaClaudeCode+",adaptive-thinking-2026-01-28")
+	// origReq has full Claude Code signals (User-Agent, X-App, Anthropic-Beta).
+	origReq := newTestRequest(t, nil)
+	origReq.Header.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+	origReq.Header.Set("X-App", "cli")
+	origReq.Header.Set("Anthropic-Beta", BetaClaudeCode+",adaptive-thinking-2026-01-28")
+
+	// upstreamReq only has headers that proxy copies (Content-Type, Anthropic-Beta, etc.)
+	upstreamReq := newTestRequest(t, nil)
+	upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode+",adaptive-thinking-2026-01-28")
 
 	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123-def"
+	originalSystem := "You are Claude Code, Anthropic's official CLI for Claude. Some extra instructions."
 	body := buildEngineBody(t, map[string]interface{}{
-		"model": "claude-sonnet-4-5",
-		"system": "You are Claude Code, Anthropic's official CLI for Claude. Some extra instructions.",
+		"model":  "claude-sonnet-4-5",
+		"system": originalSystem,
 		"metadata": map[string]interface{}{
 			"user_id": validUserID,
 		},
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
-	if applied {
-		t.Error("expected disguise NOT to be applied for real Claude Code client")
+	// Should be applied=true so handler appends ?beta=true
+	if !applied {
+		t.Error("expected applied=true for real CC client via OAuth")
 	}
-	if string(outBody) != string(body) {
-		t.Error("expected original body returned unchanged")
+
+	// Beta header: should have oauth token supplemented
+	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	if !strings.Contains(beta, BetaOAuth) {
+		t.Errorf("expected beta to contain %q, got %q", BetaOAuth, beta)
 	}
-	// User-Agent should remain unchanged (not overwritten)
-	if req.Header.Get("User-Agent") != "claude-cli/2.1.71 (external, cli)" {
-		t.Errorf("User-Agent was unexpectedly modified: %q", req.Header.Get("User-Agent"))
+	// Original beta tokens should be preserved
+	if !strings.Contains(beta, BetaClaudeCode) {
+		t.Errorf("expected original %q to be preserved, got %q", BetaClaudeCode, beta)
+	}
+	if !strings.Contains(beta, "adaptive-thinking-2026-01-28") {
+		t.Errorf("expected original adaptive-thinking to be preserved, got %q", beta)
+	}
+
+	parsed := parseBody(t, outBody)
+
+	// metadata.user_id should be rewritten (different from original)
+	meta, ok := parsed["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected metadata in output body")
+	}
+	newUserID, _ := meta["user_id"].(string)
+	if newUserID == validUserID {
+		t.Error("expected user_id to be rewritten, got original value")
+	}
+	if !metadataUserIDRegex.MatchString(newUserID) {
+		t.Errorf("rewritten user_id does not match expected format: %q", newUserID)
+	}
+
+	// Model should NOT be normalized (no full disguise)
+	model, _ := parsed["model"].(string)
+	if model != "claude-sonnet-4-5" {
+		t.Errorf("expected model to remain unchanged as 'claude-sonnet-4-5', got %q", model)
+	}
+
+	// System prompt should NOT be modified
+	systemText, _ := parsed["system"].(string)
+	if systemText != originalSystem {
+		t.Errorf("expected system prompt unchanged, got %q", systemText)
+	}
+
+	// No tools injection, no temperature/tool_choice removal
+	if _, exists := parsed["tools"]; exists {
+		t.Error("expected no tools field injection for CC client path")
+	}
+}
+
+// TestEngineApply_OAuthRealClaudeCode_Deterministic verifies that the same
+// CC client request with the same seed produces the same rewritten user_id.
+func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
+	e := NewEngine()
+
+	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123-def"
+	makeReq := func() (*http.Request, *http.Request, []byte) {
+		origReq := newTestRequest(t, nil)
+		origReq.Header.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+		origReq.Header.Set("X-App", "cli")
+		origReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+		upstreamReq := newTestRequest(t, nil)
+		upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+		body := buildEngineBody(t, map[string]interface{}{
+			"model":    "claude-sonnet-4-5",
+			"system":   "You are Claude Code, Anthropic's official CLI for Claude.",
+			"metadata": map[string]interface{}{"user_id": validUserID},
+			"messages": []interface{}{},
+		})
+		return origReq, upstreamReq, body
+	}
+
+	origReq1, upReq1, body1 := makeReq()
+	out1, _ := e.Apply(origReq1, upReq1, body1, true, false, "same-seed")
+	parsed1 := parseBody(t, out1)
+
+	origReq2, upReq2, body2 := makeReq()
+	out2, _ := e.Apply(origReq2, upReq2, body2, true, false, "same-seed")
+	parsed2 := parseBody(t, out2)
+
+	uid1 := parsed1["metadata"].(map[string]interface{})["user_id"].(string)
+	uid2 := parsed2["metadata"].(map[string]interface{})["user_id"].(string)
+	if uid1 != uid2 {
+		t.Errorf("expected deterministic user_id, got %q vs %q", uid1, uid2)
 	}
 }
 
@@ -148,14 +238,14 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 // regardless of client type.
 func TestEngineApply_BearerNonOAuth(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, false, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, false, "seed")
 
 	if applied {
 		t.Error("expected disguise NOT to be applied for non-OAuth (Bearer) client")
@@ -164,7 +254,7 @@ func TestEngineApply_BearerNonOAuth(t *testing.T) {
 		t.Error("expected original body returned unchanged for Bearer auth")
 	}
 	// No Claude CLI headers should be set
-	if ua := req.Header.Get("User-Agent"); strings.HasPrefix(ua, "claude-cli/") {
+	if ua := upstreamReq.Header.Get("User-Agent"); strings.HasPrefix(ua, "claude-cli/") {
 		t.Errorf("expected no claude-cli User-Agent for Bearer auth, got %q", ua)
 	}
 }
@@ -173,7 +263,7 @@ func TestEngineApply_BearerNonOAuth(t *testing.T) {
 // when the body already contains a Claude Code system prompt prefix.
 func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":  "claude-sonnet-4-5",
@@ -181,7 +271,7 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -207,14 +297,14 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 // for Haiku models.
 func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-haiku-4-5",
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -297,14 +387,14 @@ func TestEngineApplyResponseModelID_UnknownModel(t *testing.T) {
 // with their full versioned counterparts in the request body.
 func TestEngineApply_ModelNormalization(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -320,7 +410,7 @@ func TestEngineApply_ModelNormalization(t *testing.T) {
 // TestEngineApply_StreamHeader verifies X-Stainless-Helper-Method is set for streaming.
 func TestEngineApply_StreamHeader(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
@@ -328,13 +418,13 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	_, applied := e.Apply(req, body, true, true, "seed")
+	_, applied := e.Apply(origReq, upstreamReq, body, true, true, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	helperMethod := req.Header.Get("X-Stainless-Helper-Method")
+	helperMethod := upstreamReq.Header.Get("X-Stainless-Helper-Method")
 	if helperMethod != "stream" {
 		t.Errorf("expected X-Stainless-Helper-Method=stream for streaming request, got %q", helperMethod)
 	}
@@ -350,12 +440,12 @@ func TestEngineApply_SessionSeedDeterminism(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	req1 := newTestRequest(t, nil)
-	out1, _ := e.Apply(req1, body, true, false, "fixed-seed")
+	origReq1, upstreamReq1 := newTestRequestPair(t)
+	out1, _ := e.Apply(origReq1, upstreamReq1, body, true, false, "fixed-seed")
 	parsed1 := parseBody(t, out1)
 
-	req2 := newTestRequest(t, nil)
-	out2, _ := e.Apply(req2, body, true, false, "fixed-seed")
+	origReq2, upstreamReq2 := newTestRequestPair(t)
+	out2, _ := e.Apply(origReq2, upstreamReq2, body, true, false, "fixed-seed")
 	parsed2 := parseBody(t, out2)
 
 	meta1 := parsed1["metadata"].(map[string]interface{})
@@ -389,7 +479,7 @@ func TestEngineApply_SessionSeedDeterminism(t *testing.T) {
 // is converted to array format with Claude Code prompt prepended.
 func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	originalSystem := "You are a helpful assistant."
 	body := buildEngineBody(t, map[string]interface{}{
@@ -398,7 +488,7 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -437,14 +527,14 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 // when the request body has no tools field.
 func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -464,7 +554,7 @@ func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 // TestEngineApply_PreservesExistingTools verifies that existing tools are not overwritten.
 func TestEngineApply_PreservesExistingTools(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
@@ -474,7 +564,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -494,7 +584,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 // and tool_choice fields are stripped from the request body.
 func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 	e := NewEngine()
-	req := newTestRequest(t, nil)
+	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":       "claude-sonnet-4-5",
@@ -503,7 +593,7 @@ func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 		"tool_choice": map[string]interface{}{"type": "auto"},
 	})
 
-	outBody, applied := e.Apply(req, body, true, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, true, false, "seed")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")

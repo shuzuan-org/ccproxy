@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,12 +102,16 @@ func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration) {
 		if cd <= 0 {
 			cd = cooldown429
 		}
+		slog.Warn("instance rate limited", "instance", h.Name, "cooldown", cd.String())
 		h.SetCooldown(cd, "rate_limited")
 	case 529:
+		slog.Warn("instance overloaded", "instance", h.Name, "cooldown", cooldown529.String())
 		h.SetCooldown(cooldown529, "overloaded")
 	case 401:
+		slog.Warn("instance auth error, cooling down", "instance", h.Name, "cooldown", cooldown401.String())
 		h.SetCooldown(cooldown401, "auth_refresh")
 	case 403:
+		slog.Error("instance forbidden, disabling", "instance", h.Name)
 		h.Disable("forbidden")
 	}
 }

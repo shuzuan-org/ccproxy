@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -54,6 +55,10 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 			}
 
 			if matched == nil {
+				slog.Warn("auth rejected: invalid API key",
+					"remote", r.RemoteAddr,
+					"path", r.URL.Path,
+				)
 				writeAuthError(w, "Invalid API key")
 				return
 			}

@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -134,10 +135,12 @@ func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) 
 
 	sessionID, authURL, err := h.sessions.Create(req.Instance)
 	if err != nil {
+		slog.Error("oauth: failed to create PKCE session", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
+	slog.Info("oauth: login started", "instance", req.Instance, "session_id", sessionID)
 	writeJSON(w, map[string]string{
 		"session_id":        sessionID,
 		"authorization_url": authURL,
@@ -163,9 +166,14 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Exchange code for token
+	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
 	provider := h.oauthMgr.GetProvider()
 	token, err := provider.ExchangeCode(r.Context(), req.Code, session.Verifier)
 	if err != nil {
+		slog.Error("oauth: login code exchange failed",
+			"instance", session.InstanceName,
+			"error", err.Error(),
+		)
 		h.sessions.Delete(req.SessionID)
 		writeError(w, http.StatusBadGateway, "code exchange failed: "+err.Error())
 		return
@@ -173,12 +181,17 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	// Save token keyed by instance name
 	if err := h.oauthMgr.GetStore().Save(session.InstanceName, *token); err != nil {
+		slog.Error("oauth: failed to save token", "instance", session.InstanceName, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to save token")
 		return
 	}
 
 	h.sessions.Delete(req.SessionID)
 
+	slog.Info("oauth: login complete",
+		"instance", session.InstanceName,
+		"expires_at", token.ExpiresAt.Format(time.RFC3339),
+	)
 	writeJSON(w, map[string]any{
 		"ok":         true,
 		"expires_at": token.ExpiresAt.Format(time.RFC3339),
@@ -211,18 +224,25 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Info("oauth: manual refresh requested", "instance", req.Instance)
 	provider := h.oauthMgr.GetProvider()
 	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken)
 	if err != nil {
+		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
 		return
 	}
 
 	if err := h.oauthMgr.GetStore().Save(req.Instance, *newToken); err != nil {
+		slog.Error("oauth: failed to save refreshed token", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to save token")
 		return
 	}
 
+	slog.Info("oauth: manual refresh success",
+		"instance", req.Instance,
+		"expires_at", newToken.ExpiresAt.Format(time.RFC3339),
+	)
 	writeJSON(w, map[string]any{
 		"ok":         true,
 		"expires_at": newToken.ExpiresAt.Format(time.RFC3339),

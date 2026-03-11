@@ -430,19 +430,20 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 
 	// Now verify that the Engine itself applies headers for OAuth use-case.
 	engine := disguise.NewEngine()
-	req, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
-	req.Header.Set("Content-Type", "application/json")
+	origReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
+	upstreamReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
+	upstreamReq.Header.Set("Content-Type", "application/json")
 
 	body := []byte(`{"model":"claude-3-5-haiku-20241022","messages":[{"role":"user","content":"hi"}]}`)
-	_, applied := engine.Apply(req, body, true /* isOAuth */, false, "seed")
+	_, applied := engine.Apply(origReq, upstreamReq, body, true /* isOAuth */, false, "seed")
 	if !applied {
 		t.Error("expected disguise to be applied for OAuth mode without Claude Code client header")
 	}
-	if req.Header.Get("User-Agent") == "" {
+	if upstreamReq.Header.Get("User-Agent") == "" {
 		t.Error("expected User-Agent to be set after disguise")
 	}
-	if req.Header.Get("X-App") != "cli" {
-		t.Errorf("expected X-App: cli, got %q", req.Header.Get("X-App"))
+	if upstreamReq.Header.Get("X-App") != "cli" {
+		t.Errorf("expected X-App: cli, got %q", upstreamReq.Header.Get("X-App"))
 	}
 }
 

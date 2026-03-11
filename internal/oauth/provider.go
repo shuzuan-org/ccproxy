@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -51,6 +52,11 @@ func (p *AnthropicProvider) AuthorizationURL(state, codeChallenge string) string
 // ExchangeCode exchanges an authorization code for tokens.
 // The code may contain a state suffix in the format "authCode#state".
 func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*OAuthToken, error) {
+	slog.Info("oauth: exchanging authorization code",
+		"code_len", len(code),
+		"has_state", strings.Contains(code, "#"),
+	)
+
 	// Parse code which may contain state in format "authCode#state"
 	authCode := code
 	codeState := ""
@@ -70,17 +76,30 @@ func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier
 		body["state"] = codeState
 	}
 
-	return p.tokenRequest(ctx, body)
+	token, err := p.tokenRequest(ctx, body)
+	if err != nil {
+		slog.Error("oauth: code exchange failed", "error", err.Error())
+		return nil, err
+	}
+	slog.Info("oauth: code exchange success", "expires_in", time.Until(token.ExpiresAt).String())
+	return token, nil
 }
 
 // RefreshToken refreshes an OAuth token.
 func (p *AnthropicProvider) RefreshToken(ctx context.Context, refreshToken string) (*OAuthToken, error) {
+	slog.Info("oauth: refreshing token")
 	body := map[string]any{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     ClientID,
 	}
-	return p.tokenRequest(ctx, body)
+	token, err := p.tokenRequest(ctx, body)
+	if err != nil {
+		slog.Error("oauth: token refresh failed", "error", err.Error())
+		return nil, err
+	}
+	slog.Info("oauth: token refresh success", "expires_in", time.Until(token.ExpiresAt).String())
+	return token, nil
 }
 
 func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]any) (*OAuthToken, error) {
@@ -105,6 +124,11 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		slog.Error("oauth: token endpoint error",
+			"status", resp.StatusCode,
+			"body", string(respBody),
+			"grant_type", body["grant_type"],
+		)
 		return nil, fmt.Errorf("token request failed: status %d: %s", resp.StatusCode, string(respBody))
 	}
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -94,6 +95,7 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 		case "error":
 			usage.SSEError = true
 			usage.SSEErrorData = data
+			slog.Warn("SSE error event received", "data", data)
 		}
 
 		// Forward the event verbatim to the downstream client.

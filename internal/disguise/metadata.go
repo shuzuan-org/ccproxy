@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 )
 
 // GenerateClientID generates a random 64-character hex string (32 bytes).
@@ -34,6 +35,49 @@ func generateSessionUUID(seed string) string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// userIDFormats matches the two known Claude Code user_id formats:
+// Format A: user_{64hex}_account__session_{uuid}  (double underscore, no account UUID)
+// Format B: user_{64hex}_account_{uuid}_session_{uuid}
+var userIDFormatA = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account__session_([\w-]+)$`)
+var userIDFormatB = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([\w-]+)_session_([\w-]+)$`)
+
+// RewriteUserID deterministically rewrites a client's user_id to prevent
+// Anthropic from correlating different proxy users. The clientID portion is
+// replaced with sha256(instanceSeed + originalClientID)[:32] (64 hex chars),
+// and the session UUID is re-derived via generateSessionUUID(instanceSeed + originalSession).
+//
+// If the original user_id does not match any known format, falls back to GenerateUserID.
+func RewriteUserID(originalUserID, instanceSeed string) string {
+	// Try format A: user_{hex}_account__session_{uuid}
+	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
+		clientHex := m[1]
+		sessionUUID := m[2]
+		newClient := deterministicClientID(instanceSeed, clientHex)
+		newSession := generateSessionUUID(instanceSeed + sessionUUID)
+		return fmt.Sprintf("user_%s_account__session_%s", newClient, newSession)
+	}
+
+	// Try format B: user_{hex}_account_{uuid}_session_{uuid}
+	if m := userIDFormatB.FindStringSubmatch(originalUserID); m != nil {
+		clientHex := m[1]
+		accountUUID := m[2]
+		sessionUUID := m[3]
+		newClient := deterministicClientID(instanceSeed, clientHex)
+		newAccount := generateSessionUUID(instanceSeed + accountUUID)
+		newSession := generateSessionUUID(instanceSeed + sessionUUID)
+		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, newSession)
+	}
+
+	// Fallback: unknown format, generate fresh
+	return GenerateUserID(instanceSeed)
+}
+
+// deterministicClientID derives a 64-char hex string from instanceSeed + originalClientID.
+func deterministicClientID(instanceSeed, originalClientID string) string {
+	hash := sha256.Sum256([]byte(instanceSeed + originalClientID))
+	return hex.EncodeToString(hash[:])
 }
 
 // GenerateUserID creates a metadata.user_id in Claude Code format.

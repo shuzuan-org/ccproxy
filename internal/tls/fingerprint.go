@@ -1,11 +1,13 @@
 package tls
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 // NewTransport creates an HTTP transport. If fingerprintEnabled is true,
@@ -19,14 +21,10 @@ func NewTransport(fingerprintEnabled bool) http.RoundTripper {
 		}
 	}
 
-	return &fingerprintTransport{
-		spec: claudeCLIv2Spec(),
-	}
+	return &fingerprintTransport{}
 }
 
-type fingerprintTransport struct {
-	spec *utls.ClientHelloSpec
-}
+type fingerprintTransport struct{}
 
 func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Dial TCP
@@ -42,9 +40,13 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return nil, err
 	}
 
+	// Create a fresh spec per request — utls mutates the spec during handshake
+	// (e.g. filling KeyShare key material), so reusing a spec causes failures.
+	spec := claudeCLIv2Spec()
+
 	// Apply utls handshake
 	tlsConn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloCustom)
-	if err := tlsConn.ApplyPreset(t.spec); err != nil {
+	if err := tlsConn.ApplyPreset(spec); err != nil {
 		_ = tcpConn.Close()
 		return nil, err
 	}
@@ -53,12 +55,27 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return nil, err
 	}
 
-	// Create a one-shot transport that uses this connection
+	// Check negotiated protocol and use the appropriate transport
+	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
+		// HTTP/2: use x/net/http2 transport with pre-established connection
+		h2Transport := &http2.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false,
+			},
+		}
+		h2Conn, err := h2Transport.NewClientConn(tlsConn)
+		if err != nil {
+			_ = tlsConn.Close()
+			return nil, err
+		}
+		return h2Conn.RoundTrip(req)
+	}
+
+	// HTTP/1.1 fallback: create a one-shot transport that uses this connection
 	tr := &http.Transport{
 		DialTLS: func(network, addr string) (net.Conn, error) {
 			return tlsConn, nil
 		},
-		// Disable connection reuse for fingerprinted connections
 		DisableKeepAlives: true,
 	}
 

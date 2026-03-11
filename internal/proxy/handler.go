@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +20,21 @@ import (
 )
 
 const maxResponseBodySize int64 = 8 << 20 // 8MB
+
+// forwardHeaders is the whitelist of headers forwarded from client to upstream.
+// Aligned with sub2api's allowedHeaders. For non-CC (disguised) requests,
+// ApplyHeaders() overwrites all stainless/user-agent headers anyway.
+var forwardHeaders = []string{
+	"Content-Type", "Accept", "Accept-Language",
+	"Anthropic-Version", "Anthropic-Beta",
+	"User-Agent", "X-Api-Key", "X-App",
+	"X-Stainless-Lang", "X-Stainless-Package-Version",
+	"X-Stainless-OS", "X-Stainless-Arch",
+	"X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+	"X-Stainless-Retry-Count", "X-Stainless-Timeout",
+	"X-Stainless-Helper-Method", "Sec-Fetch-Mode",
+	"Anthropic-Dangerous-Direct-Browser-Access",
+}
 
 // Handler routes incoming /v1/messages requests to upstream Anthropic instances.
 type Handler struct {
@@ -99,6 +115,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 4: Compose session key.
 	sessionKey := session.ComposeSessionKey(authInfo.APIKeyName, sessionID)
 
+	slog.Info("proxy request",
+		"api_key", authInfo.APIKeyName,
+		"model", originalModel,
+		"stream", isStream,
+		"session_key", sessionKey,
+	)
+
 	// Capture the original request for disguise detection.
 	origReq := r
 
@@ -148,10 +171,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestStart := time.Now()
 	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, requestFn)
 	if err != nil {
+		slog.Error("all retries exhausted",
+			"api_key", authInfo.APIKeyName,
+			"model", originalModel,
+			"elapsed", time.Since(requestStart).String(),
+			"error", err.Error(),
+		)
 		// Step 6: Write 503 on retry exhaustion.
 		WriteError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("upstream unavailable: %s", err.Error()))
 		return
 	}
+
+	slog.Info("upstream success",
+		"instance", result.InstanceName,
+		"status", result.StatusCode,
+		"model", originalModel,
+		"elapsed", time.Since(requestStart).String(),
+	)
 
 	// Report success to health tracker.
 	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
@@ -164,6 +200,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 400 {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 		proxyStatus, errBody := MapUpstreamError(resp.StatusCode, upstreamBody)
+
+		slog.Warn("upstream error response",
+			"instance", result.InstanceName,
+			"upstream_status", resp.StatusCode,
+			"proxy_status", proxyStatus,
+			"body", truncateBody(upstreamBody, 512),
+		)
 
 		// Copy upstream response headers (excluding content-length since body changes).
 		copyHeaders(w.Header(), resp.Header)
@@ -226,12 +269,18 @@ func (h *Handler) doRequest(
 	var authHeader string
 	if inst.IsOAuth() {
 		if h.oauthManager == nil {
+			slog.Error("oauth manager not configured", "instance", inst.Name)
 			return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
 		}
 		token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
 		if err != nil {
+			slog.Error("oauth token error", "instance", inst.Name, "error", err.Error())
 			return nil, 401, fmt.Errorf("get oauth token: %w", err)
 		}
+		slog.Debug("oauth token resolved",
+			"instance", inst.Name,
+			"expires_in", time.Until(token.ExpiresAt).String(),
+		)
 		authHeader = "Bearer " + token.AccessToken
 	} else {
 		authHeader = "" // will be set as x-api-key below
@@ -250,13 +299,9 @@ func (h *Handler) doRequest(
 		return nil, 0, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	// Copy relevant headers from original request.
-	for _, hdr := range []string{
-		"Content-Type",
-		"Anthropic-Version",
-		"Anthropic-Beta",
-		"X-Api-Key",
-	} {
+	// Copy whitelisted headers from original request (aligned with sub2api allowedHeaders).
+	// For non-CC clients, disguise ApplyHeaders() will overwrite these anyway.
+	for _, hdr := range forwardHeaders {
 		if val := origReq.Header.Get(hdr); val != "" {
 			upstreamReq.Header.Set(hdr, val)
 		}
@@ -268,6 +313,7 @@ func (h *Handler) doRequest(
 	}
 
 	// Step 5b: Apply disguise for OAuth instances or bearer instances with disguise enabled.
+	// Use origReq for Claude Code client detection (upstreamReq lacks User-Agent, X-App headers).
 	disguised := false
 	if (inst.IsOAuth() || inst.Disguise) && h.disguise != nil {
 		sessionSeed := origReq.Header.Get("X-Session-Seed")
@@ -275,8 +321,9 @@ func (h *Handler) doRequest(
 			sessionSeed = upstreamURL // fallback seed
 		}
 		var modifiedBody []byte
-		modifiedBody, disguised = h.disguise.Apply(upstreamReq, body, true, isStream, sessionSeed)
+		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, true, isStream, sessionSeed)
 		body = modifiedBody
+		slog.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
 	}
 
 	// Step 5d: Apply disguise URL modification for OAuth.
@@ -311,9 +358,19 @@ func (h *Handler) doRequest(
 	if err != nil {
 		// Network-level error: treat as 503 for retry classification.
 		if ctx.Err() != nil {
+			slog.Debug("request cancelled", "instance", inst.Name, "error", ctx.Err().Error())
 			return nil, 0, ctx.Err()
 		}
+		slog.Error("upstream network error", "instance", inst.Name, "error", err.Error())
 		return nil, 503, fmt.Errorf("upstream request failed: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		slog.Warn("upstream returned error",
+			"instance", inst.Name,
+			"status", resp.StatusCode,
+			"url", upstreamReq.URL.String(),
+		)
 	}
 
 	return resp, resp.StatusCode, nil
@@ -350,6 +407,14 @@ type usageResponse struct {
 		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 	} `json:"usage"`
+}
+
+// truncateBody returns a string representation of body, truncated to maxLen bytes.
+func truncateBody(body []byte, maxLen int) string {
+	if len(body) <= maxLen {
+		return string(body)
+	}
+	return string(body[:maxLen]) + "...(truncated)"
 }
 
 // extractUsageFromJSON parses a non-streaming response body to extract token usage.

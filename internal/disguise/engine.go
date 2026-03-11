@@ -16,6 +16,10 @@ func NewEngine() *Engine {
 // Apply modifies the request and body for Claude CLI impersonation.
 // Returns the (possibly modified) body and whether disguise was applied.
 //
+// origReq is the original incoming request (used for Claude Code client detection
+// because it has the full set of headers: User-Agent, X-App, etc.).
+// upstreamReq is the outbound request to Anthropic (headers/body are modified here).
+//
 // The 6 layers:
 // 1. TLS fingerprint — handled externally by HTTP transport selection
 // 2. HTTP headers — User-Agent, X-Stainless-*, etc.
@@ -23,13 +27,38 @@ func NewEngine() *Engine {
 // 4. System prompt injection — inject Claude Code system prompt
 // 5. metadata.user_id — generate fake user_id
 // 6. Model ID normalization — short name → full versioned name
-func (e *Engine) Apply(req *http.Request, body []byte, isOAuth bool, isStream bool, sessionSeed string) ([]byte, bool) {
+func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isOAuth bool, isStream bool, sessionSeed string) ([]byte, bool) {
 	if !isOAuth {
 		return body, false
 	}
 
-	if IsClaudeCodeClient(req.Header, body) {
-		return body, false
+	// Detect using origReq which has full client headers (User-Agent, X-App, etc.)
+	if IsClaudeCodeClient(origReq.Header, body) {
+		// Real CC client via OAuth: lightweight processing only.
+		// 1. Supplement oauth beta header (preserve client's existing betas)
+		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
+		upstreamReq.Header.Set("Anthropic-Beta", SupplementBetaHeader(clientBeta))
+
+		// 2. Rewrite metadata.user_id to prevent cross-user correlation
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return body, true
+		}
+		metadata, ok := parsed["metadata"].(map[string]interface{})
+		if !ok {
+			metadata = make(map[string]interface{})
+		}
+		if originalUserID, ok := metadata["user_id"].(string); ok {
+			metadata["user_id"] = RewriteUserID(originalUserID, sessionSeed)
+		} else {
+			metadata["user_id"] = GenerateUserID(sessionSeed)
+		}
+		parsed["metadata"] = metadata
+		if result, err := json.Marshal(parsed); err == nil {
+			body = result
+		}
+
+		return body, true // true → handler appends ?beta=true
 	}
 
 	// Parse body to extract model and check for tools
@@ -42,10 +71,10 @@ func (e *Engine) Apply(req *http.Request, body []byte, isOAuth bool, isStream bo
 	_, hasTools := parsed["tools"]
 
 	// Layer 2: HTTP Headers
-	ApplyHeaders(req, isStream)
+	ApplyHeaders(upstreamReq, isStream)
 
 	// Layer 3: anthropic-beta
-	req.Header.Set("Anthropic-Beta", BetaHeader(model, hasTools, isOAuth))
+	upstreamReq.Header.Set("Anthropic-Beta", BetaHeader(model, hasTools, isOAuth))
 
 	// Layer 4: System Prompt Injection (skip for Haiku)
 	if !IsHaikuModel(model) {

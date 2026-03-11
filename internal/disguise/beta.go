@@ -40,6 +40,22 @@ func BetaHeader(model string, hasTools bool, isOAuth bool) string {
 	return BetaInterleavedThinking
 }
 
+// SupplementBetaHeader preserves the client's existing beta tokens and ensures
+// that the oauth-2025-04-20 token is present. Used for real Claude Code clients
+// going through OAuth instances (no full disguise, just supplement missing beta).
+func SupplementBetaHeader(clientBeta string) string {
+	if clientBeta == "" {
+		return BetaOAuth
+	}
+	// Check if oauth beta is already present
+	for _, token := range strings.Split(clientBeta, ",") {
+		if strings.TrimSpace(token) == BetaOAuth {
+			return clientBeta // already has it
+		}
+	}
+	return clientBeta + "," + BetaOAuth
+}
+
 // CountTokensBetaHeader returns beta header for count_tokens requests.
 func CountTokensBetaHeader(isOAuth bool) string {
 	parts := []string{BetaClaudeCode}

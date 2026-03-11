@@ -2,6 +2,7 @@ package disguise
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,59 @@ func TestGenerateUserID_DifferentSeedDifferentSessionUUID(t *testing.T) {
 	s2 := extractSession(uid2)
 	if s1 == s2 {
 		t.Errorf("expected different session UUID for different seeds, got same: %q", s1)
+	}
+}
+
+// --- RewriteUserID tests ---
+
+func TestRewriteUserID_FormatA(t *testing.T) {
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	result := RewriteUserID(original, "my-instance-seed")
+
+	if !userIDPattern.MatchString(result) {
+		t.Errorf("rewritten user_id does not match format A: %q", result)
+	}
+	if result == original {
+		t.Error("expected rewritten user_id to differ from original")
+	}
+}
+
+func TestRewriteUserID_FormatB(t *testing.T) {
+	original := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid-123_session_sess-uuid-456"
+	result := RewriteUserID(original, "my-instance-seed")
+
+	// Format B: user_{hex}_account_{uuid}_session_{uuid}
+	formatB := regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account_[\w-]+_session_[\w-]+$`)
+	if !formatB.MatchString(result) {
+		t.Errorf("rewritten user_id does not match format B: %q", result)
+	}
+	if result == original {
+		t.Error("expected rewritten user_id to differ from original")
+	}
+}
+
+func TestRewriteUserID_Deterministic(t *testing.T) {
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	r1 := RewriteUserID(original, "seed-x")
+	r2 := RewriteUserID(original, "seed-x")
+	if r1 != r2 {
+		t.Errorf("expected deterministic output, got %q vs %q", r1, r2)
+	}
+}
+
+func TestRewriteUserID_DifferentSeedsDifferentOutput(t *testing.T) {
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	r1 := RewriteUserID(original, "seed-a")
+	r2 := RewriteUserID(original, "seed-b")
+	if r1 == r2 {
+		t.Errorf("expected different output for different seeds, got same: %q", r1)
+	}
+}
+
+func TestRewriteUserID_UnknownFormat_Fallback(t *testing.T) {
+	result := RewriteUserID("some-random-user-id", "seed")
+	if !userIDPattern.MatchString(result) {
+		t.Errorf("fallback user_id does not match expected format: %q", result)
 	}
 }
 

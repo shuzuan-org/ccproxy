@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -58,6 +58,23 @@ func New(cfg *config.Config) (*Server, error) {
 	if oauthMgr != nil {
 		oauthSessions = oauth.NewSessionStore()
 		oauthSessions.StartCleanup(ctx, time.Minute)
+	}
+
+	// Log instance configuration summary.
+	for _, inst := range cfg.Instances {
+		slog.Info("instance configured",
+			"name", inst.Name,
+			"auth_mode", inst.AuthMode,
+			"enabled", inst.IsEnabled(),
+			"max_concurrency", inst.MaxConcurrency,
+			"disguise", inst.Disguise,
+		)
+	}
+
+	// Start auto-refresh for OAuth tokens.
+	if oauthMgr != nil {
+		oauthMgr.StartAutoRefresh(ctx)
+		slog.Info("oauth auto-refresh started")
 	}
 
 	// 5. Create proxy handler.
@@ -118,7 +135,7 @@ func New(cfg *config.Config) (*Server, error) {
 // Start begins listening and serving HTTP requests.
 // It returns nil when the server is shut down gracefully.
 func (s *Server) Start() error {
-	log.Printf("ccproxy starting on %s", s.httpServer.Addr)
+	slog.Info("ccproxy starting", "addr", s.httpServer.Addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -127,11 +144,11 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the HTTP server and persists health state.
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Println("shutting down server...")
+	slog.Info("shutting down server")
 	s.cancel()
 	if s.balancer != nil {
 		if err := s.balancer.SaveState("data"); err != nil {
-			log.Printf("failed to save health state on shutdown: %v", err)
+			slog.Error("failed to save health state on shutdown", "error", err.Error())
 		}
 	}
 	return s.httpServer.Shutdown(ctx)
@@ -164,7 +181,20 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(lrw, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, lrw.statusCode, time.Since(start))
+		elapsed := time.Since(start)
+		lvl := slog.LevelInfo
+		if lrw.statusCode >= 500 {
+			lvl = slog.LevelError
+		} else if lrw.statusCode >= 400 {
+			lvl = slog.LevelWarn
+		}
+		slog.Log(r.Context(), lvl, "http request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", lrw.statusCode,
+			"elapsed", elapsed.String(),
+			"remote", r.RemoteAddr,
+		)
 	})
 }
 
@@ -173,7 +203,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic recovered: %v", rec)
+				slog.Error("panic recovered", "panic", rec)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

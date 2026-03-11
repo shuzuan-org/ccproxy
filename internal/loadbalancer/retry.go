@@ -3,6 +3,7 @@ package loadbalancer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
@@ -84,18 +85,29 @@ func ExecuteWithRetry(
 	for switchCount <= maxAccountSwitches {
 		// Check total elapsed time
 		if time.Since(startTime) > maxRetryElapsed {
+			slog.Warn("retry elapsed time exceeded",
+				"elapsed", time.Since(startTime).String(),
+				"max", maxRetryElapsed.String(),
+				"switches", switchCount,
+			)
 			return nil, fmt.Errorf("retry elapsed time exceeded (%s)", maxRetryElapsed)
 		}
 
 		// Select instance
 		result, err := balancer.SelectInstance(sessionKey, failedInstances)
 		if err != nil {
+			slog.Warn("no instance available",
+				"error", err.Error(),
+				"failed_count", len(failedInstances),
+				"switches", switchCount,
+			)
 			return nil, fmt.Errorf("select instance: %w", err)
 		}
 
 		instanceName := result.Instance.Name
 		sameInstanceRetries := 0
 		switched := false
+		slog.Debug("selected instance", "instance", instanceName, "switch", switchCount)
 
 		for sameInstanceRetries < maxSameInstanceRetries {
 			// Check context cancellation
@@ -138,6 +150,12 @@ func ExecuteWithRetry(
 				}, nil
 
 			case FailoverImmediate:
+				slog.Warn("failover immediate",
+					"instance", instanceName,
+					"status", statusCode,
+					"switch", switchCount+1,
+					"retry_after", retryAfter.String(),
+				)
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
@@ -150,6 +168,12 @@ func ExecuteWithRetry(
 
 			case RetryThenFailover:
 				sameInstanceRetries++
+				slog.Warn("retry on same instance",
+					"instance", instanceName,
+					"status", statusCode,
+					"attempt", sameInstanceRetries,
+					"max_attempts", maxSameInstanceRetries,
+				)
 				if sameInstanceRetries >= maxSameInstanceRetries {
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
@@ -184,6 +208,10 @@ func ExecuteWithRetry(
 		}
 	}
 
+	slog.Error("max account switches exceeded",
+		"max", maxAccountSwitches,
+		"elapsed", time.Since(startTime).String(),
+	)
 	return nil, fmt.Errorf("max account switches (%d) exceeded", maxAccountSwitches)
 }
 
