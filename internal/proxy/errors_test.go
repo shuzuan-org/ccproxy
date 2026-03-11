@@ -23,20 +23,45 @@ func TestMapUpstreamError_403(t *testing.T) {
 	assertErrorBody(t, body, "forbidden_error", "Upstream access forbidden")
 }
 
-func TestMapUpstreamError_429(t *testing.T) {
-	status, body := MapUpstreamError(429, nil)
+func TestMapUpstreamError_429_WithBody(t *testing.T) {
+	upstream := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	status, body := MapUpstreamError(429, upstream)
 	if status != 429 {
 		t.Errorf("expected proxy status 429, got %d", status)
 	}
-	assertErrorBody(t, body, "rate_limit_error", "Upstream rate limit exceeded")
+	if string(body) != string(upstream) {
+		t.Errorf("expected upstream body passthrough, got %s", body)
+	}
 }
 
-func TestMapUpstreamError_529(t *testing.T) {
-	status, body := MapUpstreamError(529, nil)
-	if status != 503 {
-		t.Errorf("expected proxy status 503, got %d", status)
+func TestMapUpstreamError_429_EmptyBody(t *testing.T) {
+	// Empty body falls through to generic 502
+	status, _ := MapUpstreamError(429, nil)
+	if status != 502 {
+		t.Errorf("expected fallback status 502 for empty 429 body, got %d", status)
 	}
-	assertErrorBody(t, body, "overloaded_error", "Upstream service overloaded")
+}
+
+func TestMapUpstreamError_529_WithBody(t *testing.T) {
+	upstream := []byte(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`)
+	status, body := MapUpstreamError(529, upstream)
+	if status != 529 {
+		t.Errorf("expected proxy status 529, got %d", status)
+	}
+	if string(body) != string(upstream) {
+		t.Errorf("expected upstream body passthrough, got %s", body)
+	}
+}
+
+func TestMapUpstreamError_400_WithBody(t *testing.T) {
+	upstream := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)
+	status, body := MapUpstreamError(400, upstream)
+	if status != 400 {
+		t.Errorf("expected proxy status 400, got %d", status)
+	}
+	if string(body) != string(upstream) {
+		t.Errorf("expected upstream body passthrough, got %s", body)
+	}
 }
 
 func TestMapUpstreamError_500(t *testing.T) {

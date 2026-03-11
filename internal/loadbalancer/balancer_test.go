@@ -51,21 +51,29 @@ func TestBalancer_SingleInstance(t *testing.T) {
 	result.Release()
 }
 
-// Test 2: Multiple instances → lower priority selected first
-func TestBalancer_PriorityOrder(t *testing.T) {
+// Test 2: Instance with errors gets lower score → healthy instance preferred
+func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("high-prio", 2, 5),
-		makeInstance("low-prio", 1, 5),
+		makeInstance("unhealthy", 1, 5),
+		makeInstance("healthy", 1, 5),
 	}
 	b := newTestBalancer(instances)
+
+	// Record errors on "unhealthy" to give it a worse score
+	b.ReportResult("unhealthy", 500, 1000, 0)
+	b.ReportResult("unhealthy", 500, 1000, 0)
+	// Clear cooldown so instance is available but has high error rate
+	h := b.GetHealth("unhealthy")
+	h.mu.Lock()
+	h.cooldownUntil = time.Time{}
+	h.mu.Unlock()
 
 	result, err := b.SelectInstance("", map[string]bool{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Lower priority value = higher priority
-	if result.Instance.Name != "low-prio" {
-		t.Errorf("expected low-prio (priority=1), got %s", result.Instance.Name)
+	if result.Instance.Name != "healthy" {
+		t.Errorf("expected healthy (lower score), got %s", result.Instance.Name)
 	}
 	result.Release()
 }
@@ -337,5 +345,67 @@ func TestBalancer_ActiveSessions(t *testing.T) {
 	b.ClearSession("s1")
 	if b.ActiveSessions() != 1 {
 		t.Errorf("expected 1 session after clear, got %d", b.ActiveSessions())
+	}
+}
+
+// Test: Cooldown instance is skipped during selection
+func TestSelectInstance_CooldownSkipped(t *testing.T) {
+	instances := []config.InstanceConfig{
+		makeInstance("cool", 1, 5),
+		makeInstance("warm", 1, 5),
+	}
+	b := newTestBalancer(instances)
+
+	// Put "cool" in cooldown
+	b.ReportResult("cool", 429, 1000, 30*time.Second)
+
+	result, err := b.SelectInstance("", map[string]bool{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Instance.Name != "warm" {
+		t.Errorf("expected warm (cool is in cooldown), got %s", result.Instance.Name)
+	}
+	result.Release()
+}
+
+// Test: Disabled instance is skipped
+func TestSelectInstance_DisabledSkipped(t *testing.T) {
+	instances := []config.InstanceConfig{
+		makeInstance("forbidden", 1, 5),
+		makeInstance("ok", 1, 5),
+	}
+	b := newTestBalancer(instances)
+
+	// Disable "forbidden" with a 403
+	b.ReportResult("forbidden", 403, 1000, 0)
+
+	result, err := b.SelectInstance("", map[string]bool{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Instance.Name != "ok" {
+		t.Errorf("expected ok (forbidden is disabled), got %s", result.Instance.Name)
+	}
+	result.Release()
+}
+
+// Test: ReportResult updates health state
+func TestReportResult_UpdatesHealth(t *testing.T) {
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 1, 5)})
+
+	b.ReportResult("inst1", 200, 1000, 0)
+	h := b.GetHealth("inst1")
+	if h == nil {
+		t.Fatal("expected health tracker for inst1")
+	}
+	if h.LatencyEMA() == 0 {
+		t.Error("expected latency to be recorded")
+	}
+
+	// Report error and check AIMD decrease
+	b.ReportResult("inst1", 500, 1000, 0)
+	if h.MaxConcurrency() == 5 {
+		t.Error("expected AIMD decrease after error")
 	}
 }

@@ -21,13 +21,20 @@ type Server struct {
 	cfg        *config.Config
 	httpServer *http.Server
 	oauthMgr   *oauth.Manager
+	balancer   *loadbalancer.Balancer
+	cancel     context.CancelFunc
 }
 
 // New constructs a fully wired Server from the given config.
 func New(cfg *config.Config) (*Server, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// 1. Create concurrency tracker and load balancer.
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(cfg.Instances, tracker)
+	balancer.LoadState("data")
+	balancer.StartCleanup(ctx)
+	balancer.StartPersistence(ctx, "data")
 
 	// 2. Create disguise engine.
 	disguiseEngine := disguise.NewEngine()
@@ -38,20 +45,28 @@ func New(cfg *config.Config) (*Server, error) {
 		if inst.IsOAuth() {
 			store, err := oauth.NewTokenStore("data")
 			if err != nil {
+				cancel()
 				return nil, fmt.Errorf("create oauth token store: %w", err)
 			}
-			oauthMgr = oauth.NewManager(cfg.OAuthProviders, store)
+			oauthMgr = oauth.NewManager(cfg.Instances, store)
 			break
 		}
 	}
 
-	// 4. Create proxy handler.
+	// 4. Create PKCE session store for browser-based OAuth login.
+	var oauthSessions *oauth.SessionStore
+	if oauthMgr != nil {
+		oauthSessions = oauth.NewSessionStore()
+		oauthSessions.StartCleanup(ctx, time.Minute)
+	}
+
+	// 5. Create proxy handler.
 	proxyHandler := proxy.NewHandler(cfg.Instances, balancer, disguiseEngine, oauthMgr)
 
-	// 5. Create admin handler.
-	adminHandler := admin.NewHandler(balancer)
+	// 6. Create admin handler.
+	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg)
 
-	// 6. Setup HTTP mux with route groups.
+	// 7. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
 
 	// API route — requires bearer token auth.
@@ -67,6 +82,10 @@ func New(cfg *config.Config) (*Server, error) {
 
 	mux.Handle("/api/instances", adminMiddleware(http.HandlerFunc(adminHandler.HandleInstances)))
 	mux.Handle("/api/sessions", adminMiddleware(http.HandlerFunc(adminHandler.HandleSessions)))
+	mux.Handle("/api/oauth/login/start", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLoginStart)))
+	mux.Handle("/api/oauth/login/complete", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete)))
+	mux.Handle("/api/oauth/refresh", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthRefresh)))
+	mux.Handle("/api/oauth/logout", adminMiddleware(http.HandlerFunc(adminHandler.HandleOAuthLogout)))
 	mux.Handle("/admin/", adminMiddleware(http.StripPrefix("/admin", adminHandler.HandleDashboard())))
 
 	// Health check — no auth required.
@@ -91,6 +110,8 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg:        cfg,
 		httpServer: httpServer,
 		oauthMgr:   oauthMgr,
+		balancer:   balancer,
+		cancel:     cancel,
 	}, nil
 }
 
@@ -104,9 +125,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown gracefully stops the HTTP server.
+// Shutdown gracefully stops the HTTP server and persists health state.
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("shutting down server...")
+	s.cancel()
+	if s.balancer != nil {
+		if err := s.balancer.SaveState("data"); err != nil {
+			log.Printf("failed to save health state on shutdown: %v", err)
+		}
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 

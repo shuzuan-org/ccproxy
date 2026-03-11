@@ -21,7 +21,7 @@ const (
 
 const (
 	maxRetryAttempts       = 5
-	maxAccountSwitches     = 10
+	maxAccountSwitches     = 3
 	maxSameInstanceRetries = 3
 	retryBaseDelay         = 300 * time.Millisecond
 	retryMaxDelay          = 3 * time.Second
@@ -110,10 +110,12 @@ func ExecuteWithRetry(
 				return nil, fmt.Errorf("retry elapsed time exceeded (%s)", maxRetryElapsed)
 			}
 
+			attemptStart := time.Now()
 			resp, statusCode, err := requestFn(result.Instance, result.RequestID)
+			attemptLatency := time.Since(attemptStart).Microseconds()
 
 			if err == nil && statusCode >= 200 && statusCode < 400 {
-				// Success
+				// Success — health is reported by handler after response is consumed.
 				balancer.BindSession(sessionKey, instanceName)
 				result.Release()
 				return &RetryResult{
@@ -124,6 +126,7 @@ func ExecuteWithRetry(
 			}
 
 			action := ClassifyError(statusCode)
+			retryAfter := parseRetryAfterHeader(resp)
 
 			switch action {
 			case ReturnToClient:
@@ -135,6 +138,10 @@ func ExecuteWithRetry(
 				}, nil
 
 			case FailoverImmediate:
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
 				result.Release()
 				failedInstances[instanceName] = true
 				balancer.ClearSession(sessionKey)
@@ -144,12 +151,22 @@ func ExecuteWithRetry(
 			case RetryThenFailover:
 				sameInstanceRetries++
 				if sameInstanceRetries >= maxSameInstanceRetries {
+					if resp != nil && resp.Body != nil {
+						_ = resp.Body.Close()
+					}
+					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
 					result.Release()
 					failedInstances[instanceName] = true
 					balancer.ClearSession(sessionKey)
 					switchCount++
 					switched = true
 					break
+				}
+				// Report the failed attempt (but don't trigger failover yet).
+				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
+				// Close previous response body before retrying.
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
 				}
 				// Exponential backoff before retry
 				delay := RetryDelay(sameInstanceRetries - 1)
@@ -168,4 +185,21 @@ func ExecuteWithRetry(
 	}
 
 	return nil, fmt.Errorf("max account switches (%d) exceeded", maxAccountSwitches)
+}
+
+// parseRetryAfterHeader extracts Retry-After as a duration from an HTTP response.
+func parseRetryAfterHeader(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	val := resp.Header.Get("Retry-After")
+	if val == "" {
+		return 0
+	}
+	// Try seconds first (most common for APIs).
+	var seconds int
+	if _, err := fmt.Sscanf(val, "%d", &seconds); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 0
 }

@@ -26,12 +26,11 @@ type errorMapping struct {
 }
 
 // upstreamErrorTable maps specific upstream HTTP status codes to their
-// corresponding proxy response parameters.
+// corresponding proxy response parameters. Codes 400, 429, and 529 are
+// intentionally absent — they are passed through with the original upstream body.
 var upstreamErrorTable = map[int]errorMapping{
 	401: {502, "authentication_error", "Upstream authentication failed"},
 	403: {502, "forbidden_error", "Upstream access forbidden"},
-	429: {429, "rate_limit_error", "Upstream rate limit exceeded"},
-	529: {503, "overloaded_error", "Upstream service overloaded"},
 }
 
 // fallback5xxMapping is used for upstream 500-504 status codes not listed in
@@ -43,16 +42,26 @@ var fallback5xxMapping = errorMapping{
 }
 
 // MapUpstreamError maps an upstream HTTP status code to a proxy status code
-// and an Anthropic-format error response body. upstreamBody is accepted for
-// future use but is currently unused — the proxy always synthesises its own
-// error message so that internal upstream details are never leaked to clients.
+// and an Anthropic-format error response body. For client-visible error codes
+// (400, 429, 529) the original upstream body is passed through so that the
+// downstream client receives the exact error context from Anthropic. Internal
+// auth errors (401, 403) and server errors (500-504) are sanitised to hide
+// upstream details.
 func MapUpstreamError(statusCode int, upstreamBody []byte) (int, []byte) {
+	// Pass through client-visible errors with original body.
+	switch statusCode {
+	case 400, 429, 529:
+		if len(upstreamBody) > 0 {
+			return statusCode, upstreamBody
+		}
+		// Empty body fallback: synthesise a generic error.
+	}
+
 	if m, ok := upstreamErrorTable[statusCode]; ok {
 		return buildResponse(m)
 	}
 
-	// Treat any remaining 5xx range (500-504, excluding 529 already handled)
-	// as a generic upstream error.
+	// Treat any remaining 5xx range (500-504) as a generic upstream error.
 	if statusCode >= 500 && statusCode <= 504 {
 		return buildResponse(fallback5xxMapping)
 	}

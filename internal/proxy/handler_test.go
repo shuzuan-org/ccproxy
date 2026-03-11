@@ -82,7 +82,6 @@ func buildOAuthInstance(baseURL string) config.InstanceConfig {
 	return config.InstanceConfig{
 		Name:           "test-oauth",
 		AuthMode:       "oauth",
-		OAuthProvider:  "test-provider",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
 		Priority:       1,
@@ -100,7 +99,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	err = store.Save("test-provider", oauth.OAuthToken{
+	err = store.Save("test-oauth", oauth.OAuthToken{
 		AccessToken:  token,
 		RefreshToken: "rt-ignored",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
@@ -109,8 +108,8 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 		t.Fatalf("store.Save: %v", err)
 	}
 
-	manager := oauth.NewManager([]config.OAuthProviderConfig{
-		{Name: "test-provider"},
+	manager := oauth.NewManager([]config.InstanceConfig{
+		{Name: "test-oauth", AuthMode: "oauth"},
 	}, store)
 	return manager
 }
@@ -413,9 +412,9 @@ func TestHandler_UpstreamError(t *testing.T) {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
 
-		// 400 maps to 502 via MapUpstreamError fallback (not in the specific table).
-		if rr.Code != http.StatusBadGateway {
-			t.Errorf("expected 502, got %d: %s", rr.Code, rr.Body.String())
+		// 400 is now passed through transparently with original upstream body.
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 		}
 		var errResp AnthropicError
 		if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
@@ -423,6 +422,9 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}
 		if errResp.Type != "error" {
 			t.Errorf("expected error type field 'error', got %q", errResp.Type)
+		}
+		if errResp.Error.Type != "invalid_request_error" {
+			t.Errorf("expected original error type 'invalid_request_error', got %q", errResp.Error.Type)
 		}
 	})
 
@@ -454,7 +456,8 @@ func TestHandler_UpstreamError(t *testing.T) {
 	})
 
 	// MapUpstreamError is independently verified via unit tests in errors_test.go.
-	// Verify the mapping function directly for coverage of all important codes.
+	// Verify the mapping function directly for sanitized codes (401/403/500).
+	// 400/429/529 are tested in errors_test.go with passthrough semantics.
 	t.Run("map_upstream_error_table", func(t *testing.T) {
 		cases := []struct {
 			code        int
@@ -463,8 +466,6 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}{
 			{401, 502, "authentication_error"},
 			{403, 502, "forbidden_error"},
-			{429, 429, "rate_limit_error"},
-			{529, 503, "overloaded_error"},
 			{500, 502, "upstream_error"},
 		}
 		for _, c := range cases {

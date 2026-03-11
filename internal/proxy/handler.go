@@ -18,6 +18,8 @@ import (
 	proxytls "github.com/binn/ccproxy/internal/tls"
 )
 
+const maxResponseBodySize int64 = 8 << 20 // 8MB
+
 // Handler routes incoming /v1/messages requests to upstream Anthropic instances.
 type Handler struct {
 	balancer     *loadbalancer.Balancer
@@ -61,11 +63,15 @@ func NewHandler(
 
 // ServeHTTP handles POST /v1/messages.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Step 1: Read request body fully.
+	// Step 1: Read request body fully (with size limit).
 	defer func() { _ = r.Body.Close() }()
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxResponseBodySize+1))
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
+		return
+	}
+	if int64(len(rawBody)) > maxResponseBodySize {
+		WriteError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
 		return
 	}
 
@@ -77,6 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream, _ := parsed["stream"].(bool)
+	originalModel, _ := parsed["model"].(string)
 
 	// Extract session ID from metadata.user_id if present.
 	sessionID := ""
@@ -96,10 +103,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	origReq := r
 
 	// Step 5: Execute with retry and failover.
+	// The requestFn includes two-stage signature error retry:
+	// Stage 0: send original body
+	// Stage 1: on signature error → filter thinking blocks and retry
+	// Stage 2: on signature+tool error → filter tool blocks and retry
 	requestFn := func(inst config.InstanceConfig, requestID string) (*http.Response, int, error) {
-		return h.doRequest(origReq, inst, requestID, rawBody, parsed, isStream)
+		bodyToSend := rawBody
+		for stage := 0; stage <= 2; stage++ {
+			resp, statusCode, err := h.doRequest(origReq, inst, requestID, bodyToSend, parsed, isStream)
+			if err != nil || statusCode != 400 || resp == nil {
+				return resp, statusCode, err
+			}
+
+			// Read 400 body to check for signature error.
+			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			if readErr != nil {
+				return &http.Response{
+					StatusCode: 400,
+					Header:     resp.Header,
+					Body:       io.NopCloser(bytes.NewReader(errBody)),
+				}, 400, nil
+			}
+
+			if stage == 0 && IsSignatureError(errBody) {
+				bodyToSend = FilterThinkingBlocks(rawBody)
+				continue
+			}
+			if stage == 1 && IsSignatureError(errBody) && IsToolRelatedError(errBody) {
+				bodyToSend = FilterSignatureSensitiveBlocks(rawBody)
+				continue
+			}
+
+			// Not a filterable error — reconstruct and return.
+			return &http.Response{
+				StatusCode: 400,
+				Header:     resp.Header,
+				Body:       io.NopCloser(bytes.NewReader(errBody)),
+			}, 400, nil
+		}
+		return nil, 500, fmt.Errorf("exhausted signature filter stages")
 	}
 
+	requestStart := time.Now()
 	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, requestFn)
 	if err != nil {
 		// Step 6: Write 503 on retry exhaustion.
@@ -107,12 +153,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Report success to health tracker.
+	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
+		time.Since(requestStart).Microseconds(), 0)
+
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
 
 	// Step 9: Handle error responses from upstream.
 	if resp.StatusCode >= 400 {
-		upstreamBody, _ := io.ReadAll(resp.Body)
+		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 		proxyStatus, errBody := MapUpstreamError(resp.StatusCode, upstreamBody)
 
 		// Copy upstream response headers (excluding content-length since body changes).
@@ -134,13 +184,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Step 7: Streaming response — forward SSE and extract usage.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		ForwardSSE(r.Context(), resp.Body, w)
+		ForwardSSE(r.Context(), resp.Body, w, originalModel)
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
+		if err != nil {
+			WriteError(w, http.StatusBadGateway, "upstream_error", "failed to read upstream response")
+			return
+		}
+		if int64(len(respBody)) > maxResponseBodySize {
+			WriteError(w, http.StatusBadGateway, "upstream_error", "upstream response too large")
+			return
+		}
 
 		// Apply disguise model ID de-normalization if needed.
 		if h.disguise != nil {
@@ -169,7 +228,7 @@ func (h *Handler) doRequest(
 		if h.oauthManager == nil {
 			return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
 		}
-		token, err := h.oauthManager.GetValidToken(ctx, inst.OAuthProvider)
+		token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
 		if err != nil {
 			return nil, 401, fmt.Errorf("get oauth token: %w", err)
 		}

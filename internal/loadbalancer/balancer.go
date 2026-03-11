@@ -3,7 +3,6 @@ package loadbalancer
 import (
 	"context"
 	"errors"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -34,14 +33,21 @@ type Balancer struct {
 	mu        sync.RWMutex
 	instances []config.InstanceConfig
 	tracker   *ConcurrencyTracker
-	sessions  sync.Map // sessionKey → *SessionInfo
-	lastUsed  sync.Map // instanceName → time.Time
+	health    map[string]*AccountHealth // per-instance health tracking
+	sessions  sync.Map                  // sessionKey → *SessionInfo
+	lastUsed  sync.Map                  // instanceName → time.Time
 }
 
 func NewBalancer(instances []config.InstanceConfig, tracker *ConcurrencyTracker) *Balancer {
+	enabled := filterEnabled(instances)
+	health := make(map[string]*AccountHealth, len(enabled))
+	for _, inst := range enabled {
+		health[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+	}
 	return &Balancer{
-		instances: filterEnabled(instances),
+		instances: enabled,
 		tracker:   tracker,
+		health:    health,
 	}
 }
 
@@ -60,6 +66,7 @@ type instanceCandidate struct {
 	instance config.InstanceConfig
 	loadRate int
 	lastUsed time.Time
+	score    float64
 }
 
 // SelectInstance implements 3-layer selection:
@@ -84,11 +91,18 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 			if time.Since(si.LastRequest) < sessionTTL {
 				inst := b.findInstance(si.InstanceName)
 				if inst != nil && !excludeInstances[inst.Name] {
-					rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
-					if rate < 100 {
-						if release, ok := b.tracker.Acquire(inst.Name, requestID, inst.MaxConcurrency); ok {
-							si.LastRequest = time.Now()
-							return &SelectResult{Instance: *inst, RequestID: requestID, Release: release}, nil
+					h := b.health[inst.Name]
+					if h == nil || h.IsAvailable() {
+						maxC := inst.MaxConcurrency
+						if h != nil {
+							maxC = h.MaxConcurrency()
+						}
+						rate := b.tracker.LoadRate(inst.Name, maxC)
+						if rate < 100 {
+							if release, ok := b.tracker.Acquire(inst.Name, requestID, maxC); ok {
+								si.LastRequest = time.Now()
+								return &SelectResult{Instance: *inst, RequestID: requestID, Release: release}, nil
+							}
 						}
 					}
 				}
@@ -98,13 +112,21 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		}
 	}
 
-	// Layer 2: Load-aware selection
+	// Layer 2: Score-based selection
 	var candidates []instanceCandidate
 	for _, inst := range instances {
 		if excludeInstances[inst.Name] {
 			continue
 		}
-		rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
+		h := b.health[inst.Name]
+		if h != nil && !h.IsAvailable() {
+			continue
+		}
+		maxC := inst.MaxConcurrency
+		if h != nil {
+			maxC = h.MaxConcurrency()
+		}
+		rate := b.tracker.LoadRate(inst.Name, maxC)
 		if rate >= 100 {
 			continue
 		}
@@ -112,55 +134,40 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		if v, ok := b.lastUsed.Load(inst.Name); ok {
 			lu = v.(time.Time)
 		}
-		candidates = append(candidates, instanceCandidate{instance: inst, loadRate: rate, lastUsed: lu})
+		score := 0.0
+		if h != nil {
+			score = h.Score(rate)
+		}
+		candidates = append(candidates, instanceCandidate{
+			instance: inst, loadRate: rate, lastUsed: lu, score: score,
+		})
 	}
 
 	if len(candidates) == 0 {
 		return nil, ErrAllInstancesBusy
 	}
 
-	// Sort by Priority → LoadRate → LastUsedAt (LRU)
+	// Sort by Score (lower = better), break ties with LRU
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].instance.Priority != candidates[j].instance.Priority {
-			return candidates[i].instance.Priority < candidates[j].instance.Priority
-		}
-		if candidates[i].loadRate != candidates[j].loadRate {
-			return candidates[i].loadRate < candidates[j].loadRate
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score < candidates[j].score
 		}
 		return candidates[i].lastUsed.Before(candidates[j].lastUsed)
 	})
 
-	// Shuffle within same tier (priority + load rate)
-	shuffleTiers(candidates)
-
 	// Try to acquire slot
 	for _, c := range candidates {
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, c.instance.MaxConcurrency); ok {
+		maxC := c.instance.MaxConcurrency
+		if h := b.health[c.instance.Name]; h != nil {
+			maxC = h.MaxConcurrency()
+		}
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, maxC); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
 	}
 
 	return nil, ErrAllInstancesBusy
-}
-
-// shuffleTiers shuffles candidates within groups that have the same priority and load rate.
-func shuffleTiers(candidates []instanceCandidate) {
-	i := 0
-	for i < len(candidates) {
-		j := i + 1
-		for j < len(candidates) &&
-			candidates[j].instance.Priority == candidates[i].instance.Priority &&
-			candidates[j].loadRate == candidates[i].loadRate {
-			j++
-		}
-		if j-i > 1 {
-			rand.Shuffle(j-i, func(a, b int) {
-				candidates[i+a], candidates[i+b] = candidates[i+b], candidates[i+a]
-			})
-		}
-		i = j
-	}
 }
 
 func (b *Balancer) findInstance(name string) *config.InstanceConfig {
@@ -191,11 +198,17 @@ func (b *Balancer) ClearSession(sessionKey string) {
 	b.sessions.Delete(sessionKey)
 }
 
-// UpdateInstances atomically replaces the instance list (for hot-reload).
+// UpdateInstances atomically replaces the instance list (for hot-reload),
+// preserving health state for existing instances.
 func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.instances = filterEnabled(instances)
+	for _, inst := range b.instances {
+		if _, exists := b.health[inst.Name]; !exists {
+			b.health[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+		}
+	}
 }
 
 // StartCleanup starts background goroutines for session and stale slot cleanup.
@@ -223,6 +236,39 @@ func (b *Balancer) cleanupSessions() {
 		}
 		return true
 	})
+}
+
+// ReportResult reports a request outcome to the health tracker for the given instance.
+func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration) {
+	b.mu.RLock()
+	h := b.health[instanceName]
+	b.mu.RUnlock()
+	if h == nil {
+		return
+	}
+	if statusCode >= 200 && statusCode < 400 {
+		h.RecordSuccess(latencyUs)
+	} else {
+		h.RecordError(statusCode, retryAfter)
+	}
+}
+
+// GetHealth returns the health tracker for a specific instance.
+func (b *Balancer) GetHealth(instanceName string) *AccountHealth {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.health[instanceName]
+}
+
+// AllHealth returns a snapshot of all health trackers.
+func (b *Balancer) AllHealth() map[string]*AccountHealth {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make(map[string]*AccountHealth, len(b.health))
+	for k, v := range b.health {
+		result[k] = v
+	}
+	return result
 }
 
 // GetInstances returns current instance list (for admin API).
