@@ -262,7 +262,6 @@
     } else {
       html += '<button class="btn btn-accent" onclick="startLogin(\'' + name + '\')">Login</button>';
       html += '<button class="btn" onclick="doRefresh(\'' + name + '\')">Refresh</button>';
-      html += '<button class="btn btn-danger" onclick="doLogout(\'' + name + '\')">Logout</button>';
     }
     html += '</div>';
     return html;
@@ -338,11 +337,31 @@
 
   function copyAuthURL() {
     const urlInput = document.getElementById('auth-url');
-    navigator.clipboard.writeText(urlInput.value).then(function() {
-      var btn = document.getElementById('copy-btn');
+    const btn = document.getElementById('copy-btn');
+    var text = urlInput.value;
+
+    function onSuccess() {
       btn.textContent = 'Copied!';
       setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
-    });
+    }
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(onSuccess).catch(fallbackCopy);
+    } else {
+      fallbackCopy();
+    }
+
+    function fallbackCopy() {
+      urlInput.select();
+      urlInput.setSelectionRange(0, text.length);
+      try {
+        document.execCommand('copy');
+        onSuccess();
+      } catch (e) {
+        btn.textContent = 'Failed';
+        setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+      }
+    }
   }
 
   async function submitCode() {
@@ -395,19 +414,6 @@
     }
   }
 
-  async function doLogout(instanceName) {
-    if (!confirm('Delete token for ' + instanceName + '? This cannot be undone.')) return;
-    try {
-      await fetchJSON('/api/oauth/logout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instance: instanceName }),
-      });
-      refresh();
-    } catch (err) {
-      alert('Logout failed: ' + err.message);
-    }
-  }
 
   // --- Init ---
   refresh();
