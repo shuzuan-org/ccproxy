@@ -16,7 +16,7 @@ func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	tracker := loadbalancer.NewConcurrencyTracker()
 	instances := []config.InstanceConfig{
-		{Name: "test-oauth", AuthMode: "oauth", MaxConcurrency: 5, Priority: 1},
+		{Name: "test-oauth", AuthMode: "oauth", MaxConcurrency: 5},
 	}
 	balancer := loadbalancer.NewBalancer(instances, tracker)
 	store, err := oauth.NewTokenStore(t.TempDir())

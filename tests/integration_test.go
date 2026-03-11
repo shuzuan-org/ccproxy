@@ -187,8 +187,6 @@ func makeConfig(upstreamURL string) *config.Config {
 				AuthMode:       "bearer",
 				APIKey:         testUpstreamKey,
 				BaseURL:        upstreamURL,
-				Priority:       1,
-				Weight:         100,
 				MaxConcurrency: 5,
 				RequestTimeout: 10,
 				Enabled:        &enabled,

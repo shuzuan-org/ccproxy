@@ -28,7 +28,6 @@ const validConfigTOML = `
 [server]
 host = "0.0.0.0"
 port = 8080
-log_level = "debug"
 admin_password = "secret"
 
 [[api_keys]]
@@ -39,8 +38,6 @@ enabled = true
 [[instances]]
 name = "alice-oauth"
 auth_mode = "oauth"
-priority = 2
-weight = 50
 max_concurrency = 3
 base_url = "https://api.anthropic.com"
 request_timeout = 120
@@ -50,8 +47,6 @@ tls_fingerprint = true
 name = "bob-bearer"
 auth_mode = "bearer"
 api_key = "sk-ant-real-key"
-priority = 1
-weight = 100
 max_concurrency = 10
 base_url = "https://api.anthropic.com"
 request_timeout = 60
@@ -71,9 +66,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("port = %d, want 8080", cfg.Server.Port)
-	}
-	if cfg.Server.LogLevel != "debug" {
-		t.Errorf("log_level = %q, want debug", cfg.Server.LogLevel)
 	}
 	if cfg.Server.AdminPassword != "secret" {
 		t.Errorf("admin_password = %q, want secret", cfg.Server.AdminPassword)
@@ -100,12 +92,6 @@ func TestLoadConfig_Valid(t *testing.T) {
 	}
 	if !alice.IsOAuth() {
 		t.Error("alice should be oauth")
-	}
-	if alice.Priority != 2 {
-		t.Errorf("alice.priority = %d, want 2", alice.Priority)
-	}
-	if alice.Weight != 50 {
-		t.Errorf("alice.weight = %d, want 50", alice.Weight)
 	}
 	if alice.MaxConcurrency != 3 {
 		t.Errorf("alice.max_concurrency = %d, want 3", alice.MaxConcurrency)
@@ -157,9 +143,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.Server.Port != 3000 {
 		t.Errorf("port default = %d, want 3000", cfg.Server.Port)
 	}
-	if cfg.Server.LogLevel != "info" {
-		t.Errorf("log_level default = %q, want info", cfg.Server.LogLevel)
-	}
 	inst := cfg.Instances[0]
 	if inst.RequestTimeout != 300 {
 		t.Errorf("request_timeout default = %d, want 300", inst.RequestTimeout)
@@ -169,12 +152,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if inst.BaseURL != "https://api.anthropic.com" {
 		t.Errorf("base_url default = %q, want https://api.anthropic.com", inst.BaseURL)
-	}
-	if inst.Priority != 1 {
-		t.Errorf("priority default = %d, want 1", inst.Priority)
-	}
-	if inst.Weight != 100 {
-		t.Errorf("weight default = %d, want 100", inst.Weight)
 	}
 	if !inst.IsEnabled() {
 		t.Error("instance should be enabled when Enabled field is absent")

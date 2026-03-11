@@ -22,7 +22,6 @@ type Config struct {
 type ServerConfig struct {
 	Host          string `toml:"host"`
 	Port          int    `toml:"port"`
-	LogLevel      string `toml:"log_level"`
 	AdminPassword string `toml:"admin_password"`
 }
 
@@ -36,8 +35,6 @@ type InstanceConfig struct {
 	Name           string `toml:"name"`
 	AuthMode       string `toml:"auth_mode"`      // "oauth" | "bearer"
 	APIKey         string `toml:"api_key"`
-	Priority       int    `toml:"priority"`
-	Weight         int    `toml:"weight"`
 	MaxConcurrency int    `toml:"max_concurrency"`
 	BaseURL        string `toml:"base_url"`
 	RequestTimeout int    `toml:"request_timeout"` // seconds
@@ -76,10 +73,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 3000
 	}
-	if cfg.Server.LogLevel == "" {
-		cfg.Server.LogLevel = "info"
-	}
-
 	// Instance defaults
 	for i := range cfg.Instances {
 		inst := &cfg.Instances[i]
@@ -91,12 +84,6 @@ func applyDefaults(cfg *Config) {
 		}
 		if inst.BaseURL == "" {
 			inst.BaseURL = "https://api.anthropic.com"
-		}
-		if inst.Priority == 0 {
-			inst.Priority = 1
-		}
-		if inst.Weight == 0 {
-			inst.Weight = 100
 		}
 	}
 }

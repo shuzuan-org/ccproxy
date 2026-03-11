@@ -55,7 +55,6 @@ type InstanceState struct {
 	LoadRate       int     `json:"load_rate"`
 	ActiveSlots    int     `json:"active_slots"`
 	MaxConcurrency int     `json:"max_concurrency"`
-	Priority       int     `json:"priority"`
 	Enabled        bool    `json:"enabled"`
 	TokenStatus    string  `json:"token_status,omitempty"`
 	TokenExpiresAt *string `json:"token_expires_at,omitempty"`
@@ -99,7 +98,6 @@ func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 			LoadRate:       loadRate,
 			ActiveSlots:    activeSlots,
 			MaxConcurrency: inst.MaxConcurrency,
-			Priority:       inst.Priority,
 			Enabled:        inst.IsEnabled(),
 		}
 

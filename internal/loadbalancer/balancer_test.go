@@ -13,13 +13,11 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-func makeInstance(name string, priority, maxConc int) config.InstanceConfig {
+func makeInstance(name string, maxConc int) config.InstanceConfig {
 	return config.InstanceConfig{
 		Name:           name,
 		AuthMode:       "bearer",
 		APIKey:         "test-key",
-		Priority:       priority,
-		Weight:         100,
 		MaxConcurrency: maxConc,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,
@@ -27,7 +25,7 @@ func makeInstance(name string, priority, maxConc int) config.InstanceConfig {
 }
 
 func makeDisabledInstance(name string) config.InstanceConfig {
-	inst := makeInstance(name, 1, 5)
+	inst := makeInstance(name, 5)
 	inst.Enabled = boolPtr(false)
 	return inst
 }
@@ -39,7 +37,7 @@ func newTestBalancer(instances []config.InstanceConfig) *Balancer {
 
 // Test 1: Single instance → always selected
 func TestBalancer_SingleInstance(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 1, 5)})
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 
 	result, err := b.SelectInstance("", map[string]bool{})
 	if err != nil {
@@ -54,8 +52,8 @@ func TestBalancer_SingleInstance(t *testing.T) {
 // Test 2: Instance with errors gets lower score → healthy instance preferred
 func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("unhealthy", 1, 5),
-		makeInstance("healthy", 1, 5),
+		makeInstance("unhealthy", 5),
+		makeInstance("healthy", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -81,8 +79,8 @@ func TestBalancer_ScoreBasedOrder(t *testing.T) {
 // Test 3: Same priority → weighted by load rate (lower load first)
 func TestBalancer_LoadRateOrder(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 4),
-		makeInstance("inst-b", 1, 4),
+		makeInstance("inst-a", 4),
+		makeInstance("inst-b", 4),
 	}
 	b := newTestBalancer(instances)
 
@@ -106,8 +104,8 @@ func TestBalancer_LoadRateOrder(t *testing.T) {
 // Test 4: Session sticky: same sessionKey → same instance within TTL
 func TestBalancer_StickySession(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 5),
-		makeInstance("inst-b", 1, 5),
+		makeInstance("inst-a", 5),
+		makeInstance("inst-b", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -136,7 +134,7 @@ func TestBalancer_StickySession(t *testing.T) {
 // Test 5: Session expired → new selection (may differ)
 func TestBalancer_SessionExpired(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 5),
+		makeInstance("inst-a", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -162,8 +160,8 @@ func TestBalancer_SessionExpired(t *testing.T) {
 // Test 6: Sticky instance at capacity → falls through to Layer 2
 func TestBalancer_StickyAtCapacity(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 1), // capacity=1
-		makeInstance("inst-b", 1, 5),
+		makeInstance("inst-a", 1), // capacity=1
+		makeInstance("inst-b", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -191,8 +189,8 @@ func TestBalancer_StickyAtCapacity(t *testing.T) {
 // Test 7: Exclude failed instances
 func TestBalancer_ExcludeInstances(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 5),
-		makeInstance("inst-b", 1, 5),
+		makeInstance("inst-a", 5),
+		makeInstance("inst-b", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -209,8 +207,8 @@ func TestBalancer_ExcludeInstances(t *testing.T) {
 // Test 8: All instances at capacity → returns ErrAllInstancesBusy
 func TestBalancer_AllBusy(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 1),
-		makeInstance("inst-b", 1, 1),
+		makeInstance("inst-a", 1),
+		makeInstance("inst-b", 1),
 	}
 	b := newTestBalancer(instances)
 
@@ -229,8 +227,8 @@ func TestBalancer_AllBusy(t *testing.T) {
 // Test 9: BindSession + SelectInstance → returns sticky instance
 func TestBalancer_BindThenSelect(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 5),
-		makeInstance("inst-b", 2, 5), // lower priority
+		makeInstance("inst-a", 5),
+		makeInstance("inst-b", 5), // lower priority
 	}
 	b := newTestBalancer(instances)
 
@@ -250,11 +248,11 @@ func TestBalancer_BindThenSelect(t *testing.T) {
 
 // Test 10: UpdateInstances replaces list
 func TestBalancer_UpdateInstances(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst-a", 1, 5)})
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst-a", 5)})
 
 	newInstances := []config.InstanceConfig{
-		makeInstance("inst-x", 1, 5),
-		makeInstance("inst-y", 1, 5),
+		makeInstance("inst-x", 5),
+		makeInstance("inst-y", 5),
 	}
 	b.UpdateInstances(newInstances)
 
@@ -275,8 +273,8 @@ func TestBalancer_UpdateInstances(t *testing.T) {
 // Test 11: Concurrent SelectInstance (race test)
 func TestBalancer_ConcurrentSelect(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1, 10),
-		makeInstance("inst-b", 1, 10),
+		makeInstance("inst-a", 10),
+		makeInstance("inst-b", 10),
 	}
 	b := newTestBalancer(instances)
 
@@ -312,7 +310,7 @@ func TestBalancer_NoInstances(t *testing.T) {
 // Test: filterEnabled removes disabled instances
 func TestBalancer_FilterEnabled(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("enabled", 1, 5),
+		makeInstance("enabled", 5),
 		makeDisabledInstance("disabled"),
 	}
 	b := newTestBalancer(instances)
@@ -324,7 +322,7 @@ func TestBalancer_FilterEnabled(t *testing.T) {
 
 // Test: StartCleanup runs without panic
 func TestBalancer_StartCleanup(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 1, 5)})
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 	ctx, cancel := context.WithCancel(context.Background())
 	b.StartCleanup(ctx)
 	time.Sleep(10 * time.Millisecond)
@@ -333,7 +331,7 @@ func TestBalancer_StartCleanup(t *testing.T) {
 
 // Test: ActiveSessions count
 func TestBalancer_ActiveSessions(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 1, 5)})
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 	if b.ActiveSessions() != 0 {
 		t.Error("expected 0 sessions initially")
 	}
@@ -351,8 +349,8 @@ func TestBalancer_ActiveSessions(t *testing.T) {
 // Test: Cooldown instance is skipped during selection
 func TestSelectInstance_CooldownSkipped(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("cool", 1, 5),
-		makeInstance("warm", 1, 5),
+		makeInstance("cool", 5),
+		makeInstance("warm", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -372,8 +370,8 @@ func TestSelectInstance_CooldownSkipped(t *testing.T) {
 // Test: Disabled instance is skipped
 func TestSelectInstance_DisabledSkipped(t *testing.T) {
 	instances := []config.InstanceConfig{
-		makeInstance("forbidden", 1, 5),
-		makeInstance("ok", 1, 5),
+		makeInstance("forbidden", 5),
+		makeInstance("ok", 5),
 	}
 	b := newTestBalancer(instances)
 
@@ -392,7 +390,7 @@ func TestSelectInstance_DisabledSkipped(t *testing.T) {
 
 // Test: ReportResult updates health state
 func TestReportResult_UpdatesHealth(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 1, 5)})
+	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 
 	b.ReportResult("inst1", 200, 1000, 0)
 	h := b.GetHealth("inst1")

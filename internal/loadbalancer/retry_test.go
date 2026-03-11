@@ -72,8 +72,6 @@ func makeRetryInstance(name string) config.InstanceConfig {
 		Name:           name,
 		AuthMode:       "bearer",
 		APIKey:         "test-key",
-		Priority:       1,
-		Weight:         100,
 		MaxConcurrency: 5,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,

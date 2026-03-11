@@ -69,8 +69,6 @@ func buildBearerInstance(baseURL string) config.InstanceConfig {
 		APIKey:         "sk-test-apikey",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
-		Priority:       1,
-		Weight:         100,
 		RequestTimeout: 10,
 		Enabled:        &enabled,
 	}
@@ -84,8 +82,6 @@ func buildOAuthInstance(baseURL string) config.InstanceConfig {
 		AuthMode:       "oauth",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
-		Priority:       1,
-		Weight:         100,
 		RequestTimeout: 10,
 		Enabled:        &enabled,
 	}
