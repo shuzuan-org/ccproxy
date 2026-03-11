@@ -231,7 +231,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		ForwardSSE(r.Context(), resp.Body, w, originalModel)
+		if _, err := ForwardSSE(r.Context(), resp.Body, w, originalModel); err != nil {
+			slog.Error("SSE forwarding error", "error", err)
+		}
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))

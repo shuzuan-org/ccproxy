@@ -38,7 +38,9 @@ func TestHandleInstances_IncludesTokenStatus(t *testing.T) {
 		AccessToken: "test",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
-	h.oauthMgr.GetStore().Save("test-oauth", tok)
+	if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
 	req := httptest.NewRequest("GET", "/api/instances", nil)
 	w := httptest.NewRecorder()
@@ -68,7 +70,9 @@ func TestHandleInstances_NoToken(t *testing.T) {
 	h.HandleInstances(w, req)
 
 	var states []InstanceState
-	json.NewDecoder(w.Body).Decode(&states)
+	if err := json.NewDecoder(w.Body).Decode(&states); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	if len(states) != 1 {
 		t.Fatalf("len = %d, want 1", len(states))
@@ -91,7 +95,9 @@ func TestHandleOAuthLoginStart(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if resp["session_id"] == "" {
 		t.Error("missing session_id")
 	}
@@ -130,7 +136,9 @@ func TestHandleOAuthLogout(t *testing.T) {
 	h := newTestHandler(t)
 
 	tok := oauth.OAuthToken{AccessToken: "x", ExpiresAt: time.Now().Add(time.Hour)}
-	h.oauthMgr.GetStore().Save("test-oauth", tok)
+	if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
 	body, _ := json.Marshal(map[string]string{"instance": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/logout", bytes.NewReader(body))

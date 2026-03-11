@@ -76,8 +76,8 @@ func TestSessionStore_Cleanup(t *testing.T) {
 	ss := NewSessionStore()
 	ss.ttl = 1 * time.Millisecond
 
-	ss.Create("a")
-	ss.Create("b")
+	_, _, _ = ss.Create("a")
+	_, _, _ = ss.Create("b")
 
 	time.Sleep(5 * time.Millisecond)
 
