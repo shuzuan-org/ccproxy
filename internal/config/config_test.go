@@ -151,62 +151,6 @@ func TestLoadConfig_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "empty admin_password",
-			toml: `
-[server]
-admin_password = ""
-
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-
-[[instances]]
-name = "x"
-`,
-			wantErr: "server.admin_password is required",
-		},
-		{
-			name: "missing admin_password",
-			toml: `
-[[api_keys]]
-key = "sk-ok"
-name = "ok"
-enabled = true
-
-[[instances]]
-name = "x"
-`,
-			wantErr: "server.admin_password is required",
-		},
-		{
-			name: "no api keys",
-			toml: `
-[server]
-admin_password = "pass"
-
-[[instances]]
-name = "x"
-`,
-			wantErr: "at least one enabled api_key",
-		},
-		{
-			name: "api key disabled",
-			toml: `
-[server]
-admin_password = "pass"
-
-[[api_keys]]
-key = "sk-x"
-name = "x"
-enabled = false
-
-[[instances]]
-name = "x"
-`,
-			wantErr: "at least one enabled api_key",
-		},
-		{
 			name: "no instances",
 			toml: `
 [server]
@@ -254,6 +198,163 @@ name = "dup"
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadConfig_AutoGenerateAdminPassword(t *testing.T) {
+	tomlContent := `
+[server]
+admin_password = ""
+
+[[api_keys]]
+key = "sk-ok"
+name = "ok"
+enabled = true
+
+[[instances]]
+name = "x"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.AdminPassword == "" {
+		t.Error("admin_password should have been auto-generated")
+	}
+	if len(cfg.Server.AdminPassword) != 32 {
+		t.Errorf("admin_password length = %d, want 32", len(cfg.Server.AdminPassword))
+	}
+
+	// Verify it was persisted to the file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), cfg.Server.AdminPassword) {
+		t.Error("generated admin_password not found in config file")
+	}
+}
+
+func TestLoadConfig_AutoGenerateAPIKey(t *testing.T) {
+	tomlContent := `
+[server]
+admin_password = "pass"
+
+[[instances]]
+name = "x"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.APIKeys) == 0 {
+		t.Fatal("api_keys should have been auto-generated")
+	}
+	k := cfg.APIKeys[0]
+	if !strings.HasPrefix(k.Key, "sk-ccproxy-") {
+		t.Errorf("api key %q missing prefix", k.Key)
+	}
+	if k.Name != "default" {
+		t.Errorf("api key name = %q, want default", k.Name)
+	}
+	if !k.Enabled {
+		t.Error("api key should be enabled")
+	}
+
+	// Verify it was persisted to the file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), k.Key) {
+		t.Error("generated api key not found in config file")
+	}
+}
+
+func TestLoadConfig_AutoGenerateBoth(t *testing.T) {
+	tomlContent := `
+[[instances]]
+name = "x"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.AdminPassword == "" {
+		t.Error("admin_password should have been auto-generated")
+	}
+	if len(cfg.APIKeys) == 0 {
+		t.Fatal("api_keys should have been auto-generated")
+	}
+}
+
+func TestLoadConfig_DisabledAPIKeysTriggersGenerate(t *testing.T) {
+	tomlContent := `
+[server]
+admin_password = "pass"
+
+[[api_keys]]
+key = "sk-x"
+name = "x"
+enabled = false
+
+[[instances]]
+name = "x"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(tomlContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have the original disabled key plus a new generated one
+	if len(cfg.APIKeys) != 2 {
+		t.Fatalf("api_keys len = %d, want 2", len(cfg.APIKeys))
+	}
+	generated := cfg.APIKeys[1]
+	if !strings.HasPrefix(generated.Key, "sk-ccproxy-") {
+		t.Errorf("generated api key %q missing prefix", generated.Key)
+	}
+	if !generated.Enabled {
+		t.Error("generated api key should be enabled")
+	}
+}
+
+func TestLoadConfig_NoAutoGenerateWhenPresent(t *testing.T) {
+	// Valid config with everything present — nothing should be generated
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(validConfigTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.AdminPassword != "secret" {
+		t.Errorf("admin_password = %q, want secret (should not be regenerated)", cfg.Server.AdminPassword)
+	}
+	if len(cfg.APIKeys) != 1 || cfg.APIKeys[0].Key != "sk-test-001" {
+		t.Error("api_keys should not be modified when already present")
 	}
 }
 

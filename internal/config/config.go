@@ -40,7 +40,8 @@ type InstanceConfig struct {
 	Enabled        *bool  `toml:"enabled"`         // default true
 }
 
-// Load reads, parses, applies defaults, and validates the config file at path.
+// Load reads, parses, applies defaults, auto-generates missing credentials,
+// and validates the config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -54,8 +55,14 @@ func Load(path string) (*Config, error) {
 
 	applyDefaults(cfg)
 
+	genPassword, genKey := autoGenerate(cfg, path)
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	if genPassword || genKey {
+		printGeneratedCredentials(cfg, genPassword, genKey)
 	}
 
 	return cfg, nil

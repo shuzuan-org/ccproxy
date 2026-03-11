@@ -58,7 +58,8 @@ config.toml.example Reference configuration
 
 ### Configuration
 
-- `config.Load(path)` reads, parses, applies defaults, and validates in one call.
+- `config.Load(path)` reads, parses, applies defaults, auto-generates missing credentials, and validates in one call.
+- If `admin_password` is empty or `api_keys` has no enabled entries, `Load` auto-generates cryptographically secure values, persists them to the config file, and prints them to the console.
 - `config.Watch(path, callback)` starts a background fsnotify watcher with 500ms debounce.
 - All instances use OAuth authentication. There is no `auth_mode` or `api_key` field.
 - The `[[instances]]` `enabled` field is a `*bool` so that nil = default-true is distinguishable from explicit false.
