@@ -127,6 +127,43 @@ func TestRewriteUserID_UnknownFormat_Fallback(t *testing.T) {
 	}
 }
 
+// --- RewriteUserIDWithMasking tests ---
+
+func TestRewriteUserIDWithMasking_FormatA(t *testing.T) {
+	t.Parallel()
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	masked := "masked-uuid-1234"
+	result := RewriteUserIDWithMasking(original, "my-seed", masked)
+
+	if !strings.Contains(result, masked) {
+		t.Errorf("expected masked session UUID %q in result %q", masked, result)
+	}
+	if result == original {
+		t.Error("expected rewritten user_id to differ from original")
+	}
+}
+
+func TestRewriteUserIDWithMasking_FormatB(t *testing.T) {
+	t.Parallel()
+	original := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid-123_session_sess-uuid-456"
+	masked := "masked-uuid-5678"
+	result := RewriteUserIDWithMasking(original, "my-seed", masked)
+
+	if !strings.Contains(result, masked) {
+		t.Errorf("expected masked session UUID %q in result %q", masked, result)
+	}
+}
+
+func TestRewriteUserIDWithMasking_UnknownFormat(t *testing.T) {
+	t.Parallel()
+	masked := "masked-uuid-9999"
+	result := RewriteUserIDWithMasking("random-id", "seed", masked)
+
+	if !strings.Contains(result, masked) {
+		t.Errorf("expected masked session UUID %q in fallback result %q", masked, result)
+	}
+}
+
 func TestNormalizeModelID_Known(t *testing.T) {
 	got := NormalizeModelID("claude-sonnet-4-5")
 	if got != "claude-sonnet-4-5-20250929" {

@@ -23,36 +23,55 @@ var claudeCodePromptPrefixes = []string{
 }
 
 // IsClaudeCodeClient checks if the request appears to be from a real Claude Code client.
-// Uses multi-signal validation: requires at least 3 of 5 signals to match.
-func IsClaudeCodeClient(headers http.Header, body []byte) bool {
-	score := 0
-
-	// Signal 1: User-Agent matches claude-cli pattern
-	if claudeCLIRegex.MatchString(headers.Get("User-Agent")) {
-		score++
+// Uses layered validation:
+//   - Gate: User-Agent MUST match claude-cli pattern (mandatory).
+//   - Non-messages path: UA match alone is sufficient.
+//   - Haiku probe: max_tokens=1 + haiku + !stream passes immediately.
+//   - Messages path: requires >=2 of 4 additional signals.
+func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
+	// Gate: UA MUST match (mandatory)
+	if !claudeCLIRegex.MatchString(headers.Get("User-Agent")) {
+		return false
 	}
 
-	// Signal 2: X-App header is "cli"
+	// Non-messages path: UA match is sufficient
+	if !strings.HasSuffix(path, "/v1/messages") {
+		return true
+	}
+
+	// Haiku probe: max_tokens=1 + haiku + !stream → pass
+	if isHaikuProbe(body) {
+		return true
+	}
+
+	// Messages path: strict multi-signal validation (need >=2 of 4)
+	score := 0
 	if headers.Get("X-App") == "cli" {
 		score++
 	}
-
-	// Signal 3: anthropic-beta contains claude-code marker
 	if strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode) {
 		score++
 	}
-
-	// Signal 4: metadata.user_id matches expected format
 	if checkMetadataUserID(body) {
 		score++
 	}
-
-	// Signal 5: System prompt similarity
 	if checkSystemPromptSimilarity(body) {
 		score++
 	}
+	return score >= 2
+}
 
-	return score >= 3
+// isHaikuProbe detects lightweight Haiku probe requests (max_tokens=1, haiku model, non-streaming).
+func isHaikuProbe(body []byte) bool {
+	var req struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Stream    bool   `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	return req.MaxTokens == 1 && IsHaikuModel(req.Model) && !req.Stream
 }
 
 func checkMetadataUserID(body []byte) bool {

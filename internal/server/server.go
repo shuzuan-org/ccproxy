@@ -42,7 +42,8 @@ func New(cfg *config.Config) (*Server, error) {
 	balancer.StartPersistence(ctx, "data")
 
 	// 3. Create disguise engine.
-	disguiseEngine := disguise.NewEngine()
+	disguiseEngine := disguise.NewEngine("data")
+	disguiseEngine.StartSessionCleanup(ctx)
 
 	// 4. Create OAuth manager (all instances use OAuth).
 	store, err := oauth.NewTokenStore("data")

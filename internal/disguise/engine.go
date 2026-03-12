@@ -1,16 +1,31 @@
 package disguise
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 )
 
-// Engine orchestrates the 6-layer Claude CLI impersonation.
-type Engine struct{}
+// Engine orchestrates the multi-layer Claude CLI impersonation.
+type Engine struct {
+	fingerprints *FingerprintStore
+	sessions     *SessionMaskStore
+}
 
-func NewEngine() *Engine {
-	return &Engine{}
+// NewEngine creates a new disguise engine with per-instance fingerprint storage
+// and session masking. dataDir is the path to the persistent data directory.
+func NewEngine(dataDir string) *Engine {
+	return &Engine{
+		fingerprints: NewFingerprintStore(dataDir),
+		sessions:     NewSessionMaskStore(),
+	}
+}
+
+// StartSessionCleanup begins periodic cleanup of expired masked sessions.
+func (e *Engine) StartSessionCleanup(ctx context.Context) {
+	e.sessions.StartCleanup(ctx, time.Minute)
 }
 
 // Apply modifies the request and body for Claude CLI impersonation.
@@ -19,23 +34,26 @@ func NewEngine() *Engine {
 // origReq is the original incoming request (used for Claude Code client detection
 // because it has the full set of headers: User-Agent, X-App, etc.).
 // upstreamReq is the outbound request to Anthropic (headers/body are modified here).
+// instanceName identifies which proxy instance is being used (for per-instance fingerprinting).
 //
-// The 6 layers:
+// The layers:
 // 1. TLS fingerprint — handled externally by HTTP transport selection
-// 2. HTTP headers — User-Agent, X-Stainless-*, etc.
+// 2. HTTP headers — User-Agent, X-Stainless-*, etc. (per-instance fingerprint)
 // 3. anthropic-beta — scenario-based beta token composition
 // 4. System prompt injection — inject Claude Code system prompt
-// 5. metadata.user_id — generate fake user_id
+// 5. metadata.user_id — generate/rewrite fake user_id with session masking
 // 6. Model ID normalization — short name → full versioned name
-func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string) ([]byte, bool) {
+// 7. Thinking cache_control cleanup — remove cache_control from thinking blocks
+// 8. Body sanitization — tools injection, field removal
+func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string, instanceName string) ([]byte, bool) {
 	// Detect using origReq which has full client headers (User-Agent, X-App, etc.)
-	if IsClaudeCodeClient(origReq.Header, body) {
+	if IsClaudeCodeClient(origReq.Header, body, origReq.URL.Path) {
 		// Real CC client via OAuth: lightweight processing only.
 		// 1. Supplement oauth beta header (preserve client's existing betas)
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
 		upstreamReq.Header.Set("Anthropic-Beta", SupplementBetaHeader(clientBeta))
 
-		// 2. Rewrite metadata.user_id to prevent cross-user correlation
+		// 2. Rewrite metadata.user_id with session masking to prevent cross-user correlation
 		var parsed map[string]interface{}
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			return body, true
@@ -44,8 +62,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
+		maskedSession := e.sessions.Get(instanceName)
 		if originalUserID, ok := metadata["user_id"].(string); ok {
-			metadata["user_id"] = RewriteUserID(originalUserID, sessionSeed)
+			metadata["user_id"] = RewriteUserIDWithMasking(originalUserID, sessionSeed, maskedSession)
 		} else {
 			metadata["user_id"] = GenerateUserID(sessionSeed)
 		}
@@ -66,8 +85,16 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	model, _ := parsed["model"].(string)
 	_, hasTools := parsed["tools"]
 
-	// Layer 2: HTTP Headers
-	ApplyHeaders(upstreamReq, isStream)
+	// Layer 7: Thinking cache_control cleanup (before other modifications)
+	if CleanThinkingCacheControl(parsed) {
+		if result, err := json.Marshal(parsed); err == nil {
+			body = result
+		}
+	}
+
+	// Layer 2: HTTP Headers (per-instance fingerprint)
+	fp := e.fingerprints.Get(instanceName)
+	ApplyHeaders(upstreamReq, isStream, fp)
 
 	// Layer 3: anthropic-beta
 	upstreamReq.Header.Set("Anthropic-Beta", BetaHeader(model, hasTools))
@@ -81,8 +108,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		}
 	}
 
-	// Layer 5: metadata.user_id
-	body = injectMetadataUserID(parsed, body, sessionSeed)
+	// Layer 5: metadata.user_id with session masking
+	maskedSession := e.sessions.Get(instanceName)
+	body = injectMetadataUserIDWithMasking(parsed, body, sessionSeed, maskedSession)
 	// Re-parse after metadata injection for model normalization
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body, true
@@ -95,7 +123,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		return body, true
 	}
 
-	// Layer 7: Body sanitization (match sub2api's normalizeClaudeOAuthRequestBody)
+	// Layer 8: Body sanitization (match sub2api's normalizeClaudeOAuthRequestBody)
 	body = sanitizeRequestBody(parsed, body)
 
 	return body, true
@@ -201,12 +229,20 @@ func injectSystemPrompt(parsed map[string]interface{}, body []byte) []byte {
 	return result
 }
 
-func injectMetadataUserID(parsed map[string]interface{}, body []byte, sessionSeed string) []byte {
+func injectMetadataUserIDWithMasking(parsed map[string]interface{}, body []byte, sessionSeed string, maskedSessionUUID string) []byte {
 	metadata, ok := parsed["metadata"].(map[string]interface{})
 	if !ok {
 		metadata = make(map[string]interface{})
 	}
-	metadata["user_id"] = GenerateUserID(sessionSeed)
+	userID := GenerateUserID(sessionSeed)
+	// Replace the session UUID portion with the masked session UUID
+	if maskedSessionUUID != "" {
+		parts := strings.SplitN(userID, "_account__session_", 2)
+		if len(parts) == 2 {
+			userID = parts[0] + "_account__session_" + maskedSessionUUID
+		}
+	}
+	metadata["user_id"] = userID
 	parsed["metadata"] = metadata
 
 	result, err := json.Marshal(parsed)

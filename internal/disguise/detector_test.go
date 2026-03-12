@@ -25,8 +25,70 @@ func buildTestBody(t *testing.T, system interface{}, userID string) []byte {
 	return b
 }
 
+const messagesPath = "/v1/messages"
+
+func TestIsClaudeCodeClient_UAMismatch_AlwaysFalse(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "curl/7.88.1")
+	headers.Set("X-App", "cli")
+	headers.Set("Anthropic-Beta", BetaClaudeCode)
+
+	userID := "user_" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" + "_account__session_abc-123"
+	body := buildTestBody(t, "You are Claude Code, Anthropic's official CLI for Claude.", userID)
+
+	if IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected false when UA does not match, even with all other signals")
+	}
+}
+
+func TestIsClaudeCodeClient_NonMessagesPath_UAOnly(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+
+	body := buildTestBody(t, nil, "")
+
+	if !IsClaudeCodeClient(headers, body, "/v1/count_tokens") {
+		t.Error("expected true for non-messages path with UA match")
+	}
+}
+
+func TestIsClaudeCodeClient_HaikuProbe(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":      "claude-haiku-4-5",
+		"max_tokens": 1,
+		"stream":     false,
+	})
+
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for Haiku probe (max_tokens=1, haiku, !stream)")
+	}
+}
+
+func TestIsClaudeCodeClient_HaikuProbe_StreamTrue(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":      "claude-haiku-4-5",
+		"max_tokens": 1,
+		"stream":     true,
+	})
+
+	// stream=true means this is NOT a haiku probe, and with no other signals → false
+	if IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected false for Haiku probe with stream=true and no other signals")
+	}
+}
+
 func TestIsClaudeCodeClient_AllSignals(t *testing.T) {
-	// Real Claude Code request with all 5 signals.
+	t.Parallel()
 	headers := http.Header{}
 	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
 	headers.Set("X-App", "cli")
@@ -35,37 +97,14 @@ func TestIsClaudeCodeClient_AllSignals(t *testing.T) {
 	userID := "user_" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" + "_account__session_abc-123"
 	body := buildTestBody(t, "You are Claude Code, Anthropic's official CLI for Claude. Here are instructions.", userID)
 
-	if !IsClaudeCodeClient(headers, body) {
-		t.Error("expected IsClaudeCodeClient=true for full Claude Code request")
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for full Claude Code request with all signals")
 	}
 }
 
-func TestIsClaudeCodeClient_CurlRequest(t *testing.T) {
-	// curl request with no signals.
-	headers := http.Header{}
-	headers.Set("User-Agent", "curl/7.88.1")
-
-	body := buildTestBody(t, "You are a helpful assistant.", "")
-
-	if IsClaudeCodeClient(headers, body) {
-		t.Error("expected IsClaudeCodeClient=false for curl request")
-	}
-}
-
-func TestIsClaudeCodeClient_OnlyUA(t *testing.T) {
-	// Only User-Agent matches (1 signal) — should be false.
-	headers := http.Header{}
-	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
-
-	body := buildTestBody(t, "You are a helpful assistant.", "")
-
-	if IsClaudeCodeClient(headers, body) {
-		t.Error("expected IsClaudeCodeClient=false when only 1 signal matches")
-	}
-}
-
-func TestIsClaudeCodeClient_ThreeSignals(t *testing.T) {
-	// UA + X-App + beta (3 signals) — should be true.
+func TestIsClaudeCodeClient_TwoOfFourSignals(t *testing.T) {
+	t.Parallel()
+	// UA matches (gate passes), then X-App + Beta = 2 of 4 → true
 	headers := http.Header{}
 	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
 	headers.Set("X-App", "cli")
@@ -73,12 +112,53 @@ func TestIsClaudeCodeClient_ThreeSignals(t *testing.T) {
 
 	body := buildTestBody(t, "You are a helpful assistant.", "")
 
-	if !IsClaudeCodeClient(headers, body) {
-		t.Error("expected IsClaudeCodeClient=true for UA+X-App+beta (3 signals)")
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for UA + 2 of 4 signals (X-App + Beta)")
+	}
+}
+
+func TestIsClaudeCodeClient_OneOfFourSignals(t *testing.T) {
+	t.Parallel()
+	// UA matches (gate passes), but only X-App = 1 of 4 → false
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+	headers.Set("X-App", "cli")
+
+	// Use a system prompt that won't match any Claude Code prefix via Dice coefficient.
+	body := buildTestBody(t, "Generate a JSON schema for the API.", "")
+
+	if IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected false for UA + only 1 of 4 signals")
+	}
+}
+
+func TestIsClaudeCodeClient_ZeroOfFourSignals(t *testing.T) {
+	t.Parallel()
+	// UA matches (gate passes), but 0 of 4 additional signals → false
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+
+	body := buildTestBody(t, "Generate a JSON schema for the API.", "")
+
+	if IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected false for UA + 0 of 4 signals on messages path")
+	}
+}
+
+func TestIsClaudeCodeClient_CurlRequest(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "curl/7.88.1")
+
+	body := buildTestBody(t, "You are a helpful assistant.", "")
+
+	if IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected false for curl request")
 	}
 }
 
 func TestDiceCoefficient_Identical(t *testing.T) {
+	t.Parallel()
 	got := DiceCoefficient("hello world", "hello world")
 	if got != 1.0 {
 		t.Errorf("expected 1.0 for identical strings, got %f", got)
@@ -86,6 +166,7 @@ func TestDiceCoefficient_Identical(t *testing.T) {
 }
 
 func TestDiceCoefficient_NoOverlap(t *testing.T) {
+	t.Parallel()
 	got := DiceCoefficient("abc", "xyz")
 	if got != 0.0 {
 		t.Errorf("expected 0.0 for no-overlap strings, got %f", got)
@@ -93,7 +174,7 @@ func TestDiceCoefficient_NoOverlap(t *testing.T) {
 }
 
 func TestDiceCoefficient_SimilarStrings(t *testing.T) {
-	// "You are Claude Code" vs "You are Claude" should have high similarity.
+	t.Parallel()
 	a := "You are Claude Code, Anthropic's official CLI"
 	b := "You are Claude Code, Anthropic's CLI tool"
 	got := DiceCoefficient(a, b)

@@ -4,11 +4,23 @@ import "strings"
 
 // Beta token constants. Keep in sync with sub2api/internal/pkg/claude/constants.go.
 const (
-	BetaClaudeCode               = "claude-code-20250219"
-	BetaOAuth                    = "oauth-2025-04-20"
-	BetaInterleavedThinking      = "interleaved-thinking-2025-05-14"
+	BetaClaudeCode              = "claude-code-20250219"
+	BetaOAuth                   = "oauth-2025-04-20"
+	BetaInterleavedThinking     = "interleaved-thinking-2025-05-14"
 	BetaFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
-	BetaTokenCounting            = "token-counting-2024-11-01"
+	BetaTokenCounting           = "token-counting-2024-11-01"
+	BetaContext1M               = "context-1m-2025-08-07"
+	BetaFastMode                = "fast-mode-2026-02-01"
+)
+
+// Pre-composed beta header values for common scenarios.
+const (
+	// DefaultBetaHeader is used for non-Haiku models with tools.
+	DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+	// MessageBetaHeaderNoTools is used for non-Haiku models without tools.
+	MessageBetaHeaderNoTools = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+	// HaikuBetaHeader is used for Haiku models (no claude-code beta).
+	HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
 )
 
 // IsHaikuModel returns true if the model is a Haiku variant.
@@ -18,13 +30,17 @@ func IsHaikuModel(model string) bool {
 
 // BetaHeader returns the appropriate anthropic-beta header value for mimic mode.
 //
-// Per sub2api's mitmproxy observation: real Claude CLI messages requests use
-// only oauth + interleaved-thinking. The claude-code beta is dropped for mimic
-// requests to match observed traffic patterns.
-//
-// All instances are OAuth, so the oauth beta token is always included.
+// Non-Haiku models include the claude-code beta token. When tools are present,
+// fine-grained-tool-streaming is additionally included. Haiku models use a
+// minimal set (oauth + interleaved-thinking only).
 func BetaHeader(model string, hasTools bool) string {
-	return BetaOAuth + "," + BetaInterleavedThinking
+	if IsHaikuModel(model) {
+		return HaikuBetaHeader
+	}
+	if hasTools {
+		return DefaultBetaHeader
+	}
+	return MessageBetaHeaderNoTools
 }
 
 // SupplementBetaHeader preserves the client's existing beta tokens and ensures

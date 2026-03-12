@@ -132,7 +132,7 @@ func buildHandler(t *testing.T, cfg *config.Config, instances []config.InstanceC
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(instances, tracker)
 
-	disguiseEngine := disguise.NewEngine()
+	disguiseEngine := disguise.NewEngine(t.TempDir())
 
 	// Create OAuth manager with pre-saved tokens for all instances.
 	oauthMgr := buildIntegrationOAuthManager(t, instances)
@@ -451,13 +451,13 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 	}
 
 	// Also verify the Engine directly applies headers.
-	engine := disguise.NewEngine()
+	engine := disguise.NewEngine(t.TempDir())
 	origReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq.Header.Set("Content-Type", "application/json")
 
 	body := []byte(`{"model":"claude-3-5-haiku-20241022","messages":[{"role":"user","content":"hi"}]}`)
-	_, applied := engine.Apply(origReq, upstreamReq, body, false, "seed")
+	_, applied := engine.Apply(origReq, upstreamReq, body, false, "seed", "test-instance")
 	if !applied {
 		t.Error("expected disguise to be applied without Claude Code client header")
 	}

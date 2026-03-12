@@ -80,6 +80,31 @@ func deterministicClientID(instanceSeed, originalClientID string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// RewriteUserIDWithMasking works like RewriteUserID but replaces the session UUID
+// portion with the provided maskedSessionUUID to ensure all requests through the
+// same instance share a consistent session identity.
+func RewriteUserIDWithMasking(originalUserID, instanceSeed, maskedSessionUUID string) string {
+	// Try format A: user_{hex}_account__session_{uuid}
+	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
+		clientHex := m[1]
+		newClient := deterministicClientID(instanceSeed, clientHex)
+		return fmt.Sprintf("user_%s_account__session_%s", newClient, maskedSessionUUID)
+	}
+
+	// Try format B: user_{hex}_account_{uuid}_session_{uuid}
+	if m := userIDFormatB.FindStringSubmatch(originalUserID); m != nil {
+		clientHex := m[1]
+		accountUUID := m[2]
+		newClient := deterministicClientID(instanceSeed, clientHex)
+		newAccount := generateSessionUUID(instanceSeed + accountUUID)
+		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, maskedSessionUUID)
+	}
+
+	// Fallback: unknown format, generate fresh with masked session
+	clientID := GenerateClientID()
+	return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
+}
+
 // GenerateUserID creates a metadata.user_id in Claude Code format.
 // Format: user_{64hex}_account__session_{uuid}
 func GenerateUserID(sessionSeed string) string {

@@ -46,10 +46,16 @@ func parseBody(t *testing.T, body []byte) map[string]interface{} {
 // metadataUserIDRegex matches the format: user_{64hex}_account__session_{uuid}
 var metadataUserIDRegex = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account__session_[\w-]+$`)
 
-// TestEngineApply_OAuthNonClaudeCode verifies all 6 layers are applied
+// newTestEngine creates a test Engine with a temp data directory.
+func newTestEngine(t *testing.T) *Engine {
+	t.Helper()
+	return NewEngine(t.TempDir())
+}
+
+// TestEngineApply_OAuthNonClaudeCode verifies all layers are applied
 // when the client is not a real Claude Code client.
 func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -57,7 +63,7 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "test-session")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -77,13 +83,10 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		t.Error("expected X-Stainless-OS to be set")
 	}
 
-	// Layer 3: anthropic-beta header (mimic mode: oauth + interleaved-thinking only)
+	// Layer 3: anthropic-beta header (non-Haiku without tools → MessageBetaHeaderNoTools)
 	beta := upstreamReq.Header.Get("Anthropic-Beta")
-	if !strings.Contains(beta, BetaOAuth) {
-		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaOAuth, beta)
-	}
-	if !strings.Contains(beta, BetaInterleavedThinking) {
-		t.Errorf("expected anthropic-beta to contain %q, got %q", BetaInterleavedThinking, beta)
+	if beta != MessageBetaHeaderNoTools {
+		t.Errorf("expected anthropic-beta=%q, got %q", MessageBetaHeaderNoTools, beta)
 	}
 
 	parsed := parseBody(t, outBody)
@@ -115,13 +118,35 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	}
 }
 
+// TestEngineApply_OAuthNonClaudeCode_WithTools verifies tools trigger DefaultBetaHeader.
+func TestEngineApply_OAuthNonClaudeCode_WithTools(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+		"tools":    []interface{}{map[string]interface{}{"name": "my_tool"}},
+	})
+
+	_, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "inst-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	if beta != DefaultBetaHeader {
+		t.Errorf("expected beta=%q for request with tools, got %q", DefaultBetaHeader, beta)
+	}
+}
+
 // TestEngineApply_OAuthRealClaudeCode verifies that for real CC clients via OAuth:
 // - applied=true (so handler appends ?beta=true)
 // - beta header is supplemented with oauth token
 // - metadata.user_id is rewritten (different from original)
 // - model, system prompt, and other body fields are NOT modified
 func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 
 	// origReq has full Claude Code signals (User-Agent, X-App, Anthropic-Beta).
 	origReq := newTestRequest(t, nil)
@@ -144,7 +169,7 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	// Should be applied=true so handler appends ?beta=true
 	if !applied {
@@ -200,7 +225,7 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 // TestEngineApply_OAuthRealClaudeCode_Deterministic verifies that the same
 // CC client request with the same seed produces the same rewritten user_id.
 func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 
 	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123-def"
 	makeReq := func() (*http.Request, *http.Request, []byte) {
@@ -220,11 +245,11 @@ func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
 	}
 
 	origReq1, upReq1, body1 := makeReq()
-	out1, _ := e.Apply(origReq1, upReq1, body1, false, "same-seed")
+	out1, _ := e.Apply(origReq1, upReq1, body1, false, "same-seed", "inst-1")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upReq2, body2 := makeReq()
-	out2, _ := e.Apply(origReq2, upReq2, body2, false, "same-seed")
+	out2, _ := e.Apply(origReq2, upReq2, body2, false, "same-seed", "inst-1")
 	parsed2 := parseBody(t, out2)
 
 	uid1 := parsed1["metadata"].(map[string]interface{})["user_id"].(string)
@@ -237,16 +262,16 @@ func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
 // TestEngineApply_SystemPromptNotDuplicated verifies system prompt is not re-injected
 // when the body already contains a Claude Code system prompt prefix.
 func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
-		"model":  "claude-sonnet-4-5",
-		"system": "You are Claude Code, Anthropic's official CLI for Claude. Extra context here.",
+		"model":    "claude-sonnet-4-5",
+		"system":   "You are Claude Code, Anthropic's official CLI for Claude. Extra context here.",
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -254,8 +279,6 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 
 	parsed := parseBody(t, outBody)
 
-	// When system already starts with the Claude Code prompt, it should be left as-is
-	// (the injectSystemPrompt function returns early via HasPrefix check)
 	switch s := parsed["system"].(type) {
 	case string:
 		if !strings.HasPrefix(s, "You are Claude Code") {
@@ -271,7 +294,7 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 // TestEngineApply_NoSystemPromptForHaiku verifies system prompt injection is skipped
 // for Haiku models.
 func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -279,7 +302,7 @@ func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -292,12 +315,11 @@ func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 			t.Errorf("expected NO Claude Code system prompt for Haiku, but found it: %q", sysText)
 		}
 	}
-	// system key may or may not be present, but must not contain Claude Code prompt
 }
 
 // TestEngineApplyToURL_NoQueryParams verifies ?beta=true is appended when no query string exists.
 func TestEngineApplyToURL_NoQueryParams(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	input := "https://api.anthropic.com/v1/messages"
 	want := "https://api.anthropic.com/v1/messages?beta=true"
 	got := e.ApplyToURL(input)
@@ -309,7 +331,7 @@ func TestEngineApplyToURL_NoQueryParams(t *testing.T) {
 // TestEngineApplyToURL_WithExistingQueryParams verifies &beta=true is appended
 // when URL already has query parameters.
 func TestEngineApplyToURL_WithExistingQueryParams(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	input := "https://api.anthropic.com/v1/messages?foo=bar"
 	want := "https://api.anthropic.com/v1/messages?foo=bar&beta=true"
 	got := e.ApplyToURL(input)
@@ -321,7 +343,7 @@ func TestEngineApplyToURL_WithExistingQueryParams(t *testing.T) {
 // TestEngineApplyResponseModelID_Denormalized verifies that full versioned model IDs
 // in responses are reversed back to short names.
 func TestEngineApplyResponseModelID_Denormalized(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 
 	respBody, _ := json.Marshal(map[string]interface{}{
 		"id":    "msg_123",
@@ -341,7 +363,7 @@ func TestEngineApplyResponseModelID_Denormalized(t *testing.T) {
 // TestEngineApplyResponseModelID_UnknownModel verifies that unknown model IDs
 // are left unchanged.
 func TestEngineApplyResponseModelID_UnknownModel(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 
 	respBody, _ := json.Marshal(map[string]interface{}{
 		"id":    "msg_456",
@@ -361,7 +383,7 @@ func TestEngineApplyResponseModelID_UnknownModel(t *testing.T) {
 // TestEngineApply_ModelNormalization verifies that short model names are replaced
 // with their full versioned counterparts in the request body.
 func TestEngineApply_ModelNormalization(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -369,7 +391,7 @@ func TestEngineApply_ModelNormalization(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -384,7 +406,7 @@ func TestEngineApply_ModelNormalization(t *testing.T) {
 
 // TestEngineApply_StreamHeader verifies X-Stainless-Helper-Method is set for streaming.
 func TestEngineApply_StreamHeader(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -393,7 +415,7 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	_, applied := e.Apply(origReq, upstreamReq, body, true, "seed")
+	_, applied := e.Apply(origReq, upstreamReq, body, true, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -405,10 +427,44 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 	}
 }
 
-// TestEngineApply_SessionSeedDeterminism verifies that the same sessionSeed
-// produces different user_id prefixes but same UUID suffix.
-func TestEngineApply_SessionSeedDeterminism(t *testing.T) {
-	e := NewEngine()
+// TestEngineApply_PerInstanceFingerprint verifies that different instances get different fingerprints.
+func TestEngineApply_PerInstanceFingerprint(t *testing.T) {
+	e := newTestEngine(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+	})
+
+	_, upstreamReq1 := newTestRequestPair(t)
+	origReq1 := newTestRequest(t, nil)
+	e.Apply(origReq1, upstreamReq1, body, false, "seed", "inst-1")
+
+	_, upstreamReq2 := newTestRequestPair(t)
+	origReq2 := newTestRequest(t, nil)
+	e.Apply(origReq2, upstreamReq2, body, false, "seed", "inst-2")
+
+	// Different instances should potentially have different User-Agent values
+	// (they're random, so could occasionally match, but ClientID will differ)
+	ua1 := upstreamReq1.Header.Get("User-Agent")
+	ua2 := upstreamReq2.Header.Get("User-Agent")
+	if ua1 == "" || ua2 == "" {
+		t.Error("expected User-Agent to be set for both instances")
+	}
+
+	// Same instance should get the same fingerprint
+	_, upstreamReq3 := newTestRequestPair(t)
+	origReq3 := newTestRequest(t, nil)
+	e.Apply(origReq3, upstreamReq3, body, false, "seed", "inst-1")
+	ua3 := upstreamReq3.Header.Get("User-Agent")
+	if ua1 != ua3 {
+		t.Errorf("same instance should get same UA: %q vs %q", ua1, ua3)
+	}
+}
+
+// TestEngineApply_SessionMasking verifies that same instance gets same session UUID.
+func TestEngineApply_SessionMasking(t *testing.T) {
+	e := newTestEngine(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
 		"model":    "claude-sonnet-4-5",
@@ -416,44 +472,43 @@ func TestEngineApply_SessionSeedDeterminism(t *testing.T) {
 	})
 
 	origReq1, upstreamReq1 := newTestRequestPair(t)
-	out1, _ := e.Apply(origReq1, upstreamReq1, body, false, "fixed-seed")
+	out1, _ := e.Apply(origReq1, upstreamReq1, body, false, "seed", "inst-1")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upstreamReq2 := newTestRequestPair(t)
-	out2, _ := e.Apply(origReq2, upstreamReq2, body, false, "fixed-seed")
+	out2, _ := e.Apply(origReq2, upstreamReq2, body, false, "seed", "inst-1")
 	parsed2 := parseBody(t, out2)
 
-	meta1 := parsed1["metadata"].(map[string]interface{})
-	meta2 := parsed2["metadata"].(map[string]interface{})
-	userID1 := meta1["user_id"].(string)
-	userID2 := meta2["user_id"].(string)
-
-	// Both must match the format
-	if !metadataUserIDRegex.MatchString(userID1) {
-		t.Errorf("user_id1 does not match pattern: %q", userID1)
-	}
-	if !metadataUserIDRegex.MatchString(userID2) {
-		t.Errorf("user_id2 does not match pattern: %q", userID2)
-	}
-
-	// The UUID part (session seed) should be the same for same seed
-	// Format: user_{hex}_account__session_{uuid}
-	getUUID := func(uid string) string {
-		parts := strings.Split(uid, "_account__session_")
+	getSession := func(p map[string]interface{}) string {
+		meta := p["metadata"].(map[string]interface{})
+		uid := meta["user_id"].(string)
+		parts := strings.SplitN(uid, "_account__session_", 2)
 		if len(parts) == 2 {
 			return parts[1]
 		}
 		return ""
 	}
-	if getUUID(userID1) != getUUID(userID2) {
-		t.Errorf("expected same UUID for same sessionSeed, got %q vs %q", getUUID(userID1), getUUID(userID2))
+
+	s1 := getSession(parsed1)
+	s2 := getSession(parsed2)
+	if s1 != s2 {
+		t.Errorf("same instance should have same masked session UUID: %q vs %q", s1, s2)
+	}
+
+	// Different instance should have different session UUID
+	origReq3, upstreamReq3 := newTestRequestPair(t)
+	out3, _ := e.Apply(origReq3, upstreamReq3, body, false, "seed", "inst-2")
+	parsed3 := parseBody(t, out3)
+	s3 := getSession(parsed3)
+	if s1 == s3 {
+		t.Error("different instances should have different masked session UUIDs")
 	}
 }
 
 // TestEngineApply_SystemStringConvertedToArray verifies that a string system prompt
 // is converted to array format with Claude Code prompt prepended.
 func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	originalSystem := "You are a helpful assistant."
@@ -463,7 +518,7 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -501,7 +556,7 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 // TestEngineApply_InjectsEmptyTools verifies that an empty tools array is injected
 // when the request body has no tools field.
 func TestEngineApply_InjectsEmptyTools(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -509,7 +564,7 @@ func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -528,7 +583,7 @@ func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 
 // TestEngineApply_PreservesExistingTools verifies that existing tools are not overwritten.
 func TestEngineApply_PreservesExistingTools(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -539,7 +594,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -558,7 +613,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 // TestEngineApply_RemovesTemperatureAndToolChoice verifies that temperature
 // and tool_choice fields are stripped from the request body.
 func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -568,7 +623,7 @@ func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 		"tool_choice": map[string]interface{}{"type": "auto"},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -581,5 +636,52 @@ func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 	}
 	if _, exists := parsed["tool_choice"]; exists {
 		t.Error("expected tool_choice to be removed from body")
+	}
+}
+
+// TestEngineApply_ThinkingCacheControlCleaned verifies thinking blocks have
+// cache_control removed during disguise.
+func TestEngineApply_ThinkingCacheControlCleaned(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role": "assistant",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":          "thinking",
+						"thinking":      "deep thought",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+					map[string]interface{}{
+						"type":          "text",
+						"text":          "response",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+	messages := parsed["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+
+	thinkBlock := content[0].(map[string]interface{})
+	if _, has := thinkBlock["cache_control"]; has {
+		t.Error("expected cache_control removed from thinking block")
+	}
+
+	textBlock := content[1].(map[string]interface{})
+	if _, has := textBlock["cache_control"]; !has {
+		t.Error("expected cache_control preserved on text block")
 	}
 }

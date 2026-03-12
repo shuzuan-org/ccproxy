@@ -317,7 +317,7 @@ func (h *Handler) doRequest(
 			sessionSeed = upstreamURL // fallback seed
 		}
 		var modifiedBody []byte
-		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed)
+		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, inst.Name)
 		body = modifiedBody
 		slog.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
 	}
