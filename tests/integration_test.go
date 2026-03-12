@@ -222,7 +222,7 @@ func buildIntegrationOAuthManager(t *testing.T, instances []config.InstanceConfi
 			t.Fatalf("store.Save(%q): %v", inst.Name, err)
 		}
 	}
-	return oauth.NewManager(names, store)
+	return oauth.NewManager(names, store, nil)
 }
 
 // postMessages sends a POST /v1/messages to proxyURL with optional auth token

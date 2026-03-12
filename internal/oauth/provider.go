@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 // Anthropic OAuth constants — hardcoded, these do not change.
@@ -51,7 +54,8 @@ func (p *AnthropicProvider) AuthorizationURL(state, codeChallenge string) string
 
 // ExchangeCode exchanges an authorization code for tokens.
 // The code may contain a state suffix in the format "authCode#state".
-func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*OAuthToken, error) {
+// If proxyURL is non-empty, the token request is routed through the SOCKS5 proxy.
+func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier, proxyURL string) (*OAuthToken, error) {
 	slog.Info("oauth: exchanging authorization code",
 		"code_len", len(code),
 		"has_state", strings.Contains(code, "#"),
@@ -76,7 +80,7 @@ func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier
 		body["state"] = codeState
 	}
 
-	token, err := p.tokenRequest(ctx, body)
+	token, err := p.tokenRequest(ctx, body, proxyURL)
 	if err != nil {
 		slog.Error("oauth: code exchange failed", "error", err.Error())
 		return nil, err
@@ -86,14 +90,15 @@ func (p *AnthropicProvider) ExchangeCode(ctx context.Context, code, codeVerifier
 }
 
 // RefreshToken refreshes an OAuth token.
-func (p *AnthropicProvider) RefreshToken(ctx context.Context, refreshToken string) (*OAuthToken, error) {
+// If proxyURL is non-empty, the token request is routed through the SOCKS5 proxy.
+func (p *AnthropicProvider) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*OAuthToken, error) {
 	slog.Info("oauth: refreshing token")
 	body := map[string]any{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     ClientID,
 	}
-	token, err := p.tokenRequest(ctx, body)
+	token, err := p.tokenRequest(ctx, body, proxyURL)
 	if err != nil {
 		slog.Error("oauth: token refresh failed", "error", err.Error())
 		return nil, err
@@ -102,7 +107,7 @@ func (p *AnthropicProvider) RefreshToken(ctx context.Context, refreshToken strin
 	return token, nil
 }
 
-func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]any) (*OAuthToken, error) {
+func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]any, proxyURL string) (*OAuthToken, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -116,7 +121,12 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("User-Agent", "axios/1.8.4")
 
-	resp, err := p.client.Do(req)
+	client := p.client
+	if proxyURL != "" {
+		client = newProxyClient(proxyURL)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -148,4 +158,33 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 		ExpiresAt:    time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
 		Scope:        tokenResp.Scope,
 	}, nil
+}
+
+// newProxyClient creates an http.Client that routes requests through a SOCKS5 proxy.
+func newProxyClient(proxyURL string) *http.Client {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		// Fall back to default client on parse error.
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+
+	var auth *proxy.Auth
+	if u.User != nil {
+		auth = &proxy.Auth{User: u.User.Username()}
+		if p, ok := u.User.Password(); ok {
+			auth.Password = p
+		}
+	}
+
+	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
+	if err != nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Dial: dialer.Dial,
+		},
+	}
 }

@@ -1,14 +1,34 @@
 package tls
 
 import (
+	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/proxy"
 )
+
+// proxyURLKey is the context key for per-request SOCKS5 proxy URL.
+type proxyURLKey struct{}
+
+// WithProxyURL returns a context carrying the given SOCKS5 proxy URL.
+func WithProxyURL(ctx context.Context, proxyURL string) context.Context {
+	return context.WithValue(ctx, proxyURLKey{}, proxyURL)
+}
+
+// ProxyURLFromContext extracts the SOCKS5 proxy URL from context, or "".
+func ProxyURLFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(proxyURLKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // NewTransport creates an HTTP transport that uses utls to mimic
 // Claude CLI's TLS fingerprint (Node.js 20.x + OpenSSL 3.x).
@@ -24,7 +44,7 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return http.DefaultTransport.RoundTrip(req)
 	}
 
-	// Dial TCP
+	// Dial TCP (directly or via SOCKS5 proxy)
 	host := req.URL.Hostname()
 	port := req.URL.Port()
 	if port == "" {
@@ -32,7 +52,7 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	addr := net.JoinHostPort(host, port)
 
-	tcpConn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	tcpConn, err := dialTCP(req.Context(), addr)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +97,35 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 	}
 
 	return tr.RoundTrip(req)
+}
+
+// dialTCP establishes a TCP connection, optionally via a SOCKS5 proxy
+// specified in the request context.
+func dialTCP(ctx context.Context, addr string) (net.Conn, error) {
+	proxyURL := ProxyURLFromContext(ctx)
+	if proxyURL == "" {
+		return net.DialTimeout("tcp", addr, 30*time.Second)
+	}
+
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy URL %q: %w", proxyURL, err)
+	}
+
+	var auth *proxy.Auth
+	if u.User != nil {
+		auth = &proxy.Auth{User: u.User.Username()}
+		if p, ok := u.User.Password(); ok {
+			auth.Password = p
+		}
+	}
+
+	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("create SOCKS5 dialer: %w", err)
+	}
+
+	return dialer.Dial("tcp", addr)
 }
 
 func claudeCLIv2Spec() *utls.ClientHelloSpec {

@@ -89,7 +89,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 		t.Fatalf("store.Save: %v", err)
 	}
 
-	manager := oauth.NewManager([]string{"test-oauth"}, store)
+	manager := oauth.NewManager([]string{"test-oauth"}, store, nil)
 	return manager
 }
 

@@ -171,6 +171,30 @@
     .modal-status.error { color: var(--danger); }
     .modal-status.ok { color: var(--success); }
 
+    .inline-name-input, .inline-proxy-input {
+      width: 100%;
+      padding: 4px 8px;
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+
+    .inline-name-input { font-weight: 600; }
+
+    .proxy-cell {
+      cursor: pointer;
+      min-width: 120px;
+    }
+
+    .proxy-placeholder {
+      color: var(--text-muted);
+      font-size: 12px;
+      font-style: italic;
+    }
+
     @media (max-width: 640px) {
       .container { padding: 12px 8px; }
       header { padding: 10px 12px; }
@@ -191,7 +215,7 @@
       <h2>OAuth Instances</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <span class="badge" id="instance-count">—</span>
-        <button class="btn btn-accent" onclick="showAddModal()">+ Add Claude</button>
+        <button class="btn btn-accent" onclick="addInlineInstance()">+ Add Claude</button>
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -199,29 +223,16 @@
         <thead>
           <tr>
             <th>Name</th>
+            <th>Proxy</th>
             <th>Token Status</th>
             <th>Expires At</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="instances-body">
-          <tr class="empty-row"><td colspan="4">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="5">Loading…</td></tr>
         </tbody>
       </table>
-    </div>
-  </div>
-</div>
-
-<!-- Add Instance Modal -->
-<div class="modal-overlay" id="add-modal">
-  <div class="modal">
-    <h3>Add Claude Instance</h3>
-    <p>Enter a name for the new instance (e.g. your account name).</p>
-    <div class="modal-status" id="add-modal-status"></div>
-    <input type="text" id="add-instance-name" placeholder="Instance name…" />
-    <div class="modal-actions">
-      <button class="btn" onclick="closeAddModal()">Cancel</button>
-      <button class="btn btn-accent" id="add-modal-submit" onclick="submitAddInstance()">Add</button>
     </div>
   </div>
 </div>
@@ -285,16 +296,27 @@
     return html;
   }
 
+  var PROXY_HINT = 'socks5://user:password@ip:port';
+
+  function proxyCell(inst) {
+    var name = esc(inst.name);
+    if (inst.proxy) {
+      return '<td class="proxy-cell" ondblclick="editProxy(\'' + name + '\', this)">' + esc(inst.proxy) + '</td>';
+    }
+    return '<td class="proxy-cell" ondblclick="editProxy(\'' + name + '\', this)"><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>';
+  }
+
   function renderInstances(data) {
     document.getElementById('instance-count').textContent = data.length + ' instances';
     const tbody = document.getElementById('instances-body');
     if (!data.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No OAuth instances configured</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No OAuth instances configured</td></tr>';
       return;
     }
     tbody.innerHTML = data.map(function(inst) {
       return '<tr>' +
         '<td><strong>' + esc(inst.name) + '</strong></td>' +
+        proxyCell(inst) +
         '<td>' + tokenChip(inst.token_status) + '</td>' +
         '<td>' + fmtExpiry(inst.token_expires_at) + '</td>' +
         '<td>' + actionButtons(inst) + '</td>' +
@@ -433,47 +455,142 @@
   }
 
 
-  // --- Add / Remove Instance ---
+  // --- Proxy Inline Edit ---
 
-  function showAddModal() {
-    document.getElementById('add-instance-name').value = '';
-    document.getElementById('add-modal-status').textContent = '';
-    document.getElementById('add-modal-status').className = 'modal-status';
-    document.getElementById('add-modal').classList.add('active');
-    document.getElementById('add-instance-name').focus();
-  }
-
-  function closeAddModal() {
-    document.getElementById('add-modal').classList.remove('active');
-  }
-
-  async function submitAddInstance() {
-    const name = document.getElementById('add-instance-name').value.trim();
-    const statusEl = document.getElementById('add-modal-status');
-    if (!name) {
-      statusEl.textContent = 'Please enter a name.';
-      statusEl.className = 'modal-status error';
-      return;
-    }
-    const btn = document.getElementById('add-modal-submit');
-    btn.disabled = true;
-    statusEl.textContent = 'Adding…';
-    statusEl.className = 'modal-status';
+  function isValidProxy(s) {
     try {
-      await fetchJSON('/api/instances/add', {
+      var u = new URL(s);
+      return u.protocol === 'socks5:' && u.hostname && u.port;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function editProxy(instanceName, td) {
+    // Prevent double activation
+    if (td.querySelector('.inline-proxy-input')) return;
+
+    var current = td.querySelector('.proxy-placeholder') ? '' : td.textContent.trim();
+    td.innerHTML = '<input class="inline-proxy-input" type="text" placeholder="' + esc(PROXY_HINT) + '" value="' + esc(current) + '" />';
+    var input = td.querySelector('.inline-proxy-input');
+    input.focus();
+    input.select();
+
+    var saving = false;
+
+    async function save() {
+      if (saving) return;
+      var val = input.value.trim();
+      // Allow clearing
+      if (val === '') {
+        saving = true;
+        await submitProxy(instanceName, '', td);
+        return;
+      }
+      if (!isValidProxy(val)) {
+        input.style.borderColor = 'var(--danger)';
+        return;
+      }
+      saving = true;
+      await submitProxy(instanceName, val, td);
+    }
+
+    function cancel() {
+      // Restore original display
+      if (current) {
+        td.innerHTML = esc(current);
+      } else {
+        td.innerHTML = '<span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span>';
+      }
+    }
+
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', function() {
+      // Small delay to allow click events to fire first
+      setTimeout(function() { if (!saving) cancel(); }, 150);
+    });
+  }
+
+  async function submitProxy(instanceName, proxy, td) {
+    try {
+      await fetchJSON('/api/instances/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name }),
+        body: JSON.stringify({ name: instanceName, proxy: proxy }),
       });
-      statusEl.textContent = 'Added!';
-      statusEl.className = 'modal-status ok';
-      setTimeout(function() { closeAddModal(); refresh(); }, 600);
+      refresh();
     } catch (err) {
-      statusEl.textContent = 'Error: ' + err.message;
-      statusEl.className = 'modal-status error';
-    } finally {
-      btn.disabled = false;
+      alert('Update proxy failed: ' + err.message);
+      refresh();
     }
+  }
+
+  // --- Add / Remove Instance ---
+
+  function addInlineInstance() {
+    const tbody = document.getElementById('instances-body');
+    // Remove "no instances" empty row if present
+    const emptyRow = tbody.querySelector('.empty-row');
+    if (emptyRow) emptyRow.remove();
+    // Prevent multiple pending inline rows
+    if (tbody.querySelector('.inline-add-row')) {
+      tbody.querySelector('.inline-name-input').focus();
+      return;
+    }
+    const tr = document.createElement('tr');
+    tr.className = 'inline-add-row';
+    tr.innerHTML =
+      '<td><input class="inline-name-input" type="text" placeholder="Instance name…" /></td>' +
+      '<td><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
+      '<td><span class="chip chip-muted">—</span></td>' +
+      '<td>—</td>' +
+      '<td><div class="actions">' +
+        '<button class="btn btn-accent inline-save-btn">Save</button>' +
+        '<button class="btn inline-cancel-btn">Cancel</button>' +
+      '</div></td>';
+    tbody.insertBefore(tr, tbody.firstChild);
+
+    const input = tr.querySelector('.inline-name-input');
+    input.focus();
+
+    async function saveInline() {
+      const name = input.value.trim();
+      if (!name) { input.style.borderColor = 'var(--danger)'; return; }
+      const saveBtn = tr.querySelector('.inline-save-btn');
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Adding…';
+      try {
+        await fetchJSON('/api/instances/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name }),
+        });
+        refresh();
+      } catch (err) {
+        input.style.borderColor = 'var(--danger)';
+        saveBtn.textContent = 'Save';
+        saveBtn.disabled = false;
+        alert('Add failed: ' + err.message);
+      }
+    }
+
+    function cancelInline() {
+      tr.remove();
+      // Restore empty row if no instances remain
+      if (!tbody.children.length || (tbody.children.length === 0)) {
+        refresh();
+      }
+    }
+
+    tr.querySelector('.inline-save-btn').addEventListener('click', saveInline);
+    tr.querySelector('.inline-cancel-btn').addEventListener('click', cancelInline);
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') saveInline();
+      if (e.key === 'Escape') cancelInline();
+    });
   }
 
   async function doRemove(instanceName) {

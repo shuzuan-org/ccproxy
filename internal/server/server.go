@@ -50,7 +50,7 @@ func New(cfg *config.Config) (*Server, error) {
 		cancel()
 		return nil, fmt.Errorf("create oauth token store: %w", err)
 	}
-	oauthMgr := oauth.NewManager(registry.Names(), store)
+	oauthMgr := oauth.NewManager(registry.Names(), store, registry.GetProxy)
 
 	// 5. Create PKCE session store for browser-based OAuth login.
 	oauthSessions := oauth.NewSessionStore()
@@ -98,6 +98,7 @@ func New(cfg *config.Config) (*Server, error) {
 	mux.Handle("/api/instances", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleInstances))))
 	mux.Handle("/api/instances/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddInstance))))
 	mux.Handle("/api/instances/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveInstance))))
+	mux.Handle("/api/instances/proxy", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateProxy))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
 	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))

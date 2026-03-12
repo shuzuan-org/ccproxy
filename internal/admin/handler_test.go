@@ -34,7 +34,7 @@ func newTestHandler(t *testing.T) *Handler {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	mgr := oauth.NewManager(registry.Names(), store)
+	mgr := oauth.NewManager(registry.Names(), store, nil)
 	sessions := oauth.NewSessionStore()
 	return NewHandler(balancer, mgr, sessions, cfg, registry)
 }

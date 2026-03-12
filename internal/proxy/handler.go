@@ -261,6 +261,11 @@ func (h *Handler) doRequest(
 ) (*http.Response, int, error) {
 	ctx := origReq.Context()
 
+	// Inject per-instance SOCKS5 proxy into context for fingerprintTransport.
+	if inst.Proxy != "" {
+		ctx = proxytls.WithProxyURL(ctx, inst.Proxy)
+	}
+
 	// Step 5a: Resolve OAuth token.
 	if h.oauthManager == nil {
 		slog.Error("oauth manager not configured", "instance", inst.Name)

@@ -19,7 +19,7 @@ func newTestManager(t *testing.T, tokenServerURL string) (*Manager, *TokenStore)
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	m := NewManager([]string{"test-oauth"}, store)
+	m := NewManager([]string{"test-oauth"}, store, nil)
 	// Override provider's tokenURL for testing
 	m.provider.tokenURL = tokenServerURL
 	return m, store

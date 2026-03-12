@@ -42,6 +42,7 @@ type InstanceConfig struct {
 	BaseURL        string
 	RequestTimeout int
 	Enabled        *bool
+	Proxy          string // SOCKS5 proxy URL for this instance (e.g. "socks5://host:port")
 }
 
 // Load reads, parses, applies defaults, auto-generates missing credentials,
@@ -162,13 +163,14 @@ func (ic *InstanceConfig) IsEnabled() bool {
 }
 
 // RuntimeInstance builds a full InstanceConfig from global settings + a registry entry.
-func (c *Config) RuntimeInstance(name string, enabled bool) InstanceConfig {
+func (c *Config) RuntimeInstance(inst Instance) InstanceConfig {
 	return InstanceConfig{
-		Name:           name,
+		Name:           inst.Name,
 		MaxConcurrency: c.Server.MaxConcurrency,
 		BaseURL:        c.Server.BaseURL,
 		RequestTimeout: c.Server.RequestTimeout,
-		Enabled:        &enabled,
+		Enabled:        &inst.Enabled,
+		Proxy:          inst.Proxy,
 	}
 }
 
@@ -177,7 +179,7 @@ func (c *Config) RuntimeInstances(registry *InstanceRegistry) []InstanceConfig {
 	entries := registry.List()
 	result := make([]InstanceConfig, 0, len(entries))
 	for _, e := range entries {
-		result = append(result, c.RuntimeInstance(e.Name, e.Enabled))
+		result = append(result, c.RuntimeInstance(e))
 	}
 	return result
 }

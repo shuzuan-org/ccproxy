@@ -14,6 +14,7 @@ import (
 type Instance struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+	Proxy   string `json:"proxy,omitempty"`
 }
 
 // InstanceRegistry manages a persistent list of instances stored in data/instances.json.
@@ -127,6 +128,36 @@ func (r *InstanceRegistry) Names() []string {
 		names[i] = inst.Name
 	}
 	return names
+}
+
+// UpdateProxy sets the proxy URL for the named instance.
+func (r *InstanceRegistry) UpdateProxy(name, proxy string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for i, inst := range r.instances {
+		if inst.Name == name {
+			r.instances[i].Proxy = proxy
+			if err := r.save(); err != nil {
+				r.instances[i].Proxy = inst.Proxy // roll back
+				return fmt.Errorf("persist proxy update: %w", err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("instance %q not found", name)
+}
+
+// GetProxy returns the proxy URL for the named instance, or "" if not found.
+func (r *InstanceRegistry) GetProxy(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, inst := range r.instances {
+		if inst.Name == name {
+			return inst.Proxy
+		}
+	}
+	return ""
 }
 
 // SetOnChange registers a callback that is invoked (in a goroutine) whenever

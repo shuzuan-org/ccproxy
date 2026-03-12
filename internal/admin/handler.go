@@ -59,6 +59,7 @@ type InstanceState struct {
 	ActiveSlots    int     `json:"active_slots"`
 	MaxConcurrency int     `json:"max_concurrency"`
 	Enabled        bool    `json:"enabled"`
+	Proxy          string  `json:"proxy,omitempty"`
 	TokenStatus    string  `json:"token_status,omitempty"`
 	TokenExpiresAt *string `json:"token_expires_at,omitempty"`
 }
@@ -99,6 +100,7 @@ func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 			ActiveSlots:    activeSlots,
 			MaxConcurrency: maxConcurrency,
 			Enabled:        entry.Enabled,
+			Proxy:          entry.Proxy,
 		}
 
 		// Add token info
@@ -167,7 +169,8 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	// Exchange code for token
 	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
 	provider := h.oauthMgr.GetProvider()
-	token, err := provider.ExchangeCode(r.Context(), req.Code, session.Verifier)
+	proxyURL := h.registry.GetProxy(session.InstanceName)
+	token, err := provider.ExchangeCode(r.Context(), req.Code, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
 			"instance", session.InstanceName,
@@ -225,7 +228,8 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("oauth: manual refresh requested", "instance", req.Instance)
 	provider := h.oauthMgr.GetProvider()
-	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken)
+	proxyURL := h.registry.GetProxy(req.Instance)
+	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken, proxyURL)
 	if err != nil {
 		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
@@ -337,5 +341,26 @@ func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 	h.oauthMgr.UpdateInstances(h.registry.Names())
 
 	slog.Info("instance removed", "name", req.Name)
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// HandleUpdateProxy updates the proxy URL for an instance.
+// POST /api/instances/proxy
+func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name  string `json:"name"`
+		Proxy string `json:"proxy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.registry.UpdateProxy(req.Name, req.Proxy); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	slog.Info("instance proxy updated", "name", req.Name, "proxy", req.Proxy)
 	writeJSON(w, map[string]bool{"ok": true})
 }

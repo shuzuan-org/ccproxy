@@ -9,15 +9,17 @@ import (
 )
 
 type Manager struct {
-	mu        sync.RWMutex
-	instances []string // names of oauth instances
-	provider  *AnthropicProvider
-	store     *TokenStore
-	refreshMu map[string]*sync.Mutex
+	mu            sync.RWMutex
+	instances     []string // names of oauth instances
+	provider      *AnthropicProvider
+	store         *TokenStore
+	refreshMu     map[string]*sync.Mutex
+	proxyResolver func(instanceName string) string // resolves proxy URL per instance
 }
 
 // NewManager creates an OAuth manager for the given instance names.
-func NewManager(names []string, store *TokenStore) *Manager {
+// proxyResolver may be nil if no proxy resolution is needed.
+func NewManager(names []string, store *TokenStore, proxyResolver func(string) string) *Manager {
 	refreshMu := make(map[string]*sync.Mutex, len(names))
 	for _, name := range names {
 		refreshMu[name] = &sync.Mutex{}
@@ -25,10 +27,11 @@ func NewManager(names []string, store *TokenStore) *Manager {
 	instancesCopy := make([]string, len(names))
 	copy(instancesCopy, names)
 	return &Manager{
-		instances: instancesCopy,
-		provider:  NewAnthropicProvider(),
-		store:     store,
-		refreshMu: refreshMu,
+		instances:     instancesCopy,
+		provider:      NewAnthropicProvider(),
+		store:         store,
+		refreshMu:     refreshMu,
+		proxyResolver: proxyResolver,
 	}
 }
 
@@ -64,6 +67,14 @@ func (m *Manager) GetValidToken(ctx context.Context, instanceName string) (*OAut
 	return m.refreshToken(ctx, instanceName, token.RefreshToken)
 }
 
+// resolveProxy returns the proxy URL for the named instance, or "".
+func (m *Manager) resolveProxy(instanceName string) string {
+	if m.proxyResolver != nil {
+		return m.proxyResolver(instanceName)
+	}
+	return ""
+}
+
 func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenStr string) (*OAuthToken, error) {
 	m.mu.RLock()
 	mu, ok := m.refreshMu[instanceName]
@@ -81,7 +92,8 @@ func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenSt
 		return token, nil
 	}
 
-	newToken, err := m.provider.RefreshToken(ctx, refreshTokenStr)
+	proxyURL := m.resolveProxy(instanceName)
+	newToken, err := m.provider.RefreshToken(ctx, refreshTokenStr, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("refresh token: %w", err)
 	}

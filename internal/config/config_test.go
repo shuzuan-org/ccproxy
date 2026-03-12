@@ -326,7 +326,7 @@ func TestRuntimeInstance(t *testing.T) {
 		},
 	}
 
-	inst := cfg.RuntimeInstance("alice", true)
+	inst := cfg.RuntimeInstance(Instance{Name: "alice", Enabled: true, Proxy: "socks5://127.0.0.1:1080"})
 	if inst.Name != "alice" {
 		t.Errorf("name = %q, want alice", inst.Name)
 	}
@@ -341,6 +341,9 @@ func TestRuntimeInstance(t *testing.T) {
 	}
 	if !inst.IsEnabled() {
 		t.Error("should be enabled")
+	}
+	if inst.Proxy != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %q, want socks5://127.0.0.1:1080", inst.Proxy)
 	}
 }
 
