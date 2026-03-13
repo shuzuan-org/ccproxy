@@ -2,16 +2,15 @@ package tls
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
 
@@ -33,11 +32,17 @@ func ProxyURLFromContext(ctx context.Context) string {
 
 // NewTransport creates an HTTP transport that uses utls to mimic
 // Claude CLI's TLS fingerprint (Node.js 20.x + OpenSSL 3.x).
+// Connections are pooled per proxy URL for efficient reuse.
 func NewTransport() http.RoundTripper {
-	return &fingerprintTransport{}
+	return &fingerprintTransport{
+		transports: make(map[string]*http.Transport),
+	}
 }
 
-type fingerprintTransport struct{}
+type fingerprintTransport struct {
+	mu         sync.Mutex
+	transports map[string]*http.Transport // proxyURL → pooled transport
+}
 
 func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// For non-HTTPS requests, fall back to standard transport.
@@ -45,74 +50,77 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return http.DefaultTransport.RoundTrip(req)
 	}
 
-	// Dial TCP (directly or via SOCKS5 proxy)
-	host := req.URL.Hostname()
-	port := req.URL.Port()
-	if port == "" {
-		port = "443"
-	}
-	addr := net.JoinHostPort(host, port)
-
-	tcpConn, err := dialTCP(req.Context(), addr)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a fresh spec per request — utls mutates the spec during handshake
-	// (e.g. filling KeyShare key material), so reusing a spec causes failures.
-	spec := claudeCLIv2Spec()
-
-	// Apply utls handshake
-	tlsConn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloCustom)
-	if err := tlsConn.ApplyPreset(spec); err != nil {
-		_ = tcpConn.Close()
-		slog.Error("tls: utls preset failed", "host", host, "error", err.Error())
-		return nil, err
-	}
-	handshakeStart := time.Now()
-	if err := tlsConn.Handshake(); err != nil {
-		_ = tcpConn.Close()
-		slog.Error("tls: handshake failed", "host", host, "elapsed", time.Since(handshakeStart).String(), "error", err.Error())
-		return nil, err
-	}
-	slog.Debug("tls: handshake success",
-		"host", host,
-		"proto", tlsConn.ConnectionState().NegotiatedProtocol,
-		"via_proxy", ProxyURLFromContext(req.Context()) != "",
-		"elapsed", time.Since(handshakeStart).String(),
-	)
-
-	// Check negotiated protocol and use the appropriate transport
-	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
-		// HTTP/2: use x/net/http2 transport with pre-established connection
-		h2Transport := &http2.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false,
-			},
-		}
-		h2Conn, err := h2Transport.NewClientConn(tlsConn)
-		if err != nil {
-			_ = tlsConn.Close()
-			return nil, err
-		}
-		return h2Conn.RoundTrip(req)
-	}
-
-	// HTTP/1.1 fallback: create a one-shot transport that uses this connection
-	tr := &http.Transport{
-		DialTLS: func(network, addr string) (net.Conn, error) {
-			return tlsConn, nil
-		},
-		DisableKeepAlives: true,
-	}
-
+	proxyURL := ProxyURLFromContext(req.Context())
+	tr := t.getOrCreateTransport(proxyURL)
 	return tr.RoundTrip(req)
 }
 
-// dialTCP establishes a TCP connection, optionally via a SOCKS5 proxy
-// specified in the request context.
-func dialTCP(ctx context.Context, addr string) (net.Conn, error) {
-	proxyURL := ProxyURLFromContext(ctx)
+// getOrCreateTransport returns a pooled *http.Transport for the given proxyURL.
+// An empty proxyURL means direct connection (no proxy).
+func (t *fingerprintTransport) getOrCreateTransport(proxyURL string) *http.Transport {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if tr, ok := t.transports[proxyURL]; ok {
+		return tr
+	}
+
+	tr := &http.Transport{
+		DialTLSContext:      t.makeDialTLSContext(proxyURL),
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	t.transports[proxyURL] = tr
+	return tr
+}
+
+// makeDialTLSContext returns a DialTLSContext function bound to a specific proxyURL.
+func (t *fingerprintTransport) makeDialTLSContext(proxyURL string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Dial TCP (directly or via SOCKS5 proxy)
+		tcpConn, err := dialTCP(ctx, addr, proxyURL)
+		if err != nil {
+			return nil, err
+		}
+
+		// Extract hostname for SNI
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			_ = tcpConn.Close()
+			return nil, fmt.Errorf("split host port %q: %w", addr, err)
+		}
+
+		// Create a fresh spec per connection — utls mutates the spec during handshake
+		// (e.g. filling KeyShare key material), so reusing a spec causes failures.
+		spec := claudeCLIv2Spec()
+
+		// Apply utls handshake
+		tlsConn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloCustom)
+		if err := tlsConn.ApplyPreset(spec); err != nil {
+			_ = tcpConn.Close()
+			slog.Error("tls: utls preset failed", "host", host, "error", err.Error())
+			return nil, err
+		}
+		handshakeStart := time.Now()
+		if err := tlsConn.Handshake(); err != nil {
+			_ = tcpConn.Close()
+			slog.Error("tls: handshake failed", "host", host, "elapsed", time.Since(handshakeStart).String(), "error", err.Error())
+			return nil, err
+		}
+		slog.Debug("tls: handshake success",
+			"host", host,
+			"proto", tlsConn.ConnectionState().NegotiatedProtocol,
+			"via_proxy", proxyURL != "",
+			"elapsed", time.Since(handshakeStart).String(),
+		)
+
+		return tlsConn, nil
+	}
+}
+
+// dialTCP establishes a TCP connection, optionally via a SOCKS5 proxy.
+func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error) {
 	if proxyURL == "" {
 		slog.Debug("tls: dialing direct", "addr", addr)
 		start := time.Now()
@@ -194,7 +202,7 @@ func claudeCLIv2Spec() *utls.ClientHelloSpec {
 				},
 			},
 			&utls.SessionTicketExtension{},
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
 			&utls.ExtendedMasterSecretExtension{},
 			&utls.SignatureAlgorithmsExtension{
 				SupportedSignatureAlgorithms: []utls.SignatureScheme{
