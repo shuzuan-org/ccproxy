@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 )
 
 // Middleware returns an HTTP middleware that rate-limits requests by client IP.
@@ -27,18 +26,9 @@ func Middleware(limiter *Limiter) func(http.Handler) http.Handler {
 	}
 }
 
-// clientIP extracts the client IP from the request, preferring X-Forwarded-For.
+// clientIP extracts the client IP from the request using RemoteAddr only.
+// X-Forwarded-For is intentionally ignored to prevent IP spoofing.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2.
-		// The first one is the original client.
-		if i := strings.IndexByte(xff, ','); i != -1 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-
-	// Fall back to RemoteAddr, stripping port.
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

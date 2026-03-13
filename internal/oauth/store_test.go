@@ -168,3 +168,27 @@ func TestStore_List(t *testing.T) {
 		}
 	}
 }
+
+func TestDeriveKey_Deterministic(t *testing.T) {
+	key1, err := deriveKey()
+	if err != nil {
+		t.Fatalf("deriveKey() error: %v", err)
+	}
+	key2, err := deriveKey()
+	if err != nil {
+		t.Fatalf("deriveKey() second call error: %v", err)
+	}
+	if !bytes.Equal(key1, key2) {
+		t.Error("deriveKey() should return deterministic results")
+	}
+	if len(key1) != 32 {
+		t.Errorf("expected 32-byte key, got %d bytes", len(key1))
+	}
+}
+
+func TestMachineID_NotPanic(t *testing.T) {
+	// machineID() should never panic regardless of platform
+	id := machineID()
+	// On macOS/Linux it should return a non-empty string; on other platforms empty is fine
+	_ = id
+}

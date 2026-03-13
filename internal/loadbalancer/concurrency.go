@@ -128,3 +128,11 @@ func (t *ConcurrencyTracker) ActiveSlots(instanceName string) int {
 	defer t.mu.Unlock()
 	return len(t.slots[instanceName])
 }
+
+// RemoveInstance removes all tracking data for a removed instance.
+func (t *ConcurrencyTracker) RemoveInstance(instanceName string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.slots, instanceName)
+	delete(t.waiting, instanceName)
+}

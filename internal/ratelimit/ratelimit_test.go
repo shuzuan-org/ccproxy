@@ -105,7 +105,7 @@ func TestMiddleware_Returns429(t *testing.T) {
 	}
 }
 
-func TestMiddleware_XForwardedFor(t *testing.T) {
+func TestMiddleware_XForwardedForIgnored(t *testing.T) {
 	t.Parallel()
 	lim := NewLimiter(1, time.Minute)
 
@@ -113,15 +113,24 @@ func TestMiddleware_XForwardedFor(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Two requests from different X-Forwarded-For IPs should both be allowed.
-	for _, ip := range []string{"10.0.0.1", "10.0.0.2"} {
-		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-		req.Header.Set("X-Forwarded-For", ip)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("request from %s: got status %d, want 200", ip, rec.Code)
-		}
+	// Two requests from different X-Forwarded-For IPs but same RemoteAddr
+	// should be rate-limited because XFF is ignored.
+	req1 := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req1.RemoteAddr = "192.168.1.50:12345"
+	req1.Header.Set("X-Forwarded-For", "10.0.0.1")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request: got status %d, want 200", rec1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req2.RemoteAddr = "192.168.1.50:12346"
+	req2.Header.Set("X-Forwarded-For", "10.0.0.2")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: got status %d, want 429 (XFF should be ignored)", rec2.Code)
 	}
 }
 
@@ -133,8 +142,8 @@ func TestClientIP(t *testing.T) {
 		remoteAddr string
 		want       string
 	}{
-		{"xff single", "1.2.3.4", "5.6.7.8:9999", "1.2.3.4"},
-		{"xff multiple", "1.2.3.4, 5.6.7.8", "9.9.9.9:1234", "1.2.3.4"},
+		{"xff single", "1.2.3.4", "5.6.7.8:9999", "5.6.7.8"},
+		{"xff multiple", "1.2.3.4, 5.6.7.8", "9.9.9.9:1234", "9.9.9.9"},
 		{"no xff", "", "10.0.0.1:5555", "10.0.0.1"},
 		{"no xff no port", "", "10.0.0.1", "10.0.0.1"},
 	}

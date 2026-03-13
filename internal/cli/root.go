@@ -47,24 +47,19 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		// Handle OS signals for graceful shutdown and config reload.
+		// Handle OS signals for graceful shutdown.
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 		go func() {
-			for sig := range sigCh {
-				switch sig {
-				case syscall.SIGINT, syscall.SIGTERM:
-					slog.Info("received shutdown signal", "signal", sig.String())
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					if err := srv.Shutdown(ctx); err != nil {
-						slog.Error("shutdown error", "error", err.Error())
-					}
-					cancel()
-				case syscall.SIGHUP:
-					slog.Info("received SIGHUP, reloading config")
-				}
+			sig := <-sigCh
+			slog.Info("received shutdown signal", "signal", sig.String())
+			signal.Stop(sigCh)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := srv.Shutdown(ctx); err != nil {
+				slog.Error("shutdown error", "error", err.Error())
 			}
+			cancel()
 		}()
 
 		return srv.Start()

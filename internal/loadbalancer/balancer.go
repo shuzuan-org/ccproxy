@@ -77,6 +77,7 @@ type instanceCandidate struct {
 func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string]bool) (*SelectResult, error) {
 	b.mu.RLock()
 	instances := b.instances
+	health := b.health
 	b.mu.RUnlock()
 
 	if len(instances) == 0 {
@@ -92,7 +93,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 			if time.Since(si.LastRequest) < sessionTTL {
 				inst := b.findInstance(si.InstanceName)
 				if inst != nil && !excludeInstances[inst.Name] {
-					h := b.health[inst.Name]
+					h := health[inst.Name]
 					if h == nil || h.IsAvailable() {
 						maxC := inst.MaxConcurrency
 						if h != nil {
@@ -119,7 +120,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		if excludeInstances[inst.Name] {
 			continue
 		}
-		h := b.health[inst.Name]
+		h := health[inst.Name]
 		if h != nil && !h.IsAvailable() {
 			continue
 		}
@@ -159,7 +160,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 	// Try to acquire slot
 	for _, c := range candidates {
 		maxC := c.instance.MaxConcurrency
-		if h := b.health[c.instance.Name]; h != nil {
+		if h := health[c.instance.Name]; h != nil {
 			maxC = h.MaxConcurrency()
 		}
 		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, maxC); ok {
@@ -200,35 +201,33 @@ func (b *Balancer) ClearSession(sessionKey string) {
 }
 
 // UpdateInstances atomically replaces the instance list (for hot-reload),
-// preserving health state for existing instances.
+// preserving health state for existing instances and cleaning up removed ones.
 func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	oldNames := make(map[string]bool, len(b.instances))
-	for _, inst := range b.instances {
-		oldNames[inst.Name] = true
-	}
-
 	b.instances = filterEnabled(instances)
 
-	var added []string
+	newHealth := make(map[string]*AccountHealth, len(b.instances))
+	var added, removed []string
 	for _, inst := range b.instances {
-		if _, exists := b.health[inst.Name]; !exists {
-			b.health[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+		if existing, ok := b.health[inst.Name]; ok {
+			newHealth[inst.Name] = existing
+		} else {
+			newHealth[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
 			added = append(added, inst.Name)
 		}
 	}
-
-	newNames := make(map[string]bool, len(b.instances))
-	for _, inst := range b.instances {
-		newNames[inst.Name] = true
-	}
-	var removed []string
-	for name := range oldNames {
-		if !newNames[name] {
+	for name := range b.health {
+		if _, ok := newHealth[name]; !ok {
 			removed = append(removed, name)
 		}
+	}
+	b.health = newHealth
+
+	// Clean up tracker entries for removed instances
+	for _, name := range removed {
+		b.tracker.RemoveInstance(name)
 	}
 
 	if len(added) > 0 || len(removed) > 0 {

@@ -211,3 +211,38 @@ func TestConcurrencyTracker_ConcurrentAcquire(t *testing.T) {
 		t.Errorf("expected 0 active slots after all releases")
 	}
 }
+
+func TestConcurrencyTracker_RemoveInstance(t *testing.T) {
+	tracker := NewConcurrencyTracker()
+
+	// Acquire some slots
+	r1, ok := tracker.Acquire("inst1", "req1", 5)
+	if !ok {
+		t.Fatal("acquire should succeed")
+	}
+	_ = r1 // intentionally not releasing
+
+	r2, ok := tracker.Acquire("inst1", "req2", 5)
+	if !ok {
+		t.Fatal("acquire should succeed")
+	}
+	_ = r2
+
+	tracker.IncrementWaiting("inst1")
+
+	if tracker.ActiveSlots("inst1") != 2 {
+		t.Fatalf("expected 2 active slots, got %d", tracker.ActiveSlots("inst1"))
+	}
+
+	// Remove instance
+	tracker.RemoveInstance("inst1")
+
+	if tracker.ActiveSlots("inst1") != 0 {
+		t.Errorf("expected 0 active slots after RemoveInstance, got %d", tracker.ActiveSlots("inst1"))
+	}
+
+	// LoadRate should also be 0
+	if rate := tracker.LoadRate("inst1", 5); rate != 0 {
+		t.Errorf("expected 0%% load rate after RemoveInstance, got %d%%", rate)
+	}
+}

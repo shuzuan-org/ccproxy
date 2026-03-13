@@ -279,7 +279,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 	var wg sync.WaitGroup
 	goroutines := 30
 
-	wg.Add(goroutines)
+	wg.Add(goroutines + 5)
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
@@ -290,6 +290,14 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 			// Simulate short work then release
 			time.Sleep(time.Millisecond)
 			result.Release()
+		}()
+	}
+
+	// Concurrent UpdateInstances to trigger race detector
+	for i := 0; i < 5; i++ {
+		go func() {
+			defer wg.Done()
+			b.UpdateInstances(instances)
 		}()
 	}
 
@@ -403,5 +411,32 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 	b.ReportResult("inst1", 500, 1000, 0)
 	if h.MaxConcurrency() == 5 {
 		t.Error("expected AIMD decrease after error")
+	}
+}
+
+// Test: UpdateInstances cleans up health for removed instances
+func TestBalancer_UpdateInstances_CleansHealth(t *testing.T) {
+	instances := []config.InstanceConfig{
+		makeInstance("inst-a", 5),
+		makeInstance("inst-b", 5),
+	}
+	b := newTestBalancer(instances)
+
+	// Verify both have health
+	if b.GetHealth("inst-a") == nil {
+		t.Fatal("expected health for inst-a")
+	}
+	if b.GetHealth("inst-b") == nil {
+		t.Fatal("expected health for inst-b")
+	}
+
+	// Update to only inst-b
+	b.UpdateInstances([]config.InstanceConfig{makeInstance("inst-b", 5)})
+
+	if b.GetHealth("inst-a") != nil {
+		t.Error("expected health for inst-a to be cleaned up")
+	}
+	if b.GetHealth("inst-b") == nil {
+		t.Error("expected health for inst-b to still exist")
 	}
 }

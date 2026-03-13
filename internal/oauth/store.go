@@ -9,7 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,15 +137,47 @@ func (s *TokenStore) saveFile(data *tokenFileData) error {
 
 func deriveKey() ([]byte, error) {
 	hostname, _ := os.Hostname()
-	username := os.Getenv("USER")
-	if username == "" {
-		username = "default"
+
+	username := "default"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		username = u.Username
 	}
-	// Use hostname + username as salt material
+
+	mid := machineID()
+
+	// Use hostname + username + machineID as password material
+	password := fmt.Sprintf("ccproxy-%s-%s-%s", hostname, username, mid)
 	salt := []byte(fmt.Sprintf("ccproxy-%s-%s", hostname, username))
+
 	// Argon2id key derivation
-	key := argon2.IDKey([]byte("ccproxy-token-store"), salt, 1, 64*1024, 4, 32)
+	key := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
 	return key, nil
+}
+
+// machineID returns a platform-specific machine identifier.
+// Returns empty string on unsupported platforms or errors.
+func machineID() string {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+		if err != nil {
+			return ""
+		}
+		re := regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([^"]+)"`)
+		matches := re.FindSubmatch(out)
+		if len(matches) < 2 {
+			return ""
+		}
+		return string(matches[1])
+	case "linux":
+		data, err := os.ReadFile("/etc/machine-id")
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	default:
+		return ""
+	}
 }
 
 func encrypt(plaintext, key []byte) ([]byte, error) {
