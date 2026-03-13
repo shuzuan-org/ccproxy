@@ -152,6 +152,20 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("server.admin_password is required"))
 	}
 
+	// Field range checks
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		errs = append(errs, fmt.Errorf("port must be between 1 and 65535, got %d", c.Server.Port))
+	}
+	if c.Server.MaxConcurrency < 1 {
+		errs = append(errs, fmt.Errorf("max_concurrency must be >= 1, got %d", c.Server.MaxConcurrency))
+	}
+	if c.Server.RequestTimeout < 1 {
+		errs = append(errs, fmt.Errorf("request_timeout must be >= 1, got %d", c.Server.RequestTimeout))
+	}
+	if c.Server.RateLimit < 0 {
+		errs = append(errs, fmt.Errorf("rate_limit must be >= 0, got %d", c.Server.RateLimit))
+	}
+
 	// At least 1 enabled API key
 	enabledKeys := 0
 	for _, k := range c.APIKeys {
@@ -289,6 +303,9 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 				slog.Error("config watcher error", "error", err.Error())
 
 			case <-done:
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
 				return
 			}
 		}

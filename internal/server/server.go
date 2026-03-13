@@ -246,3 +246,12 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.statusCode = code
 	lrw.ResponseWriter.WriteHeader(code)
 }
+
+// Flush delegates to the underlying ResponseWriter if it supports http.Flusher.
+// This is critical for SSE streaming — without it, events are buffered and
+// delivered in bulk instead of being flushed to the client in real time.
+func (lrw *loggingResponseWriter) Flush() {
+	if f, ok := lrw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

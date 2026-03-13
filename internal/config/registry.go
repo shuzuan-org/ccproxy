@@ -47,10 +47,10 @@ func (r *InstanceRegistry) Add(name string) error {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	for _, inst := range r.instances {
 		if inst.Name == name {
+			r.mu.Unlock()
 			return fmt.Errorf("instance %q already exists", name)
 		}
 	}
@@ -59,14 +59,21 @@ func (r *InstanceRegistry) Add(name string) error {
 	if err := r.save(); err != nil {
 		// Roll back
 		r.instances = r.instances[:len(r.instances)-1]
+		r.mu.Unlock()
 		return fmt.Errorf("persist instance: %w", err)
 	}
 
-	if r.onChange != nil {
-		// Copy to avoid data race with callback
-		snapshot := make([]Instance, len(r.instances))
+	// Capture callback and snapshot before releasing lock
+	onChange := r.onChange
+	var snapshot []Instance
+	if onChange != nil {
+		snapshot = make([]Instance, len(r.instances))
 		copy(snapshot, r.instances)
-		go r.onChange(snapshot)
+	}
+	r.mu.Unlock()
+
+	if onChange != nil {
+		go onChange(snapshot)
 	}
 	return nil
 }
@@ -74,7 +81,6 @@ func (r *InstanceRegistry) Add(name string) error {
 // Remove removes the instance with the given name.
 func (r *InstanceRegistry) Remove(name string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	idx := -1
 	for i, inst := range r.instances {
@@ -84,21 +90,32 @@ func (r *InstanceRegistry) Remove(name string) error {
 		}
 	}
 	if idx == -1 {
+		r.mu.Unlock()
 		return fmt.Errorf("instance %q not found", name)
 	}
 
-	removed := r.instances[idx]
+	// Save full snapshot before mutating the slice for safe rollback
+	original := make([]Instance, len(r.instances))
+	copy(original, r.instances)
+
 	r.instances = append(r.instances[:idx], r.instances[idx+1:]...)
 	if err := r.save(); err != nil {
-		// Roll back
-		r.instances = append(r.instances[:idx], append([]Instance{removed}, r.instances[idx:]...)...)
+		r.instances = original
+		r.mu.Unlock()
 		return fmt.Errorf("persist removal: %w", err)
 	}
 
-	if r.onChange != nil {
-		snapshot := make([]Instance, len(r.instances))
+	// Capture callback and snapshot before releasing lock
+	onChange := r.onChange
+	var snapshot []Instance
+	if onChange != nil {
+		snapshot = make([]Instance, len(r.instances))
 		copy(snapshot, r.instances)
-		go r.onChange(snapshot)
+	}
+	r.mu.Unlock()
+
+	if onChange != nil {
+		go onChange(snapshot)
 	}
 	return nil
 }
@@ -182,7 +199,7 @@ func (r *InstanceRegistry) save() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
-	return os.WriteFile(r.path, data, 0o600)
+	return atomicWriteFile(r.path, data, 0o600)
 }
 
 func (r *InstanceRegistry) load() error {

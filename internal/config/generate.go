@@ -19,12 +19,21 @@ const (
 // GenerateAdminPassword returns a cryptographically random 32-character
 // password using uppercase, lowercase letters and digits.
 func GenerateAdminPassword() string {
+	// Rejection sampling to eliminate modulo bias.
+	// 256 % 62 = 8, so naive modulo has ~3.2% bias.
+	const maxUnbiased = 256 - (256 % len(passwordCharset)) // 248
 	b := make([]byte, adminPasswordLength)
-	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("crypto/rand failed: %v", err))
-	}
+	buf := make([]byte, 1)
 	for i := range b {
-		b[i] = passwordCharset[int(b[i])%len(passwordCharset)]
+		for {
+			if _, err := rand.Read(buf); err != nil {
+				panic("crypto/rand failed: " + err.Error())
+			}
+			if int(buf[0]) < maxUnbiased {
+				b[i] = passwordCharset[int(buf[0])%len(passwordCharset)]
+				break
+			}
+		}
 	}
 	return string(b)
 }
@@ -95,7 +104,7 @@ func writeGeneratedToFile(path string, cfg *Config, password, apiKey bool) error
 		content = appendAPIKey(content, k)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := atomicWriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 	return nil
@@ -111,6 +120,9 @@ func insertAdminPassword(content, password string) string {
 	replaced := false
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue // skip comments
+		}
 		if strings.HasPrefix(trimmed, "admin_password") && strings.Contains(trimmed, "=") {
 			// Check if the value is empty (e.g. admin_password = "" or admin_password = '')
 			parts := strings.SplitN(trimmed, "=", 2)
