@@ -43,7 +43,7 @@ func NewBalancer(instances []config.InstanceConfig, tracker *ConcurrencyTracker)
 	enabled := filterEnabled(instances)
 	health := make(map[string]*AccountHealth, len(enabled))
 	for _, inst := range enabled {
-		health[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+		health[inst.Name] = NewAccountHealth(inst.Name)
 	}
 	return &Balancer{
 		instances: enabled,
@@ -95,13 +95,9 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 				if inst != nil && !excludeInstances[inst.Name] {
 					h := health[inst.Name]
 					if h == nil || h.IsAvailable() {
-						maxC := inst.MaxConcurrency
-						if h != nil {
-							maxC = h.MaxConcurrency()
-						}
-						rate := b.tracker.LoadRate(inst.Name, maxC)
+						rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
 						if rate < 100 {
-							if release, ok := b.tracker.Acquire(inst.Name, requestID, maxC); ok {
+							if release, ok := b.tracker.Acquire(inst.Name, requestID, inst.MaxConcurrency); ok {
 								b.sessions.Store(sessionKey, &SessionInfo{
 									InstanceName: si.InstanceName,
 									LastRequest:  time.Now(),
@@ -127,11 +123,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		if h != nil && !h.IsAvailable() {
 			continue
 		}
-		maxC := inst.MaxConcurrency
-		if h != nil {
-			maxC = h.MaxConcurrency()
-		}
-		rate := b.tracker.LoadRate(inst.Name, maxC)
+		rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
 		if rate >= 100 {
 			continue
 		}
@@ -155,11 +147,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 	// Short-circuit: single candidate, no sorting needed
 	if len(candidates) == 1 {
 		c := candidates[0]
-		maxC := c.instance.MaxConcurrency
-		if h := health[c.instance.Name]; h != nil {
-			maxC = h.MaxConcurrency()
-		}
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, maxC); ok {
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, c.instance.MaxConcurrency); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
@@ -184,11 +172,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 
 	// Try to acquire slot
 	for _, c := range candidates {
-		maxC := c.instance.MaxConcurrency
-		if h := health[c.instance.Name]; h != nil {
-			maxC = h.MaxConcurrency()
-		}
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, maxC); ok {
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, c.instance.MaxConcurrency); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
@@ -239,7 +223,7 @@ func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 		if existing, ok := b.health[inst.Name]; ok {
 			newHealth[inst.Name] = existing
 		} else {
-			newHealth[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+			newHealth[inst.Name] = NewAccountHealth(inst.Name)
 			added = append(added, inst.Name)
 		}
 	}

@@ -24,7 +24,6 @@ type PersistedState struct {
 
 // PersistedAccount holds the persisted health fields for one instance.
 type PersistedAccount struct {
-	MaxConcurrency int32  `json:"max_concurrency"`
 	Disabled       bool   `json:"disabled"`
 	DisabledReason string `json:"disabled_reason,omitempty"`
 }
@@ -38,7 +37,6 @@ func SaveState(dataDir string, health map[string]*AccountHealth) error {
 	for name, h := range health {
 		h.mu.RLock()
 		state.Accounts[name] = &PersistedAccount{
-			MaxConcurrency: h.maxConcurrency.Load(),
 			Disabled:       h.disabled,
 			DisabledReason: h.disabledReason,
 		}
@@ -91,9 +89,6 @@ func ApplyState(health map[string]*AccountHealth, state *PersistedState) {
 		h, ok := health[name]
 		if !ok {
 			continue
-		}
-		if pa.MaxConcurrency >= h.aimdMin && pa.MaxConcurrency <= h.aimdMax {
-			h.maxConcurrency.Store(pa.MaxConcurrency)
 		}
 		if pa.Disabled {
 			h.Disable(pa.DisabledReason)

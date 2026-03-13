@@ -5,54 +5,9 @@ import (
 	"time"
 )
 
-func TestAIMD_IncreaseAfter10Successes(t *testing.T) {
-	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
-	initial := h.MaxConcurrency()
-
-	for i := 0; i < aimdIncreaseEvery; i++ {
-		h.RecordSuccess(1000)
-	}
-	if h.MaxConcurrency() != initial+1 {
-		t.Errorf("expected %d after %d successes, got %d", initial+1, aimdIncreaseEvery, h.MaxConcurrency())
-	}
-}
-
-func TestAIMD_DecreaseOnError(t *testing.T) {
-	t.Parallel()
-	h := NewAccountHealth("test", 10, 10)
-
-	h.RecordError(500, 0)
-	got := h.MaxConcurrency()
-	want := 5 // 10 * 0.5
-	if got != want {
-		t.Errorf("expected %d after error, got %d", want, got)
-	}
-}
-
-func TestAIMD_FloorAndCeiling(t *testing.T) {
-	t.Parallel()
-
-	// Test floor
-	h := NewAccountHealth("test", 1, 10)
-	h.RecordError(500, 0)
-	if h.MaxConcurrency() < 1 {
-		t.Errorf("should not go below floor 1, got %d", h.MaxConcurrency())
-	}
-
-	// Test ceiling
-	h2 := NewAccountHealth("test2", 9, 10)
-	for i := 0; i < aimdIncreaseEvery*5; i++ {
-		h2.RecordSuccess(1000)
-	}
-	if h2.MaxConcurrency() > 10 {
-		t.Errorf("should not exceed ceiling 10, got %d", h2.MaxConcurrency())
-	}
-}
-
 func TestCooldown_429WithRetryAfter(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 
 	h.RecordError(429, 60*time.Second)
 	if h.IsAvailable() {
@@ -62,7 +17,7 @@ func TestCooldown_429WithRetryAfter(t *testing.T) {
 
 func TestCooldown_Expiry(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 
 	// Set a very short cooldown
 	h.SetCooldown(1*time.Millisecond, "test")
@@ -74,7 +29,7 @@ func TestCooldown_Expiry(t *testing.T) {
 
 func TestDisable_403(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 
 	h.RecordError(403, 0)
 	if h.IsAvailable() {
@@ -90,7 +45,7 @@ func TestDisable_403(t *testing.T) {
 
 func TestErrorRate_SlidingWindow(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 
 	// Record 3 successes and 1 error
 	h.RecordSuccess(1000)
@@ -107,7 +62,7 @@ func TestErrorRate_SlidingWindow(t *testing.T) {
 
 func TestLatencyEMA_Convergence(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 
 	// First measurement initializes
 	h.RecordSuccess(1000)
@@ -129,7 +84,7 @@ func TestScore_Composite(t *testing.T) {
 	t.Parallel()
 
 	// Cold start: no errors, no latency → score from load only
-	h := NewAccountHealth("test", 5, 10)
+	h := NewAccountHealth("test")
 	score := h.Score(50)
 	want := 0.0*0.4 + 0.0*0.3 + 0.5*0.3 // errorRate=0, latency=0, loadRate=50%
 	if score < want-0.01 || score > want+0.01 {
@@ -148,10 +103,7 @@ func TestScore_Composite(t *testing.T) {
 func TestNewAccountHealth_Defaults(t *testing.T) {
 	t.Parallel()
 
-	h := NewAccountHealth("test", 0, 0)
-	if h.MaxConcurrency() < 1 {
-		t.Error("initial max should be at least 1")
-	}
+	h := NewAccountHealth("test")
 	if !h.IsAvailable() {
 		t.Error("new health should be available")
 	}

@@ -8,10 +8,6 @@ import (
 )
 
 const (
-	aimdIncreaseEvery  = 10               // successes before +1
-	aimdBeta           = 0.5              // multiplicative decrease factor
-	aimdDefaultMin     = int32(1)         // floor
-	aimdDefaultMax     = int32(10)        // ceiling
 	healthWindowSize   = 5 * time.Minute  // sliding window for error rate
 	healthWindowMaxCap = 1000             // max entries per window slice
 	cooldown429        = 30 * time.Second // default cooldown for 429
@@ -22,12 +18,6 @@ const (
 // AccountHealth tracks dynamic health state for one instance.
 type AccountHealth struct {
 	Name string
-
-	// AIMD adaptive concurrency
-	maxConcurrency atomic.Int32 // current AIMD limit
-	successCount   atomic.Int32 // consecutive successes toward increase
-	aimdMin        int32        // floor
-	aimdMax        int32        // ceiling
 
 	// Cooldown
 	mu             sync.RWMutex
@@ -47,55 +37,21 @@ type AccountHealth struct {
 }
 
 // NewAccountHealth creates a new health tracker for an instance.
-func NewAccountHealth(name string, initialMax, ceilingMax int32) *AccountHealth {
-	if initialMax < 1 {
-		initialMax = aimdDefaultMin
+func NewAccountHealth(name string) *AccountHealth {
+	return &AccountHealth{
+		Name: name,
 	}
-	if ceilingMax < initialMax {
-		ceilingMax = initialMax
-	}
-	h := &AccountHealth{
-		Name:    name,
-		aimdMin: aimdDefaultMin,
-		aimdMax: ceilingMax,
-	}
-	h.maxConcurrency.Store(initialMax)
-	return h
-}
-
-// MaxConcurrency returns the current AIMD concurrency limit.
-func (h *AccountHealth) MaxConcurrency() int {
-	return int(h.maxConcurrency.Load())
 }
 
 // RecordSuccess updates health after a successful request.
 func (h *AccountHealth) RecordSuccess(latencyUs int64) {
 	h.updateLatency(latencyUs)
 	h.recordWindow(false)
-
-	count := h.successCount.Add(1)
-	if count >= int32(aimdIncreaseEvery) {
-		// Additive increase: +1 up to ceiling
-		cur := h.maxConcurrency.Load()
-		if cur < h.aimdMax {
-			h.maxConcurrency.CompareAndSwap(cur, cur+1)
-		}
-		h.successCount.Store(0)
-	}
 }
 
 // RecordError updates health after a failed request.
 func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration) {
 	h.recordWindow(true)
-	h.successCount.Store(0)
-
-	// AIMD multiplicative decrease
-	cur := h.maxConcurrency.Load()
-	newMax := int32(float64(cur) * aimdBeta)
-	if newMax < h.aimdMin {
-		newMax = h.aimdMin
-	}
-	h.maxConcurrency.Store(newMax)
 
 	switch statusCode {
 	case 429:

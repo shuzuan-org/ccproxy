@@ -12,8 +12,8 @@ func TestSaveAndLoadState(t *testing.T) {
 	dir := t.TempDir()
 
 	health := map[string]*AccountHealth{
-		"inst-a": NewAccountHealth("inst-a", 7, 10),
-		"inst-b": NewAccountHealth("inst-b", 3, 10),
+		"inst-a": NewAccountHealth("inst-a"),
+		"inst-b": NewAccountHealth("inst-b"),
 	}
 	health["inst-b"].Disable("forbidden")
 
@@ -30,9 +30,6 @@ func TestSaveAndLoadState(t *testing.T) {
 	}
 
 	a := state.Accounts["inst-a"]
-	if a.MaxConcurrency != 7 {
-		t.Errorf("inst-a: expected maxConcurrency 7, got %d", a.MaxConcurrency)
-	}
 	if a.Disabled {
 		t.Error("inst-a should not be disabled")
 	}
@@ -59,23 +56,16 @@ func TestLoadState_StaleFile(t *testing.T) {
 	dir := t.TempDir()
 
 	health := map[string]*AccountHealth{
-		"inst": NewAccountHealth("inst", 5, 10),
+		"inst": NewAccountHealth("inst"),
 	}
 	if err := SaveState(dir, health); err != nil {
 		t.Fatalf("SaveState failed: %v", err)
 	}
 
-	// Backdate the file's modification time by 25 hours won't work;
-	// instead, read, modify updated_at, and rewrite.
+	// Write a stale state directly
 	path := filepath.Join(dir, stateFileName)
-	data, _ := os.ReadFile(path)
-
-	// Replace updated_at with a stale time (crude but effective)
 	staleTime := time.Now().Add(-25 * time.Hour)
-	_ = os.WriteFile(path, data, statePerm)
-
-	// Actually we need to modify the JSON content. Let's just write a stale state directly.
-	staleState := `{"accounts":{"inst":{"max_concurrency":5}},"updated_at":"` +
+	staleState := `{"accounts":{"inst":{"disabled":false}},"updated_at":"` +
 		staleTime.Format(time.RFC3339) + `"}`
 	_ = os.WriteFile(path, []byte(staleState), statePerm)
 
@@ -89,26 +79,23 @@ func TestApplyState_RestoresValues(t *testing.T) {
 	t.Parallel()
 
 	health := map[string]*AccountHealth{
-		"inst-a": NewAccountHealth("inst-a", 5, 10),
-		"inst-b": NewAccountHealth("inst-b", 5, 10),
+		"inst-a": NewAccountHealth("inst-a"),
+		"inst-b": NewAccountHealth("inst-b"),
 	}
 
 	state := &PersistedState{
 		Accounts: map[string]*PersistedAccount{
-			"inst-a": {MaxConcurrency: 8, Disabled: false},
-			"inst-b": {MaxConcurrency: 3, Disabled: true, DisabledReason: "forbidden"},
-			"inst-c": {MaxConcurrency: 5}, // not in health map — should be ignored
+			"inst-a": {Disabled: false},
+			"inst-b": {Disabled: true, DisabledReason: "forbidden"},
+			"inst-c": {Disabled: false}, // not in health map — should be ignored
 		},
 		UpdatedAt: time.Now(),
 	}
 
 	ApplyState(health, state)
 
-	if health["inst-a"].MaxConcurrency() != 8 {
-		t.Errorf("inst-a: expected maxConcurrency 8, got %d", health["inst-a"].MaxConcurrency())
-	}
-	if health["inst-b"].MaxConcurrency() != 3 {
-		t.Errorf("inst-b: expected maxConcurrency 3, got %d", health["inst-b"].MaxConcurrency())
+	if health["inst-a"].IsDisabled() {
+		t.Error("inst-a should not be disabled")
 	}
 	if !health["inst-b"].IsDisabled() {
 		t.Error("inst-b should be disabled after apply")

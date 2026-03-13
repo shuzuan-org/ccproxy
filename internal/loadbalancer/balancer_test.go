@@ -407,10 +407,10 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 		t.Error("expected latency to be recorded")
 	}
 
-	// Report error and check AIMD decrease
+	// Report error and check error rate increases
 	b.ReportResult("inst1", 500, 1000, 0)
-	if h.MaxConcurrency() == 5 {
-		t.Error("expected AIMD decrease after error")
+	if h.ErrorRate() == 0 {
+		t.Error("expected error rate to increase after error")
 	}
 }
 
