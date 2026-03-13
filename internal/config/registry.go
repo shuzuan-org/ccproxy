@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,11 @@ type InstanceRegistry struct {
 func NewInstanceRegistry(dataDir string) *InstanceRegistry {
 	path := filepath.Join(dataDir, "instances.json")
 	r := &InstanceRegistry{path: path}
-	_ = r.load() // ignore error on first run (file may not exist)
+	if err := r.load(); err != nil {
+		slog.Warn("registry: failed to load instances file, starting empty", "path", path, "error", err.Error())
+	} else {
+		slog.Info("registry: loaded instances", "path", path, "count", len(r.instances))
+	}
 	return r
 }
 

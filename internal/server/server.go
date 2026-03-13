@@ -59,11 +59,30 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Log instance configuration summary.
 	for _, inst := range runtimeInstances {
+		proxyInfo := ""
+		if inst.Proxy != "" {
+			proxyInfo = "(via proxy)"
+		}
 		slog.Info("instance configured",
 			"name", inst.Name,
 			"enabled", inst.IsEnabled(),
 			"max_concurrency", inst.MaxConcurrency,
+			"proxy", proxyInfo,
 		)
+	}
+
+	// Log OAuth token status on startup.
+	for _, inst := range runtimeInstances {
+		token, err := store.Load(inst.Name)
+		if err != nil {
+			slog.Warn("startup: token load error", "instance", inst.Name, "error", err.Error())
+		} else if token == nil {
+			slog.Warn("startup: no token stored, login required", "instance", inst.Name)
+		} else if time.Until(token.ExpiresAt) < 0 {
+			slog.Warn("startup: token expired", "instance", inst.Name, "expired_ago", time.Since(token.ExpiresAt).String())
+		} else {
+			slog.Info("startup: token valid", "instance", inst.Name, "expires_in", time.Until(token.ExpiresAt).String())
+		}
 	}
 
 	// Start auto-refresh for OAuth tokens.
@@ -147,13 +166,21 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the HTTP server and persists health state.
 func (s *Server) Shutdown(ctx context.Context) error {
 	slog.Info("shutting down server")
-	s.cancel()
+	s.cancel() // cancel background goroutines
 	if s.balancer != nil {
 		if err := s.balancer.SaveState("data"); err != nil {
 			slog.Error("failed to save health state on shutdown", "error", err.Error())
+		} else {
+			slog.Info("health state saved on shutdown")
 		}
 	}
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	if err != nil {
+		slog.Error("http server shutdown error", "error", err.Error())
+	} else {
+		slog.Info("http server stopped gracefully")
+	}
+	return err
 }
 
 // basicAuth returns a middleware that enforces HTTP Basic Auth using the given password.

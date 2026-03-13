@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -106,10 +107,13 @@ func (s *TokenStore) loadFile() *tokenFileData {
 	data := &tokenFileData{Tokens: make(map[string][]byte)}
 	f, err := os.ReadFile(s.path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("oauth/store: failed to read token file", "path", s.path, "error", err.Error())
+		}
 		return data
 	}
 	if err := json.Unmarshal(f, data); err != nil {
-		// Corrupted file — start with empty data to avoid silent data loss
+		slog.Warn("oauth/store: corrupted token file, starting empty", "path", s.path, "error", err.Error())
 		data.Tokens = make(map[string][]byte)
 	}
 	if data.Tokens == nil {

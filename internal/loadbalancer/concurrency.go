@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -99,15 +100,25 @@ func (t *ConcurrencyTracker) CleanupStale() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cutoff := time.Now().Add(-slotTTL)
+	staleCount := 0
 	for instance, slots := range t.slots {
 		for reqID, acquireTime := range slots {
 			if acquireTime.Before(cutoff) {
+				slog.Warn("concurrency: cleaning stale slot",
+					"instance", instance,
+					"request_id", reqID,
+					"age", time.Since(acquireTime).String(),
+				)
 				delete(slots, reqID)
+				staleCount++
 			}
 		}
 		if len(slots) == 0 {
 			delete(t.slots, instance)
 		}
+	}
+	if staleCount > 0 {
+		slog.Info("concurrency: stale slots cleaned", "count", staleCount)
 	}
 }
 

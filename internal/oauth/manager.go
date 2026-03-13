@@ -130,15 +130,22 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 				names := make([]string, len(m.instances))
 				copy(names, m.instances)
 				m.mu.RUnlock()
+				slog.Debug("oauth: auto-refresh check starting", "instances", len(names))
 				for _, name := range names {
 					token, err := m.store.Load(name)
-					if err != nil || token == nil {
+					if err != nil {
+						slog.Warn("oauth: auto-refresh skipped, token load error", "instance", name, "error", err.Error())
 						continue
 					}
-					if time.Until(token.ExpiresAt) < 60*time.Second {
+					if token == nil {
+						continue
+					}
+					remaining := time.Until(token.ExpiresAt)
+					if remaining < 60*time.Second {
+						slog.Info("oauth: auto-refreshing expiring token", "instance", name, "expires_in", remaining.String())
 						_, err := m.refreshToken(ctx, name, token.RefreshToken)
 						if err != nil {
-							slog.Error("auto-refresh failed", "instance", name, "error", err)
+							slog.Error("oauth: auto-refresh failed", "instance", name, "error", err.Error())
 						}
 					}
 				}

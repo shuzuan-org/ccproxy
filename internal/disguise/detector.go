@@ -2,6 +2,7 @@ package disguise
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,36 +30,61 @@ var claudeCodePromptPrefixes = []string{
 //   - Haiku probe: max_tokens=1 + haiku + !stream passes immediately.
 //   - Messages path: requires >=2 of 4 additional signals.
 func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
+	ua := headers.Get("User-Agent")
 	// Gate: UA MUST match (mandatory)
-	if !claudeCLIRegex.MatchString(headers.Get("User-Agent")) {
+	if !claudeCLIRegex.MatchString(ua) {
+		slog.Debug("disguise/detect: UA gate failed, not CC client",
+			"user_agent", ua,
+		)
 		return false
 	}
 
 	// Non-messages path: UA match is sufficient
 	if !strings.HasSuffix(path, "/v1/messages") {
+		slog.Debug("disguise/detect: non-messages path, UA match sufficient",
+			"path", path,
+			"user_agent", ua,
+		)
 		return true
 	}
 
 	// Haiku probe: max_tokens=1 + haiku + !stream → pass
 	if isHaikuProbe(body) {
+		slog.Debug("disguise/detect: haiku probe detected, pass-through")
 		return true
 	}
 
 	// Messages path: strict multi-signal validation (need >=2 of 4)
+	xApp := headers.Get("X-App") == "cli"
+	hasBeta := strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode)
+	hasUserID := checkMetadataUserID(body)
+	hasSystemPrompt := checkSystemPromptSimilarity(body)
+
 	score := 0
-	if headers.Get("X-App") == "cli" {
+	if xApp {
 		score++
 	}
-	if strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode) {
+	if hasBeta {
 		score++
 	}
-	if checkMetadataUserID(body) {
+	if hasUserID {
 		score++
 	}
-	if checkSystemPromptSimilarity(body) {
+	if hasSystemPrompt {
 		score++
 	}
-	return score >= 2
+
+	isCC := score >= 2
+	slog.Debug("disguise/detect: multi-signal validation",
+		"is_cc", isCC,
+		"score", score,
+		"x_app_cli", xApp,
+		"has_cc_beta", hasBeta,
+		"has_user_id", hasUserID,
+		"has_system_prompt", hasSystemPrompt,
+		"user_agent", ua,
+	)
+	return isCC
 }
 
 // isHaikuProbe detects lightweight Haiku probe requests (max_tokens=1, haiku model, non-streaming).

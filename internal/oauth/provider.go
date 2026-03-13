@@ -123,13 +123,24 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 
 	client := p.client
 	if proxyURL != "" {
+		slog.Debug("oauth: using SOCKS5 proxy for token request", "proxy_host", maskProxyURL(proxyURL), "grant_type", body["grant_type"])
 		client = newProxyClient(proxyURL)
+	} else {
+		slog.Debug("oauth: using direct connection for token request", "grant_type", body["grant_type"])
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Error("oauth: token request network error",
+			"grant_type", body["grant_type"],
+			"via_proxy", proxyURL != "",
+			"elapsed", time.Since(start).String(),
+			"error", err.Error(),
+		)
 		return nil, err
 	}
+	slog.Debug("oauth: token request completed", "grant_type", body["grant_type"], "status", resp.StatusCode, "elapsed", time.Since(start).String())
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
@@ -164,7 +175,7 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 func newProxyClient(proxyURL string) *http.Client {
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		// Fall back to default client on parse error.
+		slog.Error("oauth: invalid proxy URL, falling back to direct", "error", err.Error())
 		return &http.Client{Timeout: 30 * time.Second}
 	}
 
@@ -178,13 +189,24 @@ func newProxyClient(proxyURL string) *http.Client {
 
 	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
 	if err != nil {
+		slog.Error("oauth: SOCKS5 dialer creation failed, falling back to direct", "proxy_host", u.Host, "error", err.Error())
 		return &http.Client{Timeout: 30 * time.Second}
 	}
 
+	slog.Debug("oauth: SOCKS5 client created", "proxy_host", u.Host, "has_auth", auth != nil)
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			Dial: dialer.Dial,
 		},
 	}
+}
+
+// maskProxyURL returns the proxy host for logging, stripping credentials.
+func maskProxyURL(proxyURL string) string {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return "(invalid)"
+	}
+	return u.Host
 }

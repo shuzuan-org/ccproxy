@@ -264,10 +264,12 @@ func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.oauthMgr.GetStore().Delete(req.Instance); err != nil {
+		slog.Error("oauth: logout failed to delete token", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete token")
 		return
 	}
 
+	slog.Info("oauth: logout success", "instance", req.Instance)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -333,6 +335,7 @@ func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.registry.Remove(req.Name); err != nil {
+		slog.Warn("remove instance failed", "name", req.Name, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

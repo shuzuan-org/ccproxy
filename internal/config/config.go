@@ -3,9 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,8 @@ type ServerConfig struct {
 	BaseURL        string `toml:"base_url"`          // upstream API base URL (default: https://api.anthropic.com)
 	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 300)
 	MaxConcurrency int    `toml:"max_concurrency"`   // per-instance concurrency limit (default: 5)
+	LogLevel       string `toml:"log_level"`         // debug, info, warn, error (default: info)
+	LogFormat      string `toml:"log_format"`        // text or json (default: text)
 }
 
 type APIKeyConfig struct {
@@ -65,6 +68,9 @@ func Load(path string) (*Config, error) {
 
 	applyDefaults(cfg)
 
+	// Initialize logging early so all subsequent log output uses the configured format/level.
+	SetupLogging(cfg)
+
 	genPassword, genKey := autoGenerate(cfg, path)
 
 	if err := cfg.Validate(); err != nil {
@@ -100,7 +106,7 @@ func ensureConfigFile(path string) error {
 		}
 	}
 
-	log.Printf("config file not found, creating default at %s", path)
+	slog.Info("config file not found, creating default", "path", path)
 	if err := os.WriteFile(path, []byte(defaultConfigContent), 0o600); err != nil {
 		return fmt.Errorf("create config file: %w", err)
 	}
@@ -127,6 +133,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Server.MaxConcurrency == 0 {
 		cfg.Server.MaxConcurrency = 5
+	}
+	if cfg.Server.LogLevel == "" {
+		cfg.Server.LogLevel = "info"
+	}
+	if cfg.Server.LogFormat == "" {
+		cfg.Server.LogFormat = "text"
 	}
 }
 
@@ -155,6 +167,40 @@ func (c *Config) Validate() error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// SetupLoggingDefaults initializes slog with sensible defaults (text, info level)
+// before config is parsed. config.Load() calls SetupLogging() again with the
+// actual configured values once the TOML is parsed.
+func SetupLoggingDefaults() {
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+}
+
+// SetupLogging configures the global slog logger based on config values.
+func SetupLogging(cfg *Config) {
+	var level slog.Level
+	switch strings.ToLower(cfg.Server.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+
+	var handler slog.Handler
+	if strings.ToLower(cfg.Server.LogFormat) == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+
+	slog.SetDefault(slog.New(handler))
 }
 
 // IsEnabled returns true when Enabled is nil (default on) or explicitly true.
@@ -229,10 +275,10 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 				debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
 					cfg, err := Load(path)
 					if err != nil {
-						log.Printf("config reload failed: %v", err)
+						slog.Error("config reload failed", "path", path, "error", err.Error())
 						return
 					}
-					log.Printf("config reloaded from %s", path)
+					slog.Info("config reloaded", "path", path)
 					onChange(cfg)
 				})
 
@@ -240,7 +286,7 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 				if !ok {
 					return
 				}
-				log.Printf("config watcher error: %v", err)
+				slog.Error("config watcher error", "error", err.Error())
 
 			case <-done:
 				return

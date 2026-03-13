@@ -144,10 +144,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if stage == 0 && IsSignatureError(errBody) {
+				slog.Info("signature error detected, retrying with thinking blocks filtered",
+					"instance", inst.Name,
+					"stage", stage,
+				)
 				bodyToSend = FilterThinkingBlocks(rawBody)
 				continue
 			}
 			if stage == 1 && IsSignatureError(errBody) && IsToolRelatedError(errBody) {
+				slog.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
+					"instance", inst.Name,
+					"stage", stage,
+				)
 				bodyToSend = FilterSignatureSensitiveBlocks(rawBody)
 				continue
 			}

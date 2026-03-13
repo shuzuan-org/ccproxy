@@ -2,7 +2,7 @@ package cli
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,10 +22,25 @@ var rootCmd = &cobra.Command{
 	Use:   "ccproxy",
 	Short: "Claude API proxy with CLI impersonation",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Bootstrap logging with defaults; config.Load() will reconfigure
+		// once the config file is parsed (so early logs like "config file
+		// not found" still get the correct handler format).
+		config.SetupLoggingDefaults()
+
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			return err
 		}
+
+		slog.Info("ccproxy starting", "version", Version, "config", cfgFile, "pid", os.Getpid())
+		slog.Info("config loaded",
+			"base_url", cfg.Server.BaseURL,
+			"host", cfg.Server.Host,
+			"port", cfg.Server.Port,
+			"max_concurrency", cfg.Server.MaxConcurrency,
+			"request_timeout", cfg.Server.RequestTimeout,
+			"api_keys", len(cfg.APIKeys),
+		)
 
 		srv, err := server.New(cfg)
 		if err != nil {
@@ -40,14 +55,14 @@ var rootCmd = &cobra.Command{
 			for sig := range sigCh {
 				switch sig {
 				case syscall.SIGINT, syscall.SIGTERM:
+					slog.Info("received shutdown signal", "signal", sig.String())
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					if err := srv.Shutdown(ctx); err != nil {
-						log.Printf("shutdown error: %v", err)
+						slog.Error("shutdown error", "error", err.Error())
 					}
 					cancel()
 				case syscall.SIGHUP:
-					log.Println("received SIGHUP, reloading config...")
-					// Config reload will be implemented in Task 23.
+					slog.Info("received SIGHUP, reloading config")
 				}
 			}
 		}()

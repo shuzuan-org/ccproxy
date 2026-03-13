@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -65,12 +66,21 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 	tlsConn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloCustom)
 	if err := tlsConn.ApplyPreset(spec); err != nil {
 		_ = tcpConn.Close()
+		slog.Error("tls: utls preset failed", "host", host, "error", err.Error())
 		return nil, err
 	}
+	handshakeStart := time.Now()
 	if err := tlsConn.Handshake(); err != nil {
 		_ = tcpConn.Close()
+		slog.Error("tls: handshake failed", "host", host, "elapsed", time.Since(handshakeStart).String(), "error", err.Error())
 		return nil, err
 	}
+	slog.Debug("tls: handshake success",
+		"host", host,
+		"proto", tlsConn.ConnectionState().NegotiatedProtocol,
+		"via_proxy", ProxyURLFromContext(req.Context()) != "",
+		"elapsed", time.Since(handshakeStart).String(),
+	)
 
 	// Check negotiated protocol and use the appropriate transport
 	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
@@ -104,13 +114,25 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 func dialTCP(ctx context.Context, addr string) (net.Conn, error) {
 	proxyURL := ProxyURLFromContext(ctx)
 	if proxyURL == "" {
-		return net.DialTimeout("tcp", addr, 30*time.Second)
+		slog.Debug("tls: dialing direct", "addr", addr)
+		start := time.Now()
+		conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+		if err != nil {
+			slog.Error("tls: direct dial failed", "addr", addr, "elapsed", time.Since(start).String(), "error", err.Error())
+			return nil, err
+		}
+		slog.Debug("tls: direct dial success", "addr", addr, "elapsed", time.Since(start).String())
+		return conn, nil
 	}
 
 	u, err := url.Parse(proxyURL)
 	if err != nil {
+		slog.Error("tls: invalid proxy URL", "proxy", proxyURL, "error", err.Error())
 		return nil, fmt.Errorf("parse proxy URL %q: %w", proxyURL, err)
 	}
+
+	// Log proxy host only, never credentials.
+	slog.Debug("tls: dialing via SOCKS5", "proxy_host", u.Host, "has_auth", u.User != nil, "target", addr)
 
 	var auth *proxy.Auth
 	if u.User != nil {
@@ -122,10 +144,18 @@ func dialTCP(ctx context.Context, addr string) (net.Conn, error) {
 
 	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
 	if err != nil {
+		slog.Error("tls: SOCKS5 dialer creation failed", "proxy_host", u.Host, "error", err.Error())
 		return nil, fmt.Errorf("create SOCKS5 dialer: %w", err)
 	}
 
-	return dialer.Dial("tcp", addr)
+	start := time.Now()
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		slog.Error("tls: SOCKS5 dial failed", "proxy_host", u.Host, "target", addr, "elapsed", time.Since(start).String(), "error", err.Error())
+		return nil, err
+	}
+	slog.Debug("tls: SOCKS5 dial success", "proxy_host", u.Host, "target", addr, "elapsed", time.Since(start).String())
+	return conn, nil
 }
 
 func claudeCLIv2Spec() *utls.ClientHelloSpec {

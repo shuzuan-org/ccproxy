@@ -3,6 +3,7 @@ package loadbalancer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -203,11 +204,39 @@ func (b *Balancer) ClearSession(sessionKey string) {
 func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	oldNames := make(map[string]bool, len(b.instances))
+	for _, inst := range b.instances {
+		oldNames[inst.Name] = true
+	}
+
 	b.instances = filterEnabled(instances)
+
+	var added []string
 	for _, inst := range b.instances {
 		if _, exists := b.health[inst.Name]; !exists {
 			b.health[inst.Name] = NewAccountHealth(inst.Name, int32(inst.MaxConcurrency), int32(inst.MaxConcurrency))
+			added = append(added, inst.Name)
 		}
+	}
+
+	newNames := make(map[string]bool, len(b.instances))
+	for _, inst := range b.instances {
+		newNames[inst.Name] = true
+	}
+	var removed []string
+	for name := range oldNames {
+		if !newNames[name] {
+			removed = append(removed, name)
+		}
+	}
+
+	if len(added) > 0 || len(removed) > 0 {
+		slog.Info("balancer: instances updated",
+			"total", len(b.instances),
+			"added", added,
+			"removed", removed,
+		)
 	}
 }
 

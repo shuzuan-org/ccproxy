@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -68,8 +68,9 @@ func autoGenerate(cfg *Config, path string) (generatedPassword, generatedKey boo
 
 	// Persist generated values to config file
 	if err := writeGeneratedToFile(path, cfg, generatedPassword, generatedKey); err != nil {
-		log.Printf("WARNING: failed to save generated credentials to %s: %v", path, err)
-		log.Printf("WARNING: credentials are active for this session but will be lost on restart")
+		slog.Warn("failed to save generated credentials, will be lost on restart", "path", path, "error", err.Error())
+	} else {
+		slog.Info("credentials auto-generated and saved", "path", path, "generated_password", generatedPassword, "generated_key", generatedKey)
 	}
 
 	return generatedPassword, generatedKey
@@ -153,17 +154,17 @@ func appendAPIKey(content string, k APIKeyConfig) string {
 
 // printGeneratedCredentials outputs a visible banner with the generated values.
 func printGeneratedCredentials(cfg *Config, generatedPassword, generatedKey bool) {
-	fmt.Println("================================================================")
-	fmt.Println("  Auto-generated credentials (saved to config file):")
-	fmt.Println()
+	fmt.Fprintln(os.Stderr, "================================================================")
+	fmt.Fprintln(os.Stderr, "  Auto-generated credentials (saved to config file):")
+	fmt.Fprintln(os.Stderr)
 	if generatedPassword {
-		fmt.Printf("  Admin Password: %s\n", cfg.Server.AdminPassword)
+		fmt.Fprintf(os.Stderr, "  Admin Password: %s\n", cfg.Server.AdminPassword)
 	}
 	if generatedKey {
 		k := cfg.APIKeys[len(cfg.APIKeys)-1]
-		fmt.Printf("  API Key:        %s (name: %s)\n", k.Key, k.Name)
+		fmt.Fprintf(os.Stderr, "  API Key:        %s (name: %s)\n", k.Key, k.Name)
 	}
-	fmt.Println()
-	fmt.Println("  Please save these credentials securely.")
-	fmt.Println("================================================================")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  Please save these credentials securely.")
+	fmt.Fprintln(os.Stderr, "================================================================")
 }

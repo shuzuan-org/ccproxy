@@ -3,7 +3,7 @@ package loadbalancer
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -63,15 +63,22 @@ func LoadState(dataDir string) *PersistedState {
 	path := filepath.Join(dataDir, stateFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("health: failed to read state file", "path", path, "error", err.Error())
+		}
 		return nil
 	}
 	var state PersistedState
 	if err := json.Unmarshal(data, &state); err != nil {
+		slog.Warn("health: corrupted state file, ignoring", "path", path, "error", err.Error())
 		return nil
 	}
-	if time.Since(state.UpdatedAt) > stateMaxAge {
+	age := time.Since(state.UpdatedAt)
+	if age > stateMaxAge {
+		slog.Info("health: state file too old, ignoring", "age", age.String(), "max_age", stateMaxAge.String())
 		return nil
 	}
+	slog.Info("health: loaded persisted state", "accounts", len(state.Accounts), "age", age.String())
 	return &state
 }
 
@@ -105,7 +112,7 @@ func (b *Balancer) StartPersistence(ctx context.Context, dataDir string) {
 				return
 			case <-ticker.C:
 				if err := b.SaveState(dataDir); err != nil {
-					log.Printf("failed to persist health state: %v", err)
+					slog.Error("health: failed to persist state", "error", err.Error())
 				}
 			}
 		}
