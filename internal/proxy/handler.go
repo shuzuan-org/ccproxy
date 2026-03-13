@@ -151,7 +151,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				bodyToSend = FilterThinkingBlocks(rawBody)
 				continue
 			}
-			if stage == 1 && IsSignatureError(errBody) && IsToolRelatedError(errBody) {
+			if stage == 1 && (IsSignatureError(errBody) || IsToolRelatedError(errBody)) {
 				slog.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
 					"instance", inst.Name,
 					"stage", stage,
@@ -222,11 +222,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	contentType := resp.Header.Get("Content-Type")
 	isSSE := strings.Contains(contentType, "text/event-stream")
 
-	// Copy safe upstream headers to client.
-	copyHeaders(w.Header(), resp.Header)
-
 	if isSSE {
 		// Step 7: Streaming response — forward SSE and extract usage.
+		copyHeaders(w.Header(), resp.Header)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -253,6 +251,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			respBody = h.disguise.ApplyResponseModelID(respBody)
 		}
 
+		// Copy upstream headers only after body is successfully read.
+		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
 	}

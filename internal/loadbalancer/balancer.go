@@ -102,7 +102,10 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 						rate := b.tracker.LoadRate(inst.Name, maxC)
 						if rate < 100 {
 							if release, ok := b.tracker.Acquire(inst.Name, requestID, maxC); ok {
-								si.LastRequest = time.Now()
+								b.sessions.Store(sessionKey, &SessionInfo{
+									InstanceName: si.InstanceName,
+									LastRequest:  time.Now(),
+								})
 								return &SelectResult{Instance: *inst, RequestID: requestID, Release: release}, nil
 							}
 						}

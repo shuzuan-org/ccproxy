@@ -263,7 +263,7 @@
   let currentSessionId = null;
 
   function esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
   function tokenChip(status) {
@@ -441,7 +441,7 @@
   }
 
   async function doRefresh(instanceName) {
-    if (!confirm('Force refresh token for ' + instanceName + '?')) return;
+    if (!confirm('Force refresh token for ' + esc(instanceName) + '?')) return;
     try {
       await fetchJSON('/api/oauth/refresh', {
         method: 'POST',
@@ -594,7 +594,7 @@
   }
 
   async function doRemove(instanceName) {
-    if (!confirm('Remove instance "' + instanceName + '"? This will also delete its OAuth token.')) return;
+    if (!confirm('Remove instance "' + esc(instanceName) + '"? This will also delete its OAuth token.')) return;
     try {
       await fetchJSON('/api/instances/remove', {
         method: 'POST',

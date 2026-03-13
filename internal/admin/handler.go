@@ -1,11 +1,13 @@
 package admin
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
@@ -166,6 +168,17 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Validate OAuth state parameter to prevent CSRF
+	codeState := ""
+	if idx := strings.Index(req.Code, "#"); idx != -1 {
+		codeState = req.Code[idx+1:]
+	}
+	if subtle.ConstantTimeCompare([]byte(session.State), []byte(codeState)) != 1 {
+		h.sessions.Delete(req.SessionID)
+		writeError(w, http.StatusBadRequest, "invalid OAuth state parameter")
+		return
+	}
+
 	// Exchange code for token
 	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
 	provider := h.oauthMgr.GetProvider()
@@ -177,7 +190,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 			"error", err.Error(),
 		)
 		h.sessions.Delete(req.SessionID)
-		writeError(w, http.StatusBadGateway, "code exchange failed: "+err.Error())
+		writeError(w, http.StatusBadGateway, "code exchange failed")
 		return
 	}
 
@@ -232,7 +245,7 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken, proxyURL)
 	if err != nil {
 		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
-		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
+		writeError(w, http.StatusBadGateway, "refresh failed")
 		return
 	}
 
