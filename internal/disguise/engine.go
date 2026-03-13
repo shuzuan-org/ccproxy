@@ -1,6 +1,7 @@
 package disguise
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -178,9 +179,8 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	)
 
 	// Layer 6: Model ID normalization
-	normalizedModel := NormalizeModelID(model)
 	normalizeModelInPlace(parsed)
-	if normalizedModel != model {
+	if normalizedModel, ok := parsed["model"].(string); ok && normalizedModel != model {
 		slog.Debug("disguise: [layer 6] model ID normalized",
 			"instance", instanceName,
 			"before", model,
@@ -230,7 +230,20 @@ func (e *Engine) ApplyToURL(rawURL string) string {
 }
 
 // ApplyResponseModelID reverses model ID mapping on response body.
+// Uses a fast path to skip JSON parsing when no reverse-mapped model ID is present.
 func (e *Engine) ApplyResponseModelID(body []byte) []byte {
+	// Fast path: check if any full versioned model ID appears in the body.
+	found := false
+	for fullID := range ModelIDReverseOverrides {
+		if bytes.Contains(body, []byte(fullID)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return body
+	}
+
 	var resp map[string]interface{}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return body

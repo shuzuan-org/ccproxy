@@ -73,6 +73,7 @@ func makeRetryInstance(name string) config.InstanceConfig {
 		MaxConcurrency: 5,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,
+		Enabled:        true,
 	}
 }
 

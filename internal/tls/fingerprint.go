@@ -6,12 +6,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
+	"github.com/binn/ccproxy/internal/netutil"
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/proxy"
 )
 
 // proxyURLKey is the context key for per-request SOCKS5 proxy URL.
@@ -134,36 +133,22 @@ func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error
 		return conn, nil
 	}
 
-	u, err := url.Parse(proxyURL)
+	proxyHost := netutil.MaskProxyURL(proxyURL)
+	slog.Debug("tls: dialing via SOCKS5", "proxy_host", proxyHost, "target", addr)
+
+	dialer, err := netutil.NewSOCKS5Dialer(proxyURL)
 	if err != nil {
-		slog.Error("tls: invalid proxy URL", "proxy", proxyURL, "error", err.Error())
-		return nil, fmt.Errorf("parse proxy URL %q: %w", proxyURL, err)
-	}
-
-	// Log proxy host only, never credentials.
-	slog.Debug("tls: dialing via SOCKS5", "proxy_host", u.Host, "has_auth", u.User != nil, "target", addr)
-
-	var auth *proxy.Auth
-	if u.User != nil {
-		auth = &proxy.Auth{User: u.User.Username()}
-		if p, ok := u.User.Password(); ok {
-			auth.Password = p
-		}
-	}
-
-	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
-	if err != nil {
-		slog.Error("tls: SOCKS5 dialer creation failed", "proxy_host", u.Host, "error", err.Error())
-		return nil, fmt.Errorf("create SOCKS5 dialer: %w", err)
+		slog.Error("tls: SOCKS5 dialer creation failed", "error", err.Error())
+		return nil, err
 	}
 
 	start := time.Now()
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
-		slog.Error("tls: SOCKS5 dial failed", "proxy_host", u.Host, "target", addr, "elapsed", time.Since(start).String(), "error", err.Error())
+		slog.Error("tls: SOCKS5 dial failed", "proxy_host", proxyHost, "target", addr, "elapsed", time.Since(start).String(), "error", err.Error())
 		return nil, err
 	}
-	slog.Debug("tls: SOCKS5 dial success", "proxy_host", u.Host, "target", addr, "elapsed", time.Since(start).String())
+	slog.Debug("tls: SOCKS5 dial success", "proxy_host", proxyHost, "target", addr, "elapsed", time.Since(start).String())
 	return conn, nil
 }
 

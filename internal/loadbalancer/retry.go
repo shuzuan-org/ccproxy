@@ -20,7 +20,6 @@ const (
 )
 
 const (
-	maxRetryAttempts       = 5
 	maxAccountSwitches     = 3
 	maxSameInstanceRetries = 3
 	retryBaseDelay         = 300 * time.Millisecond
@@ -33,11 +32,7 @@ func ClassifyError(statusCode int) FailureAction {
 	switch {
 	case statusCode == 400:
 		return ReturnToClient
-	case statusCode == 401 || statusCode == 403:
-		return FailoverImmediate
-	case statusCode == 429:
-		return FailoverImmediate
-	case statusCode == 529:
+	case statusCode == 401 || statusCode == 403 || statusCode == 429 || statusCode == 529:
 		return FailoverImmediate
 	case statusCode >= 500 && statusCode <= 504:
 		return RetryThenFailover

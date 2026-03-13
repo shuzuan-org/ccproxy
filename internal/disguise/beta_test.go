@@ -72,9 +72,9 @@ func TestSupplementBetaHeader_OnlyClaudeCode(t *testing.T) {
 	}
 }
 
-func TestCountTokensBetaHeader(t *testing.T) {
+func TestCountTokensBetaHeaderValue(t *testing.T) {
 	t.Parallel()
-	result := CountTokensBetaHeader()
+	result := CountTokensBetaHeaderValue
 	for _, expected := range []string{BetaClaudeCode, BetaOAuth, BetaInterleavedThinking, BetaTokenCounting} {
 		if !contains(result, expected) {
 			t.Errorf("expected %q in %q", expected, result)

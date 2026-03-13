@@ -44,7 +44,7 @@ type InstanceConfig struct {
 	MaxConcurrency int
 	BaseURL        string
 	RequestTimeout int
-	Enabled        *bool
+	Enabled        bool
 	Proxy          string // SOCKS5 proxy URL for this instance (e.g. "socks5://host:port")
 }
 
@@ -217,9 +217,9 @@ func SetupLogging(cfg *Config) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// IsEnabled returns true when Enabled is nil (default on) or explicitly true.
+// IsEnabled returns true when the instance is enabled.
 func (ic *InstanceConfig) IsEnabled() bool {
-	return ic.Enabled == nil || *ic.Enabled
+	return ic.Enabled
 }
 
 // RuntimeInstance builds a full InstanceConfig from global settings + a registry entry.
@@ -229,7 +229,7 @@ func (c *Config) RuntimeInstance(inst Instance) InstanceConfig {
 		MaxConcurrency: c.Server.MaxConcurrency,
 		BaseURL:        c.Server.BaseURL,
 		RequestTimeout: c.Server.RequestTimeout,
-		Enabled:        &inst.Enabled,
+		Enabled:        inst.Enabled,
 		Proxy:          inst.Proxy,
 	}
 }

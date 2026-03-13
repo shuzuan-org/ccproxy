@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/binn/ccproxy/internal/apierror"
 	"github.com/binn/ccproxy/internal/auth"
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/disguise"
@@ -68,7 +69,7 @@ func buildOAuthInstance(baseURL string) config.InstanceConfig {
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
 		RequestTimeout: 10,
-		Enabled:        &enabled,
+		Enabled:        enabled,
 	}
 }
 
@@ -326,7 +327,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 		}
-		var errResp AnthropicError
+		var errResp apierror.Response
 		if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
 			t.Fatalf("response not valid JSON: %v", err)
 		}
@@ -384,7 +385,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 			if status != c.wantStatus {
 				t.Errorf("code %d: want status %d, got %d", c.code, c.wantStatus, status)
 			}
-			var errResp AnthropicError
+			var errResp apierror.Response
 			if err := json.Unmarshal(body, &errResp); err != nil {
 				t.Fatalf("code %d: body not valid JSON: %v", c.code, err)
 			}
@@ -458,33 +459,5 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("expected upstream to be called 2 times, got %d", callCount)
-	}
-}
-
-// TestExtractUsageFromJSON verifies extraction of usage fields from non-streaming response.
-func TestExtractUsageFromJSON(t *testing.T) {
-	body := []byte(`{
-		"id": "msg_01",
-		"usage": {
-			"input_tokens": 10,
-			"output_tokens": 20,
-			"cache_creation_input_tokens": 3,
-			"cache_read_input_tokens": 4
-		}
-	}`)
-
-	usage := extractUsageFromJSON(body)
-
-	if usage.InputTokens != 10 {
-		t.Errorf("InputTokens: want 10, got %d", usage.InputTokens)
-	}
-	if usage.OutputTokens != 20 {
-		t.Errorf("OutputTokens: want 20, got %d", usage.OutputTokens)
-	}
-	if usage.CacheCreationInputTokens != 3 {
-		t.Errorf("CacheCreationInputTokens: want 3, got %d", usage.CacheCreationInputTokens)
-	}
-	if usage.CacheReadInputTokens != 4 {
-		t.Errorf("CacheReadInputTokens: want 4, got %d", usage.CacheReadInputTokens)
 	}
 }

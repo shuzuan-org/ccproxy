@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/binn/ccproxy/internal/fileutil"
 )
 
 const (
@@ -49,11 +51,7 @@ func SaveState(dataDir string, health map[string]*AccountHealth) error {
 	}
 
 	path := filepath.Join(dataDir, stateFileName)
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, statePerm); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return fileutil.AtomicWriteFile(path, data, statePerm)
 }
 
 // LoadState reads health state from file. Returns nil if missing, corrupt, or stale.

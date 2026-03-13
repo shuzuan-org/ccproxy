@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/binn/ccproxy/internal/apierror"
 	"github.com/binn/ccproxy/internal/config"
 )
 
@@ -30,18 +31,18 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				writeAuthError(w, "Missing Authorization header")
+				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Missing Authorization header")
 				return
 			}
 
 			if !strings.HasPrefix(authHeader, "Bearer ") {
-				writeAuthError(w, "Invalid Authorization header format")
+				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Invalid Authorization header format")
 				return
 			}
 
 			token := strings.TrimPrefix(authHeader, "Bearer ")
 			if token == "" {
-				writeAuthError(w, "Empty bearer token")
+				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Empty bearer token")
 				return
 			}
 
@@ -59,7 +60,7 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 					"remote", r.RemoteAddr,
 					"path", r.URL.Path,
 				)
-				writeAuthError(w, "Invalid API key")
+				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 				return
 			}
 
@@ -67,10 +68,4 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func writeAuthError(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"` + message + `"}}`))
 }

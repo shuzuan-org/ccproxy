@@ -196,7 +196,7 @@ func makeConfig(upstreamURL string) (*config.Config, []config.InstanceConfig) {
 			BaseURL:        upstreamURL,
 			MaxConcurrency: 5,
 			RequestTimeout: 10,
-			Enabled:        &enabled,
+			Enabled:        enabled,
 		},
 	}
 	return cfg, instances

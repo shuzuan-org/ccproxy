@@ -3,19 +3,9 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/binn/ccproxy/internal/apierror"
 )
-
-// AnthropicError represents an Anthropic API error response.
-type AnthropicError struct {
-	Type  string               `json:"type"`
-	Error AnthropicErrorDetail `json:"error"`
-}
-
-// AnthropicErrorDetail holds the error type and human-readable message.
-type AnthropicErrorDetail struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
 
 // errorMapping defines a mapping from an upstream status code to a proxy
 // status code, an Anthropic error type string, and a message.
@@ -70,44 +60,19 @@ func MapUpstreamError(statusCode int, upstreamBody []byte) (int, []byte) {
 	return buildResponse(fallback5xxMapping)
 }
 
-// buildResponse serialises an errorMapping into a proxy status code and JSON
-// body. Panics are intentionally not recovered here — a marshal failure on a
-// static struct is a programming error and should surface loudly.
+// buildResponse serialises an errorMapping into a proxy status code and JSON body.
 func buildResponse(m errorMapping) (int, []byte) {
-	ae := AnthropicError{
-		Type: "error",
-		Error: AnthropicErrorDetail{
-			Type:    m.errType,
-			Message: m.message,
-		},
-	}
-	body, err := json.Marshal(ae)
+	body, err := json.Marshal(apierror.Response{
+		Type:  "error",
+		Error: apierror.Detail{Type: m.errType, Message: m.message},
+	})
 	if err != nil {
-		// Static struct — this should never happen.
-		panic("proxy: failed to marshal AnthropicError: " + err.Error())
+		panic("proxy: failed to marshal error: " + err.Error())
 	}
 	return m.proxyStatus, body
 }
 
-// WriteError writes an Anthropic-style error response to w with the given HTTP
-// status code, Anthropic error type, and message.
+// WriteError writes an Anthropic-style error response to w.
 func WriteError(w http.ResponseWriter, statusCode int, errType, message string) {
-	ae := AnthropicError{
-		Type: "error",
-		Error: AnthropicErrorDetail{
-			Type:    errType,
-			Message: message,
-		},
-	}
-	body, err := json.Marshal(ae)
-	if err != nil {
-		// Fall back to a minimal hard-coded response to avoid a silent failure.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"internal_error","message":"failed to encode error response"}}`))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_, _ = w.Write(body)
+	apierror.Write(w, statusCode, errType, message)
 }

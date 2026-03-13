@@ -23,6 +23,18 @@ var claudeCodePromptPrefixes = []string{
 	"You are Claude, made by Anthropic",
 }
 
+// detectorRequest holds all fields needed for Claude Code client detection,
+// parsed in a single json.Unmarshal call.
+type detectorRequest struct {
+	Model     string      `json:"model"`
+	MaxTokens int         `json:"max_tokens"`
+	Stream    bool        `json:"stream"`
+	Metadata  struct {
+		UserID string `json:"user_id"`
+	} `json:"metadata"`
+	System interface{} `json:"system"`
+}
+
 // IsClaudeCodeClient checks if the request appears to be from a real Claude Code client.
 // Uses layered validation:
 //   - Gate: User-Agent MUST match claude-cli pattern (mandatory).
@@ -48,8 +60,17 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 		return true
 	}
 
+	// Parse body once for all checks
+	var req detectorRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		slog.Debug("disguise/detect: body parse failed, treating as non-CC",
+			"error", err.Error(),
+		)
+		return false
+	}
+
 	// Haiku probe: max_tokens=1 + haiku + !stream → pass
-	if isHaikuProbe(body) {
+	if req.MaxTokens == 1 && IsHaikuModel(req.Model) && !req.Stream {
 		slog.Debug("disguise/detect: haiku probe detected, pass-through")
 		return true
 	}
@@ -57,8 +78,8 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 	// Messages path: strict multi-signal validation (need >=2 of 4)
 	xApp := headers.Get("X-App") == "cli"
 	hasBeta := strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode)
-	hasUserID := checkMetadataUserID(body)
-	hasSystemPrompt := checkSystemPromptSimilarity(body)
+	hasUserID := metadataRegex.MatchString(req.Metadata.UserID)
+	hasSystemPrompt := checkSystemPromptFromParsed(req.System)
 
 	score := 0
 	if xApp {
@@ -87,40 +108,9 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 	return isCC
 }
 
-// isHaikuProbe detects lightweight Haiku probe requests (max_tokens=1, haiku model, non-streaming).
-func isHaikuProbe(body []byte) bool {
-	var req struct {
-		Model     string `json:"model"`
-		MaxTokens int    `json:"max_tokens"`
-		Stream    bool   `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
-	}
-	return req.MaxTokens == 1 && IsHaikuModel(req.Model) && !req.Stream
-}
-
-func checkMetadataUserID(body []byte) bool {
-	var req struct {
-		Metadata struct {
-			UserID string `json:"user_id"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
-	}
-	return metadataRegex.MatchString(req.Metadata.UserID)
-}
-
-func checkSystemPromptSimilarity(body []byte) bool {
-	var req struct {
-		System interface{} `json:"system"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
-	}
-
-	systemText := extractSystemText(req.System)
+// checkSystemPromptFromParsed checks system prompt similarity from already-parsed system field.
+func checkSystemPromptFromParsed(system interface{}) bool {
+	systemText := extractSystemText(system)
 	if systemText == "" {
 		return false
 	}
@@ -155,7 +145,6 @@ func extractSystemText(system interface{}) string {
 
 // DiceCoefficient calculates the Sorensen-Dice coefficient between two strings.
 // Returns a value between 0.0 (no similarity) and 1.0 (identical).
-// Uses pre-allocated map capacity to reduce allocations.
 func DiceCoefficient(a, b string) float64 {
 	if len(a) < 2 || len(b) < 2 {
 		if a == b {
@@ -164,22 +153,18 @@ func DiceCoefficient(a, b string) float64 {
 		return 0.0
 	}
 
+	// Use a single map and count intersection inline to halve allocations.
 	aBigrams := make(map[string]int, len(a)-1)
 	for i := 0; i < len(a)-1; i++ {
-		bigram := a[i : i+2]
-		aBigrams[bigram]++
-	}
-
-	bBigrams := make(map[string]int, len(b)-1)
-	for i := 0; i < len(b)-1; i++ {
-		bigram := b[i : i+2]
-		bBigrams[bigram]++
+		aBigrams[a[i:i+2]]++
 	}
 
 	intersection := 0
-	for bigram, countA := range aBigrams {
-		if countB, ok := bBigrams[bigram]; ok {
-			intersection += min(countA, countB)
+	for i := 0; i < len(b)-1; i++ {
+		bigram := b[i : i+2]
+		if count, ok := aBigrams[bigram]; ok && count > 0 {
+			intersection++
+			aBigrams[bigram]--
 		}
 	}
 

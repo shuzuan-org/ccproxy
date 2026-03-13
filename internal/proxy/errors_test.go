@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/binn/ccproxy/internal/apierror"
 )
 
 func TestMapUpstreamError_401(t *testing.T) {
@@ -110,7 +112,7 @@ func TestWriteError_ContentTypeAndBody(t *testing.T) {
 		t.Errorf("expected Content-Type application/json, got %q", ct)
 	}
 
-	var ae AnthropicError
+	var ae apierror.Response
 	if err := json.NewDecoder(res.Body).Decode(&ae); err != nil {
 		t.Fatalf("failed to decode response body: %v", err)
 	}
@@ -140,7 +142,7 @@ func TestWriteError_ValidJSON(t *testing.T) {
 		rr := httptest.NewRecorder()
 		WriteError(rr, c.status, c.errType, c.msg)
 
-		var ae AnthropicError
+		var ae apierror.Response
 		if err := json.NewDecoder(rr.Result().Body).Decode(&ae); err != nil {
 			t.Errorf("status=%d: invalid JSON: %v", c.status, err)
 			continue
@@ -157,10 +159,10 @@ func TestWriteError_ValidJSON(t *testing.T) {
 	}
 }
 
-// assertErrorBody decodes body into AnthropicError and checks errType and message.
+// assertErrorBody decodes body into apierror.Response and checks errType and message.
 func assertErrorBody(t *testing.T, body []byte, errType, message string) {
 	t.Helper()
-	var ae AnthropicError
+	var ae apierror.Response
 	if err := json.Unmarshal(body, &ae); err != nil {
 		t.Fatalf("failed to unmarshal body: %v (body: %s)", err, body)
 	}

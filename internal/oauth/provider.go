@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
-	"golang.org/x/net/proxy"
+	"github.com/binn/ccproxy/internal/netutil"
 )
 
 // Anthropic OAuth constants — hardcoded, these do not change.
@@ -25,8 +25,9 @@ const (
 )
 
 type AnthropicProvider struct {
-	tokenURL string
-	client   *http.Client
+	tokenURL     string
+	client       *http.Client
+	proxyClients sync.Map // proxyURL → *http.Client
 }
 
 func NewAnthropicProvider() *AnthropicProvider {
@@ -123,8 +124,8 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 
 	client := p.client
 	if proxyURL != "" {
-		slog.Debug("oauth: using SOCKS5 proxy for token request", "proxy_host", maskProxyURL(proxyURL), "grant_type", body["grant_type"])
-		client = newProxyClient(proxyURL)
+		slog.Debug("oauth: using SOCKS5 proxy for token request", "proxy_host", netutil.MaskProxyURL(proxyURL), "grant_type", body["grant_type"])
+		client = p.getProxyClient(proxyURL)
 	} else {
 		slog.Debug("oauth: using direct connection for token request", "grant_type", body["grant_type"])
 	}
@@ -171,42 +172,25 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 	}, nil
 }
 
-// newProxyClient creates an http.Client that routes requests through a SOCKS5 proxy.
-func newProxyClient(proxyURL string) *http.Client {
-	u, err := url.Parse(proxyURL)
+// getProxyClient returns a cached HTTP client for the given SOCKS5 proxy URL.
+func (p *AnthropicProvider) getProxyClient(proxyURL string) *http.Client {
+	if v, ok := p.proxyClients.Load(proxyURL); ok {
+		return v.(*http.Client)
+	}
+
+	dialer, err := netutil.NewSOCKS5Dialer(proxyURL)
 	if err != nil {
-		slog.Error("oauth: invalid proxy URL, falling back to direct", "error", err.Error())
-		return &http.Client{Timeout: 30 * time.Second}
+		slog.Error("oauth: SOCKS5 dialer creation failed, falling back to direct", "error", err.Error())
+		return p.client
 	}
 
-	var auth *proxy.Auth
-	if u.User != nil {
-		auth = &proxy.Auth{User: u.User.Username()}
-		if p, ok := u.User.Password(); ok {
-			auth.Password = p
-		}
-	}
-
-	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 30 * time.Second})
-	if err != nil {
-		slog.Error("oauth: SOCKS5 dialer creation failed, falling back to direct", "proxy_host", u.Host, "error", err.Error())
-		return &http.Client{Timeout: 30 * time.Second}
-	}
-
-	slog.Debug("oauth: SOCKS5 client created", "proxy_host", u.Host, "has_auth", auth != nil)
-	return &http.Client{
+	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			Dial: dialer.Dial,
 		},
 	}
-}
-
-// maskProxyURL returns the proxy host for logging, stripping credentials.
-func maskProxyURL(proxyURL string) string {
-	u, err := url.Parse(proxyURL)
-	if err != nil {
-		return "(invalid)"
-	}
-	return u.Host
+	// Store returns the existing value if another goroutine stored first.
+	actual, _ := p.proxyClients.LoadOrStore(proxyURL, client)
+	return actual.(*http.Client)
 }

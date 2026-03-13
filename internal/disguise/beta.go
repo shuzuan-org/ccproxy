@@ -25,7 +25,7 @@ const (
 
 // IsHaikuModel returns true if the model is a Haiku variant.
 func IsHaikuModel(model string) bool {
-	return strings.Contains(strings.ToLower(model), "haiku")
+	return strings.Contains(model, "haiku") || strings.Contains(model, "Haiku")
 }
 
 // BetaHeader returns the appropriate anthropic-beta header value for mimic mode.
@@ -51,18 +51,11 @@ func SupplementBetaHeader(clientBeta string) string {
 		return BetaOAuth
 	}
 	// Check if oauth beta is already present
-	for _, token := range strings.Split(clientBeta, ",") {
-		if strings.TrimSpace(token) == BetaOAuth {
-			return clientBeta // already has it
-		}
+	if strings.Contains(clientBeta, BetaOAuth) {
+		return clientBeta
 	}
 	return clientBeta + "," + BetaOAuth
 }
 
 // CountTokensBetaHeaderValue is the pre-composed beta header for count_tokens requests.
 const CountTokensBetaHeaderValue = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaTokenCounting
-
-// CountTokensBetaHeader returns beta header for count_tokens requests.
-func CountTokensBetaHeader() string {
-	return CountTokensBetaHeaderValue
-}

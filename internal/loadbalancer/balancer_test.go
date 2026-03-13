@@ -11,20 +11,19 @@ import (
 
 // helpers
 
-func boolPtr(b bool) *bool { return &b }
-
 func makeInstance(name string, maxConc int) config.InstanceConfig {
 	return config.InstanceConfig{
 		Name:           name,
 		MaxConcurrency: maxConc,
 		BaseURL:        "https://api.anthropic.com",
 		RequestTimeout: 300,
+		Enabled:        true,
 	}
 }
 
 func makeDisabledInstance(name string) config.InstanceConfig {
 	inst := makeInstance(name, 5)
-	inst.Enabled = boolPtr(false)
+	inst.Enabled = false
 	return inst
 }
 

@@ -106,6 +106,55 @@ func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenSt
 	return newToken, nil
 }
 
+// ForceRefresh forces a token refresh for the named instance with concurrency protection.
+func (m *Manager) ForceRefresh(ctx context.Context, instanceName string) (*OAuthToken, error) {
+	token, err := m.store.Load(instanceName)
+	if err != nil {
+		return nil, fmt.Errorf("load token: %w", err)
+	}
+	if token == nil {
+		return nil, fmt.Errorf("no token stored for instance %q", instanceName)
+	}
+	if token.RefreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available for instance %q", instanceName)
+	}
+
+	m.mu.RLock()
+	mu, ok := m.refreshMu[instanceName]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown instance: %s", instanceName)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	proxyURL := m.resolveProxy(instanceName)
+	newToken, err := m.provider.RefreshToken(ctx, token.RefreshToken, proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("refresh token: %w", err)
+	}
+
+	if err := m.store.Save(instanceName, *newToken); err != nil {
+		return nil, fmt.Errorf("save token: %w", err)
+	}
+
+	slog.Info("token force-refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
+	return newToken, nil
+}
+
+// ExchangeAndSave exchanges an authorization code for tokens and saves the result.
+func (m *Manager) ExchangeAndSave(ctx context.Context, instanceName, code, verifier, proxyURL string) (*OAuthToken, error) {
+	token, err := m.provider.ExchangeCode(ctx, code, verifier, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.Save(instanceName, *token); err != nil {
+		return nil, fmt.Errorf("save token: %w", err)
+	}
+	return token, nil
+}
+
 // Status returns the token info for an instance (without triggering refresh).
 func (m *Manager) Status(instanceName string) (*OAuthToken, error) {
 	return m.store.Load(instanceName)

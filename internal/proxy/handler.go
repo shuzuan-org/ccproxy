@@ -43,6 +43,7 @@ type Handler struct {
 	oauthManager *oauth.Manager
 	httpClient   *http.Client // shared client for all instances
 	baseURL      string       // global upstream base URL
+	upstreamURL  string       // precomputed baseURL + "/v1/messages"
 }
 
 // NewHandler constructs a Handler with a shared HTTP client.
@@ -67,7 +68,8 @@ func NewHandler(
 			Transport: transport,
 			Timeout:   timeout,
 		},
-		baseURL: baseURL,
+		baseURL:     baseURL,
+		upstreamURL: baseURL + "/v1/messages",
 	}
 }
 
@@ -297,7 +299,7 @@ func (h *Handler) doRequest(
 	body := rawBody
 
 	// Build upstream URL.
-	upstreamURL := h.baseURL + "/v1/messages"
+	upstreamURL := h.upstreamURL
 
 	// Build upstream request (will be modified before sending).
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, nil)
@@ -396,34 +398,10 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
-// usageResponse is a minimal struct for extracting usage from a non-streaming response body.
-type usageResponse struct {
-	Usage struct {
-		InputTokens              int64 `json:"input_tokens"`
-		OutputTokens             int64 `json:"output_tokens"`
-		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-	} `json:"usage"`
-}
-
 // truncateBody returns a string representation of body, truncated to maxLen bytes.
 func truncateBody(body []byte, maxLen int) string {
 	if len(body) <= maxLen {
 		return string(body)
 	}
 	return string(body[:maxLen]) + "...(truncated)"
-}
-
-// extractUsageFromJSON parses a non-streaming response body to extract token usage.
-func extractUsageFromJSON(body []byte) UsageInfo {
-	var ur usageResponse
-	if err := json.Unmarshal(body, &ur); err != nil {
-		return UsageInfo{}
-	}
-	return UsageInfo{
-		InputTokens:              ur.Usage.InputTokens,
-		OutputTokens:             ur.Usage.OutputTokens,
-		CacheCreationInputTokens: ur.Usage.CacheCreationInputTokens,
-		CacheReadInputTokens:     ur.Usage.CacheReadInputTokens,
-	}
 }

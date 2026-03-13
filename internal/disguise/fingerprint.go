@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/binn/ccproxy/internal/fileutil"
 )
 
 // Fingerprint holds per-instance HTTP header values that distinguish one
@@ -139,5 +141,5 @@ func (s *FingerprintStore) saveLocked() error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0600)
+	return fileutil.AtomicWriteFile(s.path, data, 0600)
 }

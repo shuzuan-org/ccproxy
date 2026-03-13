@@ -9,10 +9,14 @@ var ModelIDOverrides = map[string]string{
 }
 
 // ModelIDReverseOverrides maps full versioned names back to short names.
-var ModelIDReverseOverrides = map[string]string{
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
-	"claude-opus-4-5-20251101":   "claude-opus-4-5",
-	"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
+// Auto-generated from ModelIDOverrides via init().
+var ModelIDReverseOverrides map[string]string
+
+func init() {
+	ModelIDReverseOverrides = make(map[string]string, len(ModelIDOverrides))
+	for short, full := range ModelIDOverrides {
+		ModelIDReverseOverrides[full] = short
+	}
 }
 
 // NormalizeModelID converts a short model name to full versioned name.

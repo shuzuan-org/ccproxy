@@ -54,46 +54,20 @@ func IsToolRelatedError(body []byte) bool {
 // thinking → text (preserving content), redacted_thinking → removed.
 // Also removes the top-level "thinking" field.
 func FilterThinkingBlocks(body []byte) []byte {
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return body
-	}
-
-	// Remove top-level "thinking" configuration.
-	delete(parsed, "thinking")
-
-	// Process messages.
-	messages, ok := parsed["messages"].([]any)
-	if !ok {
-		result, _ := json.Marshal(parsed)
-		return result
-	}
-
-	for i, msg := range messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		content, ok := msgMap["content"].([]any)
-		if !ok {
-			continue
-		}
-
-		filtered := filterThinkingFromContent(content)
-		msgMap["content"] = filtered
-		messages[i] = msgMap
-	}
-
-	parsed["messages"] = messages
-	result, err := json.Marshal(parsed)
-	if err != nil {
-		return body
-	}
-	return result
+	return filterBlocks(body, filterThinkingFromContent)
 }
 
 // FilterSignatureSensitiveBlocks does FilterThinkingBlocks + converts tool_use/tool_result to text.
 func FilterSignatureSensitiveBlocks(body []byte) []byte {
+	return filterBlocks(body, func(content []any) []any {
+		return filterToolsFromContent(filterThinkingFromContent(content))
+	})
+}
+
+// filterBlocks is the shared implementation for FilterThinkingBlocks and
+// FilterSignatureSensitiveBlocks. It removes top-level "thinking" and applies
+// the given content filter to each message's content array.
+func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body
@@ -117,9 +91,7 @@ func FilterSignatureSensitiveBlocks(body []byte) []byte {
 			continue
 		}
 
-		filtered := filterThinkingFromContent(content)
-		filtered = filterToolsFromContent(filtered)
-		msgMap["content"] = filtered
+		msgMap["content"] = contentFilter(content)
 		messages[i] = msgMap
 	}
 

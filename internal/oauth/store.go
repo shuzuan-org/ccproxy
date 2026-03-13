@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/binn/ccproxy/internal/fileutil"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -33,11 +34,11 @@ type tokenFileData struct {
 }
 
 type TokenStore struct {
-	path  string
-	key   []byte
-	mu    sync.RWMutex
-	cache map[string]*OAuthToken // in-memory cache, populated on first loadFile
-	loaded bool                  // whether cache has been populated from disk
+	path     string
+	key      []byte
+	mu       sync.RWMutex
+	cache    map[string]*OAuthToken // in-memory cache, populated on first loadFile
+	loadOnce sync.Once              // ensures cache is loaded exactly once
 }
 
 func NewTokenStore(dataDir string) (*TokenStore, error) {
@@ -57,10 +58,10 @@ func NewTokenStore(dataDir string) (*TokenStore, error) {
 }
 
 func (s *TokenStore) Save(providerName string, token OAuthToken) error {
+	s.loadOnce.Do(s.populateCache)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.ensureCacheLoaded()
 
 	// Update cache
 	t := token // copy
@@ -70,17 +71,10 @@ func (s *TokenStore) Save(providerName string, token OAuthToken) error {
 }
 
 func (s *TokenStore) Load(providerName string) (*OAuthToken, error) {
+	s.loadOnce.Do(s.populateCache)
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	if !s.loaded {
-		// Need write lock to populate cache
-		s.mu.RUnlock()
-		s.mu.Lock()
-		s.ensureCacheLoaded()
-		s.mu.Unlock()
-		s.mu.RLock()
-	}
 
 	token, ok := s.cache[providerName]
 	if !ok {
@@ -92,25 +86,20 @@ func (s *TokenStore) Load(providerName string) (*OAuthToken, error) {
 }
 
 func (s *TokenStore) Delete(providerName string) error {
+	s.loadOnce.Do(s.populateCache)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ensureCacheLoaded()
 	delete(s.cache, providerName)
 	return s.persistToDisk()
 }
 
 func (s *TokenStore) List() []string {
+	s.loadOnce.Do(s.populateCache)
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	if !s.loaded {
-		s.mu.RUnlock()
-		s.mu.Lock()
-		s.ensureCacheLoaded()
-		s.mu.Unlock()
-		s.mu.RLock()
-	}
 
 	names := make([]string, 0, len(s.cache))
 	for name := range s.cache {
@@ -119,12 +108,12 @@ func (s *TokenStore) List() []string {
 	return names
 }
 
-// ensureCacheLoaded populates the in-memory cache from disk on first access.
-// Must be called under write lock.
-func (s *TokenStore) ensureCacheLoaded() {
-	if s.loaded {
-		return
-	}
+// populateCache loads all tokens from disk into the in-memory cache.
+// Called via sync.Once to ensure it runs exactly once.
+func (s *TokenStore) populateCache() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	data := s.loadFile()
 	for name, encrypted := range data.Tokens {
 		plaintext, err := decrypt(encrypted, s.key)
@@ -139,7 +128,6 @@ func (s *TokenStore) ensureCacheLoaded() {
 		}
 		s.cache[name] = &token
 	}
-	s.loaded = true
 }
 
 // persistToDisk writes the current cache state to disk atomically.
@@ -161,7 +149,7 @@ func (s *TokenStore) persistToDisk() error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(s.path, b, 0600)
+	return fileutil.AtomicWriteFile(s.path, b, 0600)
 }
 
 func (s *TokenStore) loadFile() *tokenFileData {
@@ -183,32 +171,9 @@ func (s *TokenStore) loadFile() *tokenFileData {
 	return data
 }
 
-// atomicWriteFile writes data to a temporary file and renames it to path,
-// ensuring the target file is never left in a half-written state.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
 
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	return os.Rename(tmpPath, path)
-}
+// machineIDRegex is pre-compiled for extracting IOPlatformUUID on macOS.
+var machineIDRegex = regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([^"]+)"`)
 
 func deriveKey() ([]byte, error) {
 	hostname, _ := os.Hostname()
@@ -238,8 +203,7 @@ func machineID() string {
 		if err != nil {
 			return ""
 		}
-		re := regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([^"]+)"`)
-		matches := re.FindSubmatch(out)
+		matches := machineIDRegex.FindSubmatch(out)
 		if len(matches) < 2 {
 			return ""
 		}

@@ -53,6 +53,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// decodeBody decodes a JSON request body into v.
+// Returns false and writes a 400 error if decoding fails.
+func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
+}
+
 // InstanceState holds the runtime state of a single backend instance.
 type InstanceState struct {
 	Name           string  `json:"name"`
@@ -126,8 +136,7 @@ func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Instance string `json:"instance"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -157,8 +166,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		SessionID string `json:"session_id"`
 		Code      string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -181,9 +189,8 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	// Exchange code for token
 	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
-	provider := h.oauthMgr.GetProvider()
 	proxyURL := h.registry.GetProxy(session.InstanceName)
-	token, err := provider.ExchangeCode(r.Context(), req.Code, session.Verifier, proxyURL)
+	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.InstanceName, req.Code, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
 			"instance", session.InstanceName,
@@ -191,13 +198,6 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		)
 		h.sessions.Delete(req.SessionID)
 		writeError(w, http.StatusBadGateway, "code exchange failed")
-		return
-	}
-
-	// Save token keyed by instance name
-	if err := h.oauthMgr.GetStore().Save(session.InstanceName, *token); err != nil {
-		slog.Error("oauth: failed to save token", "instance", session.InstanceName, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "failed to save token")
 		return
 	}
 
@@ -219,8 +219,7 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Instance string `json:"instance"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -229,29 +228,11 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := h.oauthMgr.GetStore().Load(req.Instance)
-	if err != nil || existing == nil {
-		writeError(w, http.StatusBadRequest, "no token stored for this instance")
-		return
-	}
-	if existing.RefreshToken == "" {
-		writeError(w, http.StatusBadRequest, "no refresh token available")
-		return
-	}
-
 	slog.Info("oauth: manual refresh requested", "instance", req.Instance)
-	provider := h.oauthMgr.GetProvider()
-	proxyURL := h.registry.GetProxy(req.Instance)
-	newToken, err := provider.RefreshToken(r.Context(), existing.RefreshToken, proxyURL)
+	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Instance)
 	if err != nil {
 		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
-		writeError(w, http.StatusBadGateway, "refresh failed")
-		return
-	}
-
-	if err := h.oauthMgr.GetStore().Save(req.Instance, *newToken); err != nil {
-		slog.Error("oauth: failed to save refreshed token", "instance", req.Instance, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "failed to save token")
+		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
 		return
 	}
 
@@ -271,12 +252,11 @@ func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Instance string `json:"instance"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if err := h.oauthMgr.GetStore().Delete(req.Instance); err != nil {
+	if err := h.oauthMgr.Logout(req.Instance); err != nil {
 		slog.Error("oauth: logout failed to delete token", "instance", req.Instance, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete token")
 		return
@@ -313,8 +293,7 @@ func (h *Handler) HandleAddInstance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -337,13 +316,12 @@ func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
 	// Clean up OAuth token before removing.
-	if err := h.oauthMgr.GetStore().Delete(req.Name); err != nil {
+	if err := h.oauthMgr.Logout(req.Name); err != nil {
 		slog.Warn("failed to delete oauth token on instance removal", "name", req.Name, "error", err.Error())
 	}
 
@@ -367,8 +345,7 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Proxy string `json:"proxy"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
