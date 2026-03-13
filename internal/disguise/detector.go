@@ -155,6 +155,7 @@ func extractSystemText(system interface{}) string {
 
 // DiceCoefficient calculates the Sorensen-Dice coefficient between two strings.
 // Returns a value between 0.0 (no similarity) and 1.0 (identical).
+// Uses pre-allocated map capacity to reduce allocations.
 func DiceCoefficient(a, b string) float64 {
 	if len(a) < 2 || len(b) < 2 {
 		if a == b {
@@ -163,13 +164,13 @@ func DiceCoefficient(a, b string) float64 {
 		return 0.0
 	}
 
-	aBigrams := make(map[string]int)
+	aBigrams := make(map[string]int, len(a)-1)
 	for i := 0; i < len(a)-1; i++ {
 		bigram := a[i : i+2]
 		aBigrams[bigram]++
 	}
 
-	bBigrams := make(map[string]int)
+	bBigrams := make(map[string]int, len(b)-1)
 	for i := 0; i < len(b)-1; i++ {
 		bigram := b[i : i+2]
 		bBigrams[bigram]++

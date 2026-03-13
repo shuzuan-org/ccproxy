@@ -115,12 +115,12 @@ func TestConcurrencyTracker_CleanupStale(t *testing.T) {
 	tracker := NewConcurrencyTracker()
 
 	// Manually insert a stale slot (older than slotTTL)
-	tracker.mu.Lock()
+	tracker.mapMu.Lock()
 	tracker.slots["inst1"] = map[string]time.Time{
 		"stale-req": time.Now().Add(-(slotTTL + time.Second)),
 		"fresh-req": time.Now(),
 	}
-	tracker.mu.Unlock()
+	tracker.mapMu.Unlock()
 
 	tracker.CleanupStale()
 
@@ -129,10 +129,10 @@ func TestConcurrencyTracker_CleanupStale(t *testing.T) {
 	}
 
 	// Verify the stale one is gone and fresh is still there
-	tracker.mu.Lock()
+	tracker.mapMu.Lock()
 	_, staleExists := tracker.slots["inst1"]["stale-req"]
 	_, freshExists := tracker.slots["inst1"]["fresh-req"]
-	tracker.mu.Unlock()
+	tracker.mapMu.Unlock()
 
 	if staleExists {
 		t.Error("stale-req should have been cleaned up")

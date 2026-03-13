@@ -33,9 +33,11 @@ type tokenFileData struct {
 }
 
 type TokenStore struct {
-	path string
-	key  []byte
-	mu   sync.RWMutex
+	path  string
+	key   []byte
+	mu    sync.RWMutex
+	cache map[string]*OAuthToken // in-memory cache, populated on first loadFile
+	loaded bool                  // whether cache has been populated from disk
 }
 
 func NewTokenStore(dataDir string) (*TokenStore, error) {
@@ -47,65 +49,119 @@ func NewTokenStore(dataDir string) (*TokenStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive key: %w", err)
 	}
-	return &TokenStore{path: path, key: key}, nil
+	return &TokenStore{
+		path:  path,
+		key:   key,
+		cache: make(map[string]*OAuthToken),
+	}, nil
 }
 
 func (s *TokenStore) Save(providerName string, token OAuthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data := s.loadFile()
-	plaintext, err := json.Marshal(token)
-	if err != nil {
-		return err
-	}
-	encrypted, err := encrypt(plaintext, s.key)
-	if err != nil {
-		return err
-	}
-	data.Tokens[providerName] = encrypted
-	return s.saveFile(data)
+	s.ensureCacheLoaded()
+
+	// Update cache
+	t := token // copy
+	s.cache[providerName] = &t
+
+	return s.persistToDisk()
 }
 
 func (s *TokenStore) Load(providerName string) (*OAuthToken, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data := s.loadFile()
-	encrypted, ok := data.Tokens[providerName]
+	if !s.loaded {
+		// Need write lock to populate cache
+		s.mu.RUnlock()
+		s.mu.Lock()
+		s.ensureCacheLoaded()
+		s.mu.Unlock()
+		s.mu.RLock()
+	}
+
+	token, ok := s.cache[providerName]
 	if !ok {
 		return nil, nil
 	}
-	plaintext, err := decrypt(encrypted, s.key)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: %w", err)
-	}
-	var token OAuthToken
-	if err := json.Unmarshal(plaintext, &token); err != nil {
-		return nil, err
-	}
-	return &token, nil
+	// Return a copy to prevent mutation
+	t := *token
+	return &t, nil
 }
 
 func (s *TokenStore) Delete(providerName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data := s.loadFile()
-	delete(data.Tokens, providerName)
-	return s.saveFile(data)
+	s.ensureCacheLoaded()
+	delete(s.cache, providerName)
+	return s.persistToDisk()
 }
 
 func (s *TokenStore) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data := s.loadFile()
-	names := make([]string, 0, len(data.Tokens))
-	for name := range data.Tokens {
+	if !s.loaded {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		s.ensureCacheLoaded()
+		s.mu.Unlock()
+		s.mu.RLock()
+	}
+
+	names := make([]string, 0, len(s.cache))
+	for name := range s.cache {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ensureCacheLoaded populates the in-memory cache from disk on first access.
+// Must be called under write lock.
+func (s *TokenStore) ensureCacheLoaded() {
+	if s.loaded {
+		return
+	}
+	data := s.loadFile()
+	for name, encrypted := range data.Tokens {
+		plaintext, err := decrypt(encrypted, s.key)
+		if err != nil {
+			slog.Warn("oauth/store: failed to decrypt token on cache load", "provider", name, "error", err.Error())
+			continue
+		}
+		var token OAuthToken
+		if err := json.Unmarshal(plaintext, &token); err != nil {
+			slog.Warn("oauth/store: failed to parse token on cache load", "provider", name, "error", err.Error())
+			continue
+		}
+		s.cache[name] = &token
+	}
+	s.loaded = true
+}
+
+// persistToDisk writes the current cache state to disk atomically.
+// Must be called under write lock.
+func (s *TokenStore) persistToDisk() error {
+	data := &tokenFileData{Tokens: make(map[string][]byte, len(s.cache))}
+	for name, token := range s.cache {
+		plaintext, err := json.Marshal(token)
+		if err != nil {
+			return fmt.Errorf("marshal token %s: %w", name, err)
+		}
+		encrypted, err := encrypt(plaintext, s.key)
+		if err != nil {
+			return fmt.Errorf("encrypt token %s: %w", name, err)
+		}
+		data.Tokens[name] = encrypted
+	}
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(s.path, b, 0600)
 }
 
 func (s *TokenStore) loadFile() *tokenFileData {
@@ -127,12 +183,31 @@ func (s *TokenStore) loadFile() *tokenFileData {
 	return data
 }
 
-func (s *TokenStore) saveFile(data *tokenFileData) error {
-	b, err := json.MarshalIndent(data, "", "  ")
+// atomicWriteFile writes data to a temporary file and renames it to path,
+// ensuring the target file is never left in a half-written state.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	return os.WriteFile(s.path, b, 0600)
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func deriveKey() ([]byte, error) {

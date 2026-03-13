@@ -8,14 +8,15 @@ import (
 )
 
 const (
-	aimdIncreaseEvery = 10               // successes before +1
-	aimdBeta          = 0.5              // multiplicative decrease factor
-	aimdDefaultMin    = int32(1)         // floor
-	aimdDefaultMax    = int32(10)        // ceiling
-	healthWindowSize  = 5 * time.Minute  // sliding window for error rate
-	cooldown429       = 30 * time.Second // default cooldown for 429
-	cooldown529       = 30 * time.Second // default cooldown for 529
-	cooldown401       = 60 * time.Second // wait for token refresh
+	aimdIncreaseEvery  = 10               // successes before +1
+	aimdBeta           = 0.5              // multiplicative decrease factor
+	aimdDefaultMin     = int32(1)         // floor
+	aimdDefaultMax     = int32(10)        // ceiling
+	healthWindowSize   = 5 * time.Minute  // sliding window for error rate
+	healthWindowMaxCap = 1000             // max entries per window slice
+	cooldown429        = 30 * time.Second // default cooldown for 429
+	cooldown529        = 30 * time.Second // default cooldown for 529
+	cooldown401        = 60 * time.Second // wait for token refresh
 )
 
 // AccountHealth tracks dynamic health state for one instance.
@@ -226,11 +227,19 @@ func (h *AccountHealth) updateLatency(us int64) {
 
 func (h *AccountHealth) recordWindow(isError bool) {
 	now := time.Now()
+	cutoff := now.Add(-healthWindowSize)
 	h.windowMu.Lock()
 	defer h.windowMu.Unlock()
+
 	h.windowTotal = append(h.windowTotal, now)
 	if isError {
 		h.windowErrors = append(h.windowErrors, now)
+	}
+
+	// Prune on write path to cap memory growth
+	if len(h.windowTotal) > healthWindowMaxCap {
+		h.windowTotal = pruneWindow(h.windowTotal, cutoff)
+		h.windowErrors = pruneWindow(h.windowErrors, cutoff)
 	}
 }
 

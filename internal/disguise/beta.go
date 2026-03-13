@@ -59,8 +59,10 @@ func SupplementBetaHeader(clientBeta string) string {
 	return clientBeta + "," + BetaOAuth
 }
 
+// CountTokensBetaHeaderValue is the pre-composed beta header for count_tokens requests.
+const CountTokensBetaHeaderValue = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaTokenCounting
+
 // CountTokensBetaHeader returns beta header for count_tokens requests.
 func CountTokensBetaHeader() string {
-	parts := []string{BetaClaudeCode, BetaOAuth, BetaInterleavedThinking, BetaTokenCounting}
-	return strings.Join(parts, ",")
+	return CountTokensBetaHeaderValue
 }

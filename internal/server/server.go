@@ -141,7 +141,7 @@ func New(cfg *config.Config) (*Server, error) {
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  300 * time.Second,
-		WriteTimeout: 300 * time.Second,
+		WriteTimeout: 0, // disabled: SSE streams need unbounded write time; per-request deadlines are set in the proxy handler
 		IdleTimeout:  60 * time.Second,
 	}
 

@@ -117,8 +117,8 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		}
 	}
 
-	// Layer 2: Score-based selection
-	var candidates []instanceCandidate
+	// Layer 2: Score-based selection with TryAcquire (single pass)
+	candidates := make([]instanceCandidate, 0, len(instances))
 	for _, inst := range instances {
 		if excludeInstances[inst.Name] {
 			continue
@@ -152,13 +152,35 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		return nil, ErrAllInstancesBusy
 	}
 
-	// Sort by Score (lower = better), break ties with LRU
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score < candidates[j].score
+	// Short-circuit: single candidate, no sorting needed
+	if len(candidates) == 1 {
+		c := candidates[0]
+		maxC := c.instance.MaxConcurrency
+		if h := health[c.instance.Name]; h != nil {
+			maxC = h.MaxConcurrency()
 		}
-		return candidates[i].lastUsed.Before(candidates[j].lastUsed)
-	})
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, maxC); ok {
+			b.lastUsed.Store(c.instance.Name, time.Now())
+			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
+		}
+		return nil, ErrAllInstancesBusy
+	}
+
+	// Two candidates: simple comparison instead of sort.Slice
+	if len(candidates) == 2 {
+		a, z := candidates[0], candidates[1]
+		if a.score > z.score || (a.score == z.score && a.lastUsed.After(z.lastUsed)) {
+			candidates[0], candidates[1] = z, a
+		}
+	} else {
+		// Sort by Score (lower = better), break ties with LRU
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].score != candidates[j].score {
+				return candidates[i].score < candidates[j].score
+			}
+			return candidates[i].lastUsed.Before(candidates[j].lastUsed)
+		})
+	}
 
 	// Try to acquire slot
 	for _, c := range candidates {
@@ -245,7 +267,7 @@ func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 // StartCleanup starts background goroutines for session and stale slot cleanup.
 func (b *Balancer) StartCleanup(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {

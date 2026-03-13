@@ -85,22 +85,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 2: Parse JSON to extract model, stream flag, session ID from metadata.user_id.
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+	// Step 2: Lightweight parse to extract only model, stream flag, session ID.
+	var header struct {
+		Model    string `json:"model"`
+		Stream   bool   `json:"stream"`
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(rawBody, &header); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request_error", "request body must be valid JSON")
 		return
 	}
 
-	isStream, _ := parsed["stream"].(bool)
-	originalModel, _ := parsed["model"].(string)
+	isStream := header.Stream
+	originalModel := header.Model
 
 	// Extract session ID from metadata.user_id if present.
 	sessionID := ""
-	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
-		if userID, ok := meta["user_id"].(string); ok {
-			sessionID = session.ExtractSessionID(userID)
-		}
+	if header.Metadata.UserID != "" {
+		sessionID = session.ExtractSessionID(header.Metadata.UserID)
 	}
 
 	// Step 3: Get auth info from context.
@@ -127,7 +131,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestFn := func(inst config.InstanceConfig, requestID string) (*http.Response, int, error) {
 		bodyToSend := rawBody
 		for stage := 0; stage <= 2; stage++ {
-			resp, statusCode, err := h.doRequest(origReq, inst, requestID, bodyToSend, parsed, isStream)
+			resp, statusCode, err := h.doRequest(origReq, inst, requestID, bodyToSend, isStream)
 			if err != nil || statusCode != 400 || resp == nil {
 				return resp, statusCode, err
 			}
@@ -264,7 +268,6 @@ func (h *Handler) doRequest(
 	inst config.InstanceConfig,
 	_ string, // requestID reserved for future tracing
 	rawBody []byte,
-	parsed map[string]interface{},
 	isStream bool,
 ) (*http.Response, int, error) {
 	ctx := origReq.Context()
@@ -292,7 +295,6 @@ func (h *Handler) doRequest(
 
 	// Step 5b: Apply disguise if needed (OAuth and not Claude Code client).
 	body := rawBody
-	_ = parsed // parsed is used by disguise internally via rawBody re-parse
 
 	// Build upstream URL.
 	upstreamURL := h.baseURL + "/v1/messages"
@@ -369,21 +371,23 @@ func (h *Handler) doRequest(
 	return resp, resp.StatusCode, nil
 }
 
+// hopByHopHeaders lists headers that must not be forwarded by proxies.
+var hopByHopHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Te":                  true,
+	"Trailers":            true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Content-Length":      true, // recalculated
+}
+
 // copyHeaders copies response headers from src to dst, skipping hop-by-hop headers.
 func copyHeaders(dst, src http.Header) {
-	hopByHop := map[string]bool{
-		"Connection":          true,
-		"Keep-Alive":          true,
-		"Proxy-Authenticate":  true,
-		"Proxy-Authorization": true,
-		"Te":                  true,
-		"Trailers":            true,
-		"Transfer-Encoding":   true,
-		"Upgrade":             true,
-		"Content-Length":      true, // recalculated
-	}
 	for k, vals := range src {
-		if hopByHop[k] {
+		if hopByHopHeaders[k] {
 			continue
 		}
 		for _, v := range vals {

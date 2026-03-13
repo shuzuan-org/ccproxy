@@ -100,7 +100,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		"original_ua", origReq.Header.Get("User-Agent"),
 	)
 
-	// Parse body to extract model and check for tools
+	// Parse body once — all layers mutate parsed in-place, marshal once at end
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body, false
@@ -112,9 +112,6 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	// Layer 7: Thinking cache_control cleanup (before other modifications)
 	if CleanThinkingCacheControl(parsed) {
 		slog.Debug("disguise: [layer 7] thinking cache_control cleaned", "instance", instanceName)
-		if result, err := json.Marshal(parsed); err == nil {
-			body = result
-		}
 	}
 
 	// Layer 2: HTTP Headers (per-instance fingerprint)
@@ -151,15 +148,11 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	// Layer 4: System Prompt Injection (skip for Haiku)
 	if !IsHaikuModel(model) {
 		hasSystemBefore := parsed["system"] != nil
-		body = injectSystemPrompt(parsed, body)
+		injectSystemPromptInPlace(parsed)
 		slog.Debug("disguise: [layer 4] system prompt injected",
 			"instance", instanceName,
 			"had_system_before", hasSystemBefore,
 		)
-		// Re-parse after injection for subsequent layers
-		if err := json.Unmarshal(body, &parsed); err == nil {
-			_ = parsed
-		}
 	} else {
 		slog.Debug("disguise: [layer 4] system prompt skipped (haiku model)",
 			"instance", instanceName,
@@ -173,11 +166,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
 		originalUserID, _ = meta["user_id"].(string)
 	}
-	body = injectMetadataUserIDWithMasking(parsed, body, sessionSeed, maskedSession)
-	// Re-parse after metadata injection for model normalization
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return body, true
-	}
+	injectMetadataUserIDInPlace(parsed, sessionSeed, maskedSession)
 	newUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
 		newUserID, _ = meta["user_id"].(string)
@@ -190,7 +179,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 	// Layer 6: Model ID normalization
 	normalizedModel := NormalizeModelID(model)
-	body = normalizeModelInBody(parsed, body)
+	normalizeModelInPlace(parsed)
 	if normalizedModel != model {
 		slog.Debug("disguise: [layer 6] model ID normalized",
 			"instance", instanceName,
@@ -198,16 +187,12 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			"after", normalizedModel,
 		)
 	}
-	// Re-parse for sanitization
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return body, true
-	}
 
 	// Layer 8: Body sanitization (match sub2api's normalizeClaudeOAuthRequestBody)
 	_, hadTemperature := parsed["temperature"]
 	_, hadToolChoice := parsed["tool_choice"]
 	_, hadTools := parsed["tools"]
-	body = sanitizeRequestBody(parsed, body)
+	sanitizeRequestBodyInPlace(parsed)
 	if hadTemperature || hadToolChoice || !hadTools {
 		slog.Debug("disguise: [layer 8] body sanitized",
 			"instance", instanceName,
@@ -217,7 +202,12 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		)
 	}
 
-	return body, true
+	// Marshal once at the end
+	result, err := json.Marshal(parsed)
+	if err != nil {
+		return body, true
+	}
+	return result, true
 }
 
 // truncateUserID returns a shortened user_id for logging: first 12 + last 8 chars.
@@ -265,16 +255,15 @@ func (e *Engine) ApplyResponseModelID(body []byte) []byte {
 
 const claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 
-// injectSystemPrompt injects the Claude Code system prompt into the request body.
-// Matches sub2api's injectClaudeCodePrompt: uses cache_control ephemeral block
-// and prefixes the next text block with the banner.
-func injectSystemPrompt(parsed map[string]interface{}, body []byte) []byte {
+// injectSystemPromptInPlace injects the Claude Code system prompt into parsed map.
+// Mutates parsed in-place. No marshaling.
+func injectSystemPromptInPlace(parsed map[string]interface{}) {
 	// Check if system prompt already contains Claude Code prompt
 	if system, ok := parsed["system"]; ok {
 		systemText := extractSystemText(system)
 		for _, prefix := range claudeCodePromptPrefixes {
 			if strings.HasPrefix(systemText, prefix) {
-				return body // already has Claude Code prompt
+				return // already has Claude Code prompt
 			}
 		}
 	}
@@ -328,14 +317,10 @@ func injectSystemPrompt(parsed map[string]interface{}, body []byte) []byte {
 	}
 
 	parsed["system"] = newSystem
-	result, err := json.Marshal(parsed)
-	if err != nil {
-		return body
-	}
-	return result
 }
 
-func injectMetadataUserIDWithMasking(parsed map[string]interface{}, body []byte, sessionSeed string, maskedSessionUUID string) []byte {
+// injectMetadataUserIDInPlace sets metadata.user_id in parsed map in-place.
+func injectMetadataUserIDInPlace(parsed map[string]interface{}, sessionSeed string, maskedSessionUUID string) {
 	metadata, ok := parsed["metadata"].(map[string]interface{})
 	if !ok {
 		metadata = make(map[string]interface{})
@@ -350,62 +335,31 @@ func injectMetadataUserIDWithMasking(parsed map[string]interface{}, body []byte,
 	}
 	metadata["user_id"] = userID
 	parsed["metadata"] = metadata
-
-	result, err := json.Marshal(parsed)
-	if err != nil {
-		return body
-	}
-	return result
 }
 
-// sanitizeRequestBody ensures the request body matches Claude Code client patterns.
-// Matches sub2api's normalizeClaudeOAuthRequestBody: inject empty tools array,
-// remove temperature and tool_choice fields.
-func sanitizeRequestBody(parsed map[string]interface{}, body []byte) []byte {
-	modified := false
-
+// sanitizeRequestBodyInPlace ensures the request body matches Claude Code client patterns.
+// Mutates parsed in-place. No marshaling.
+func sanitizeRequestBodyInPlace(parsed map[string]interface{}) {
 	// Ensure tools field exists (even as empty array)
 	if _, exists := parsed["tools"]; !exists {
 		parsed["tools"] = []interface{}{}
-		modified = true
 	}
 
 	// Remove temperature (Claude Code does not send it)
-	if _, exists := parsed["temperature"]; exists {
-		delete(parsed, "temperature")
-		modified = true
-	}
+	delete(parsed, "temperature")
 
 	// Remove tool_choice (Claude Code does not send it)
-	if _, exists := parsed["tool_choice"]; exists {
-		delete(parsed, "tool_choice")
-		modified = true
-	}
-
-	if !modified {
-		return body
-	}
-
-	result, err := json.Marshal(parsed)
-	if err != nil {
-		return body
-	}
-	return result
+	delete(parsed, "tool_choice")
 }
 
-func normalizeModelInBody(parsed map[string]interface{}, body []byte) []byte {
+// normalizeModelInPlace normalizes the model ID in parsed map in-place.
+func normalizeModelInPlace(parsed map[string]interface{}) {
 	model, ok := parsed["model"].(string)
 	if !ok {
-		return body
+		return
 	}
 	normalized := NormalizeModelID(model)
-	if normalized == model {
-		return body
+	if normalized != model {
+		parsed["model"] = normalized
 	}
-	parsed["model"] = normalized
-	result, err := json.Marshal(parsed)
-	if err != nil {
-		return body
-	}
-	return result
 }

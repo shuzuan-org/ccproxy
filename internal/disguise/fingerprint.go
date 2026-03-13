@@ -48,26 +48,43 @@ func NewFingerprintStore(dataDir string) *FingerprintStore {
 
 // Get returns the fingerprint for the given instance, creating one if needed.
 // Active instances get their TTL refreshed; expired fingerprints are regenerated.
+// Uses RLock fast path for fresh fingerprints to avoid write-lock contention.
 func (s *FingerprintStore) Get(instanceName string) *Fingerprint {
+	now := time.Now()
+
+	// Fast path: RLock for fresh fingerprints (no disk write needed)
+	s.mu.RLock()
+	fp, exists := s.fingerprints[instanceName]
+	if exists {
+		age := now.Sub(time.UnixMilli(fp.UpdatedAt))
+		if age <= s.renewAfter {
+			s.mu.RUnlock()
+			return fp
+		}
+	}
+	s.mu.RUnlock()
+
+	// Slow path: need write lock for new/expired/renewal
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
-	fp, exists := s.fingerprints[instanceName]
-
+	// Re-check after acquiring write lock (another goroutine may have updated)
+	fp, exists = s.fingerprints[instanceName]
 	if exists {
 		age := now.Sub(time.UnixMilli(fp.UpdatedAt))
+		if age <= s.renewAfter {
+			return fp // became fresh while waiting for lock
+		}
 		if age > s.maxAge {
 			// Expired — regenerate
 			fp = generateFingerprint(now)
 			s.fingerprints[instanceName] = fp
 			s.saveLocked()
-		} else if age > s.renewAfter {
+		} else {
 			// Renew TTL
 			fp.UpdatedAt = now.UnixMilli()
 			s.saveLocked()
 		}
-		// Otherwise: fresh enough, return without disk write
 		return fp
 	}
 

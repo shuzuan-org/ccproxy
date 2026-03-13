@@ -68,7 +68,7 @@ func (t *fingerprintTransport) getOrCreateTransport(proxyURL string) *http.Trans
 	tr := &http.Transport{
 		DialTLSContext:      t.makeDialTLSContext(proxyURL),
 		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
+		MaxIdleConnsPerHost: 50,
 		IdleConnTimeout:     90 * time.Second,
 	}
 	t.transports[proxyURL] = tr
@@ -124,7 +124,8 @@ func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error
 	if proxyURL == "" {
 		slog.Debug("tls: dialing direct", "addr", addr)
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+		d := &net.Dialer{Timeout: 30 * time.Second}
+		conn, err := d.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			slog.Error("tls: direct dial failed", "addr", addr, "elapsed", time.Since(start).String(), "error", err.Error())
 			return nil, err

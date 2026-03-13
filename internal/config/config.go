@@ -262,11 +262,13 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 	}
 
 	done := make(chan struct{})
+	resetCh := make(chan struct{}, 1) // buffered to avoid blocking the event loop
 	go func() {
 		defer func() { _ = watcher.Close() }()
 
-		// Debounce timer to avoid reloading on rapid file changes
-		var debounceTimer *time.Timer
+		debounceTimer := time.NewTimer(time.Hour) // starts idle
+		debounceTimer.Stop()
+		defer debounceTimer.Stop()
 
 		for {
 			select {
@@ -282,19 +284,11 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 					continue
 				}
 
-				// Debounce: wait 500ms after last change before reloading
-				if debounceTimer != nil {
-					debounceTimer.Stop()
+				// Signal debounce reset
+				select {
+				case resetCh <- struct{}{}:
+				default:
 				}
-				debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
-					cfg, err := Load(path)
-					if err != nil {
-						slog.Error("config reload failed", "path", path, "error", err.Error())
-						return
-					}
-					slog.Info("config reloaded", "path", path)
-					onChange(cfg)
-				})
 
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -303,9 +297,36 @@ func Watch(path string, onChange func(*Config)) (stop func(), err error) {
 				slog.Error("config watcher error", "error", err.Error())
 
 			case <-done:
-				if debounceTimer != nil {
-					debounceTimer.Stop()
+				return
+			}
+		}
+	}()
+
+	// Dedicated debounce goroutine to avoid timer races
+	go func() {
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
+
+		for {
+			select {
+			case <-resetCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
+				timer.Reset(500 * time.Millisecond)
+			case <-timer.C:
+				cfg, err := Load(path)
+				if err != nil {
+					slog.Error("config reload failed", "path", path, "error", err.Error())
+					continue
+				}
+				slog.Info("config reloaded", "path", path)
+				onChange(cfg)
+			case <-done:
 				return
 			}
 		}

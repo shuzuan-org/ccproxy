@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"time"
 
@@ -52,7 +51,7 @@ func ClassifyError(statusCode int) FailureAction {
 
 // RetryDelay calculates exponential backoff delay for the given attempt (0-based).
 func RetryDelay(attempt int) time.Duration {
-	delay := retryBaseDelay * time.Duration(math.Pow(2, float64(attempt)))
+	delay := retryBaseDelay * time.Duration(1<<uint(attempt))
 	if delay > retryMaxDelay {
 		delay = retryMaxDelay
 	}
@@ -194,11 +193,13 @@ func ExecuteWithRetry(
 				}
 				// Exponential backoff before retry
 				delay := RetryDelay(sameInstanceRetries - 1)
+				timer := time.NewTimer(delay)
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					result.Release()
 					return nil, ctx.Err()
-				case <-time.After(delay):
+				case <-timer.C:
 				}
 			}
 

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/binn/ccproxy/internal/disguise"
 )
@@ -51,6 +53,9 @@ type messageDeltaPayload struct {
 // Claude thinking blocks can produce single lines exceeding 100KB.
 const maxSSELineSize = 1 << 20 // 1MB
 
+// sseBufPool reuses byte buffers for SSE event assembly to reduce allocations.
+var sseBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
 // ForwardSSE reads SSE events from upstream and writes them verbatim to downstream.
 // It parses message_start and message_delta events to accumulate token usage.
 // Forwarding stops when upstream is exhausted or ctx is cancelled.
@@ -60,14 +65,25 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 
-	// Buffers for the current event being assembled.
-	var currentEvent, currentData strings.Builder
+	// Pre-assert Flusher at entry instead of per-event type assertion
+	flusher, canFlush := downstream.(http.Flusher)
+
+	// Use []byte buffers to avoid string→[]byte conversion on Unmarshal
+	var currentEvent strings.Builder
+	var currentData bytes.Buffer
+
+	buf := sseBufPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		sseBufPool.Put(buf)
+	}()
 
 	flushEvent := func() error {
 		event := strings.TrimSpace(currentEvent.String())
-		data := strings.TrimSpace(currentData.String())
+		data := currentData.Bytes()
+		data = bytes.TrimSpace(data)
 
-		if event == "" && data == "" {
+		if event == "" && len(data) == 0 {
 			return nil
 		}
 
@@ -75,7 +91,7 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 		switch event {
 		case "message_start":
 			var p messageStartPayload
-			if err := json.Unmarshal([]byte(data), &p); err == nil {
+			if err := json.Unmarshal(data, &p); err == nil {
 				usage.InputTokens = p.Message.Usage.InputTokens
 				usage.CacheCreationInputTokens = p.Message.Usage.CacheCreationInputTokens
 				usage.CacheReadInputTokens = p.Message.Usage.CacheReadInputTokens
@@ -84,44 +100,40 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 			if originalModel != "" {
 				normalized := disguise.NormalizeModelID(originalModel)
 				if normalized != originalModel {
-					data = strings.Replace(data, `"`+normalized+`"`, `"`+originalModel+`"`, 1)
+					data = bytes.Replace(data, []byte(`"`+normalized+`"`), []byte(`"`+originalModel+`"`), 1)
 				}
 			}
 		case "message_delta":
 			var p messageDeltaPayload
-			if err := json.Unmarshal([]byte(data), &p); err == nil {
+			if err := json.Unmarshal(data, &p); err == nil {
 				usage.OutputTokens = p.Usage.OutputTokens
 			}
 		case "error":
 			usage.SSEError = true
-			usage.SSEErrorData = data
-			slog.Warn("SSE error event received", "data", data)
+			usage.SSEErrorData = string(data)
+			slog.Warn("SSE error event received", "data", string(data))
 		}
 
-		// Forward the event verbatim to the downstream client.
+		// Merge 3 writes into 1 buffered write
+		buf.Reset()
 		if event != "" {
-			if _, err := fmt.Fprintf(downstream, "event: %s\n", event); err != nil {
-				currentEvent.Reset()
-				currentData.Reset()
-				return err
-			}
+			fmt.Fprintf(buf, "event: %s\n", event)
 		}
-		if data != "" {
-			if _, err := fmt.Fprintf(downstream, "data: %s\n", data); err != nil {
-				currentEvent.Reset()
-				currentData.Reset()
-				return err
-			}
+		if len(data) > 0 {
+			buf.WriteString("data: ")
+			buf.Write(data)
+			buf.WriteByte('\n')
 		}
-		if _, err := fmt.Fprint(downstream, "\n"); err != nil {
+		buf.WriteByte('\n')
+
+		if _, err := downstream.Write(buf.Bytes()); err != nil {
 			currentEvent.Reset()
 			currentData.Reset()
 			return err
 		}
 
-		// Flush immediately if the writer supports it.
-		if f, ok := downstream.(http.Flusher); ok {
-			f.Flush()
+		if canFlush {
+			flusher.Flush()
 		}
 
 		// Reset buffers for the next event.
