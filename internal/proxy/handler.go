@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -164,7 +163,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if stage == 0 && IsSignatureError(errBody) {
-				slog.Info("signature error detected, retrying with thinking blocks filtered",
+				log.Info("signature error detected, retrying with thinking blocks filtered",
 					"instance", inst.Name,
 					"stage", stage,
 				)
@@ -172,7 +171,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if stage == 1 && (IsSignatureError(errBody) || IsToolRelatedError(errBody)) {
-				slog.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
+				log.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
 					"instance", inst.Name,
 					"stage", stage,
 				)
@@ -209,6 +208,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"elapsed", time.Since(requestStart).String(),
 			"error", err.Error(),
 		)
+
+		// Request summary log — error path.
+		summaryAttrs := []any{
+			"model", originalModel,
+			"stream", isStream,
+			"elapsed", time.Since(requestStart).Round(time.Millisecond),
+		}
+		if result != nil {
+			summaryAttrs = append(summaryAttrs,
+				"instance", result.InstanceName,
+				"status", result.StatusCode,
+				"retries", result.Retries,
+				"failovers", result.Failovers,
+				"instances_tried", result.InstancesTried,
+			)
+			im := observe.Global.Instance(result.InstanceName)
+			im.RequestsTotal.Add(1)
+			im.RequestsError.Add(1)
+		}
+		log.Warn("request completed", summaryAttrs...)
+
 		// Step 6: Write 503 on retry exhaustion.
 		WriteError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("upstream unavailable: %s", err.Error()))
 		return
@@ -222,6 +242,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"elapsed", time.Since(requestStart).String(),
 	)
 
+	// Request summary log — success path. Level varies by retry/failover count.
+	summaryAttrs := []any{
+		"model", originalModel,
+		"stream", isStream,
+		"elapsed", time.Since(requestStart).Round(time.Millisecond),
+		"instance", result.InstanceName,
+		"status", result.StatusCode,
+		"retries", result.Retries,
+		"failovers", result.Failovers,
+		"instances_tried", result.InstancesTried,
+	}
+	if result.Retries > 0 || result.Failovers > 0 {
+		log.Info("request completed", summaryAttrs...)
+	} else {
+		log.Debug("request completed", summaryAttrs...)
+	}
+
+	// Per-instance metrics recording.
+	im := observe.Global.Instance(result.InstanceName)
+	im.RequestsTotal.Add(1)
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		im.RequestsSuccess.Add(1)
+	} else {
+		im.RequestsError.Add(1)
+	}
+
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
 
@@ -229,7 +275,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 
 	// Report success to health tracker (with response headers for budget tracking).
-	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
+	h.balancer.ReportResult(r.Context(), result.InstanceName, result.StatusCode,
 		time.Since(requestStart).Microseconds(), 0, resp.Header)
 
 	// Step 9: Handle error responses from upstream.
@@ -301,6 +347,7 @@ func (h *Handler) doRequest(
 	isStream bool,
 ) (*http.Response, int, error) {
 	ctx := origReq.Context()
+	log := observe.Logger(ctx)
 
 	// Inject per-instance SOCKS5 proxy into context for fingerprintTransport.
 	if inst.Proxy != "" {
@@ -309,15 +356,15 @@ func (h *Handler) doRequest(
 
 	// Step 5a: Resolve OAuth token.
 	if h.oauthManager == nil {
-		slog.Error("oauth manager not configured", "instance", inst.Name)
+		log.Error("oauth manager not configured", "instance", inst.Name)
 		return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
 	}
 	token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
 	if err != nil {
-		slog.Error("oauth token error", "instance", inst.Name, "error", err.Error())
+		log.Error("oauth token error", "instance", inst.Name, "error", err.Error())
 		return nil, 401, fmt.Errorf("get oauth token: %w", err)
 	}
-	slog.Debug("oauth token resolved",
+	log.Debug("oauth token resolved",
 		"instance", inst.Name,
 		"expires_in", time.Until(token.ExpiresAt).String(),
 	)
@@ -359,7 +406,7 @@ func (h *Handler) doRequest(
 		var modifiedBody []byte
 		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, inst.Name)
 		body = modifiedBody
-		slog.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
+		log.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
 	}
 
 	// Step 5d: Apply disguise URL modification for OAuth.
@@ -383,15 +430,15 @@ func (h *Handler) doRequest(
 	if err != nil {
 		// Network-level error: treat as 503 for retry classification.
 		if ctx.Err() != nil {
-			slog.Debug("request cancelled", "instance", inst.Name, "error", ctx.Err().Error())
+			log.Debug("request cancelled", "instance", inst.Name, "error", ctx.Err().Error())
 			return nil, 0, ctx.Err()
 		}
-		slog.Error("upstream network error", "instance", inst.Name, "error", err.Error())
+		log.Error("upstream network error", "instance", inst.Name, "error", err.Error())
 		return nil, 503, fmt.Errorf("upstream request failed: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
-		slog.Warn("upstream returned error",
+		log.Warn("upstream returned error",
 			"instance", inst.Name,
 			"status", resp.StatusCode,
 			"url", upstreamReq.URL.String(),
