@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"math/rand"
 	"net/http"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 // OAuthTokenProvider abstracts token retrieval to decouple from oauth.Manager.
@@ -135,7 +136,7 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 
 		token, err := uf.tokenProvider.GetValidToken(ctx, instanceName)
 		if err != nil {
-			slog.Debug("usage: token error", "instance", instanceName, "error", err.Error())
+			observe.Logger(ctx).Debug("usage: token error", "instance", instanceName, "error", err.Error())
 			uf.cacheError(instanceName)
 			return nil, err
 		}
@@ -152,7 +153,7 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 
 		resp, err := uf.httpClient.Do(req)
 		if err != nil {
-			slog.Debug("usage: fetch error", "instance", instanceName, "error", err.Error())
+			observe.Logger(ctx).Debug("usage: fetch error", "instance", instanceName, "error", err.Error())
 			uf.cacheError(instanceName)
 			return nil, err
 		}
@@ -160,20 +161,20 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			slog.Warn("usage: API error", "instance", instanceName, "status", resp.StatusCode, "body", string(body))
+			observe.Logger(ctx).Warn("usage: API error", "instance", instanceName, "status", resp.StatusCode, "body", string(body))
 			uf.cacheError(instanceName)
 			return nil, fmt.Errorf("usage API returned %d", resp.StatusCode)
 		}
 
 		var usageResp UsageResponse
 		if err := json.NewDecoder(resp.Body).Decode(&usageResp); err != nil {
-			slog.Warn("usage: decode error", "instance", instanceName, "error", err.Error())
+			observe.Logger(ctx).Warn("usage: decode error", "instance", instanceName, "error", err.Error())
 			uf.cacheError(instanceName)
 			return nil, err
 		}
 
 		uf.cacheSuccess(instanceName, &usageResp)
-		slog.Debug("usage: fetched",
+		observe.Logger(ctx).Debug("usage: fetched",
 			"instance", instanceName,
 			"5h_util", usageResp.FiveHour.Utilization,
 			"7d_util", usageResp.SevenDay.Utilization,

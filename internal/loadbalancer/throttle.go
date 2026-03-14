@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 // PoolThrottle implements SRE-style adaptive throttling with a wait queue
@@ -99,7 +101,7 @@ func (pt *PoolThrottle) Enqueue(ctx context.Context, isStream bool) bool {
 	case pt.queue <- struct{}{}:
 		return true
 	case <-timer.C:
-		slog.Warn("throttle: queue timeout", "is_stream", isStream)
+		observe.Logger(ctx).Warn("throttle: queue timeout", "is_stream", isStream)
 		return false
 	case <-ctx.Done():
 		return false
