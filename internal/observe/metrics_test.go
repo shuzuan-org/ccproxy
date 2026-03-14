@@ -1,7 +1,10 @@
 package observe
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -128,7 +131,7 @@ func TestMetrics_StartPeriodicLog(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Start with very short interval
-	m.StartPeriodicLog(ctx, 10*time.Millisecond)
+	m.StartPeriodicLog(ctx, 10*time.Millisecond, nil, nil)
 
 	// Let it tick a couple times
 	time.Sleep(50 * time.Millisecond)
@@ -138,4 +141,68 @@ func TestMetrics_StartPeriodicLog(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// No panic or race = pass
+}
+
+// safeBuf is a goroutine-safe wrapper around bytes.Buffer for use in tests.
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestStartPeriodicLogWithState(t *testing.T) {
+	t.Parallel()
+
+	var buf safeBuf
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	m := &Metrics{}
+	m.RequestsTotal.Store(100)
+	m.RequestsSuccess.Store(95)
+	m.Instance("acct-1").RequestsTotal.Store(60)
+	m.Instance("acct-2").RequestsTotal.Store(40)
+
+	provider := &mockStateProvider{
+		states: map[string]InstanceState{
+			"acct-1": {Health: "healthy", Concurrency: 2, MaxConcurrency: 5, BudgetState: "normal"},
+			"acct-2": {Health: "cooldown", Concurrency: 0, MaxConcurrency: 5, BudgetState: "sticky_only"},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.StartPeriodicLog(ctx, 50*time.Millisecond, provider, logger)
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "metrics summary") {
+		t.Errorf("missing 'metrics summary' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "requests_per_min") {
+		t.Errorf("missing 'requests_per_min' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "metrics instance") {
+		t.Errorf("missing 'metrics instance' in output:\n%s", output)
+	}
+}
+
+type mockStateProvider struct {
+	states map[string]InstanceState
+}
+
+func (m *mockStateProvider) InstanceStates() map[string]InstanceState {
+	return m.states
 }

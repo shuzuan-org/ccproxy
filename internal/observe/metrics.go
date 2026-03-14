@@ -2,11 +2,25 @@ package observe
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// StateProvider supplies runtime state for periodic metrics snapshots.
+type StateProvider interface {
+	InstanceStates() map[string]InstanceState
+}
+
+// InstanceState represents the runtime state of a single instance.
+type InstanceState struct {
+	Health         string
+	Concurrency    int
+	MaxConcurrency int
+	BudgetState    string
+}
 
 // Metrics holds global atomic counters for request-level observability.
 type Metrics struct {
@@ -60,8 +74,14 @@ func (m *Metrics) Snapshot() map[string]int64 {
 }
 
 // StartPeriodicLog starts a goroutine that logs a metrics snapshot every interval.
+// If state is non-nil, per-instance state is also logged. If logger is nil, slog.Default() is used.
 // It stops when ctx is cancelled.
-func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration) {
+func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, state StateProvider, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	startTime := time.Now()
+	var lastTotal int64
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -71,17 +91,41 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration) 
 				return
 			case <-ticker.C:
 				snap := m.Snapshot()
-				slog.Info("metrics summary",
+				currentTotal := snap["requests_total"]
+				elapsed := time.Since(startTime)
+				rate := float64(currentTotal-lastTotal) / interval.Minutes()
+				lastTotal = currentTotal
+
+				logger.Info("metrics summary",
+					"uptime", elapsed.Round(time.Second).String(),
 					"requests_total", snap["requests_total"],
-					"requests_throttled", snap["requests_throttled"],
-					"requests_queued", snap["requests_queued"],
+					"requests_per_min", fmt.Sprintf("%.1f", rate),
 					"requests_success", snap["requests_success"],
 					"requests_error", snap["requests_error"],
+					"requests_throttled", snap["requests_throttled"],
+					"requests_queued", snap["requests_queued"],
 					"retries_total", snap["retries_total"],
 					"failovers_total", snap["failovers_total"],
 					"instances_429", snap["instances_429"],
 					"instances_529", snap["instances_529"],
 				)
+
+				if state != nil {
+					for name, is := range state.InstanceStates() {
+						im := m.Instance(name)
+						logger.Info("metrics instance",
+							"instance", name,
+							"requests", im.RequestsTotal.Load(),
+							"success", im.RequestsSuccess.Load(),
+							"errors", im.RequestsError.Load(),
+							"errors_429", im.Errors429.Load(),
+							"errors_529", im.Errors529.Load(),
+							"state", is.Health,
+							"concurrency", fmt.Sprintf("%d/%d", is.Concurrency, is.MaxConcurrency),
+							"budget", is.BudgetState,
+						)
+					}
+				}
 			}
 		}
 	}()
