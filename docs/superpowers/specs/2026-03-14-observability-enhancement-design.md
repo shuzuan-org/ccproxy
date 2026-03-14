@@ -48,7 +48,13 @@ The callers (retry.go, balancer.go) already have ctx. The `Balancer.ReportResult
 
 ### Request summary log
 
-At the end of every request (success or failure), emit a single Info-level summary:
+At the end of every request, emit a single summary log with level determined by outcome:
+
+| Scenario | Level | Condition |
+|----------|-------|-----------|
+| Clean success | Debug | status 2xx, no retries, no failovers |
+| Success with retries/failover | Info | status 2xx, retries > 0 or failovers > 0 |
+| Failure | Warn | all non-2xx final results |
 
 ```
 "request completed" request_id=xxx api_key=yyy model=claude-sonnet-4-20250514
@@ -56,7 +62,7 @@ At the end of every request (success or failure), emit a single Info-level summa
   input_tokens=1500 output_tokens=800 stream=true
 ```
 
-This is the single most valuable log line — it contains everything needed for post-hoc analysis.
+At default `info` level, only "eventful" and failed requests appear. Switch to `debug` for the full picture.
 
 ### Retry decision path
 
