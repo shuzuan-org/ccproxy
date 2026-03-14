@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -31,12 +32,14 @@ type SelectResult struct {
 }
 
 type Balancer struct {
-	mu        sync.RWMutex
-	instances []config.InstanceConfig
-	tracker   *ConcurrencyTracker
-	health    map[string]*AccountHealth // per-instance health tracking
-	sessions  sync.Map                  // sessionKey → *SessionInfo
-	lastUsed  sync.Map                  // instanceName → time.Time
+	mu           sync.RWMutex
+	instances    []config.InstanceConfig
+	tracker      *ConcurrencyTracker
+	health       map[string]*AccountHealth // per-instance health tracking
+	sessions     sync.Map                  // sessionKey → *SessionInfo
+	lastUsed     sync.Map                  // instanceName → time.Time
+	throttle     *PoolThrottle
+	usageFetcher *UsageFetcher
 }
 
 func NewBalancer(instances []config.InstanceConfig, tracker *ConcurrencyTracker) *Balancer {
@@ -45,10 +48,15 @@ func NewBalancer(instances []config.InstanceConfig, tracker *ConcurrencyTracker)
 	for _, inst := range enabled {
 		health[inst.Name] = NewAccountHealth(inst.Name)
 	}
+	queueCap := len(enabled) * 3
+	if queueCap < 10 {
+		queueCap = 10
+	}
 	return &Balancer{
 		instances: enabled,
 		tracker:   tracker,
 		health:    health,
+		throttle:  NewPoolThrottle(queueCap),
 	}
 }
 
@@ -62,6 +70,11 @@ func filterEnabled(instances []config.InstanceConfig) []config.InstanceConfig {
 	return result
 }
 
+// SetUsageFetcher injects the usage fetcher after construction.
+func (b *Balancer) SetUsageFetcher(f *UsageFetcher) {
+	b.usageFetcher = f
+}
+
 // instanceCandidate holds a candidate instance for selection.
 type instanceCandidate struct {
 	instance config.InstanceConfig
@@ -70,11 +83,34 @@ type instanceCandidate struct {
 	score    float64
 }
 
-// SelectInstance implements 3-layer selection:
-// Layer 1: Sticky session (1h TTL)
-// Layer 2: Load-aware selection (Priority → LoadRate → LastUsedAt)
-// Layer 3: Fallback (wait or error)
-func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string]bool) (*SelectResult, error) {
+// SelectInstance implements 3-layer selection with pool-level backpressure:
+// L1 Pool: SRE throttling + utilization delay + wait queue
+// L2 Sticky: Session affinity (1h TTL) with budget-aware concurrency
+// L3 Score: Load-aware selection with budget state filtering
+func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, excludeInstances map[string]bool, isStream bool) (*SelectResult, error) {
+	// L1: Pool-level backpressure
+	b.throttle.RecordRequest()
+	if b.throttle.ShouldThrottle() {
+		if !b.throttle.Enqueue(ctx, isStream) {
+			return nil, ErrAllInstancesBusy
+		}
+		defer b.throttle.Dequeue()
+	}
+
+	// Utilization-based delay
+	budgets := b.allBudgets()
+	poolUtil := PoolUtilization(budgets)
+	if delay := UtilizationDelay(poolUtil); delay > 0 {
+		slog.Debug("backpressure: utilization delay", "pool_util", poolUtil, "delay", delay.String())
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		}
+	}
+
 	b.mu.RLock()
 	instances := b.instances
 	health := b.health
@@ -86,7 +122,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 
 	requestID := uuid.New().String()
 
-	// Layer 1: Sticky session check
+	// Layer 2: Sticky session check
 	if sessionKey != "" {
 		if info, ok := b.sessions.Load(sessionKey); ok {
 			si := info.(*SessionInfo)
@@ -95,9 +131,14 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 				if inst != nil && !excludeInstances[inst.Name] {
 					h := health[inst.Name]
 					if h == nil || h.IsAvailable() {
-						rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
+						// Use dynamic concurrency for sticky sessions
+						effectiveMax := inst.MaxConcurrency
+						if h != nil {
+							effectiveMax = EffectiveMaxConcurrency(h.budget, inst.MaxConcurrency)
+						}
+						rate := b.tracker.LoadRate(inst.Name, effectiveMax)
 						if rate < 100 {
-							if release, ok := b.tracker.Acquire(inst.Name, requestID, inst.MaxConcurrency); ok {
+							if release, ok := b.tracker.Acquire(inst.Name, requestID, effectiveMax); ok {
 								b.sessions.Store(sessionKey, &SessionInfo{
 									InstanceName: si.InstanceName,
 									LastRequest:  time.Now(),
@@ -113,7 +154,7 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		}
 	}
 
-	// Layer 2: Score-based selection with TryAcquire (single pass)
+	// Layer 3: Score-based selection with budget state filtering
 	candidates := make([]instanceCandidate, 0, len(instances))
 	for _, inst := range instances {
 		if excludeInstances[inst.Name] {
@@ -123,7 +164,20 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 		if h != nil && !h.IsAvailable() {
 			continue
 		}
-		rate := b.tracker.LoadRate(inst.Name, inst.MaxConcurrency)
+
+		// Check budget state — skip Blocked and StickyOnly instances
+		if h != nil && h.budget != nil {
+			state := h.budget.State()
+			if state == StateBlocked || state == StateStickyOnly {
+				continue
+			}
+		}
+
+		effectiveMax := inst.MaxConcurrency
+		if h != nil {
+			effectiveMax = EffectiveMaxConcurrency(h.budget, inst.MaxConcurrency)
+		}
+		rate := b.tracker.LoadRate(inst.Name, effectiveMax)
 		if rate >= 100 {
 			continue
 		}
@@ -147,7 +201,11 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 	// Short-circuit: single candidate, no sorting needed
 	if len(candidates) == 1 {
 		c := candidates[0]
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, c.instance.MaxConcurrency); ok {
+		effectiveMax := c.instance.MaxConcurrency
+		if h := health[c.instance.Name]; h != nil {
+			effectiveMax = EffectiveMaxConcurrency(h.budget, c.instance.MaxConcurrency)
+		}
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
@@ -172,7 +230,11 @@ func (b *Balancer) SelectInstance(sessionKey string, excludeInstances map[string
 
 	// Try to acquire slot
 	for _, c := range candidates {
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, c.instance.MaxConcurrency); ok {
+		effectiveMax := c.instance.MaxConcurrency
+		if h := health[c.instance.Name]; h != nil {
+			effectiveMax = EffectiveMaxConcurrency(h.budget, c.instance.MaxConcurrency)
+		}
+		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
@@ -276,7 +338,7 @@ func (b *Balancer) cleanupSessions() {
 }
 
 // ReportResult reports a request outcome to the health tracker for the given instance.
-func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration) {
+func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
 	b.mu.RLock()
 	h := b.health[instanceName]
 	b.mu.RUnlock()
@@ -285,8 +347,18 @@ func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs i
 	}
 	if statusCode >= 200 && statusCode < 400 {
 		h.RecordSuccess(latencyUs)
+		// Update budget from response headers on success
+		if responseHeaders != nil {
+			h.budget.UpdateFromHeaders(responseHeaders)
+		}
+		// Record accept for SRE throttle
+		b.throttle.RecordAccept()
+		// Trigger usage fetch if budget data is stale
+		if b.usageFetcher != nil && !h.budget.HasRecentData(usageStaleThreshold) {
+			go b.usageFetcher.FetchIfNeeded(context.Background(), instanceName, h.budget)
+		}
 	} else {
-		h.RecordError(statusCode, retryAfter)
+		h.RecordError(statusCode, retryAfter, responseHeaders)
 	}
 }
 
@@ -330,4 +402,15 @@ func (b *Balancer) ActiveSessions() int {
 		return true
 	})
 	return count
+}
+
+// allBudgets returns a snapshot of all budget controllers.
+func (b *Balancer) allBudgets() map[string]*BudgetController {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make(map[string]*BudgetController, len(b.health))
+	for name, h := range b.health {
+		result[name] = h.budget
+	}
+	return result
 }

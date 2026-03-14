@@ -212,3 +212,25 @@ func (m *Manager) GetProvider() *AnthropicProvider {
 func (m *Manager) GetStore() *TokenStore {
 	return m.store
 }
+
+// MarkTokenExpired immediately marks the stored token for an instance as expired.
+// This causes the next GetValidToken call to trigger a refresh.
+func (m *Manager) MarkTokenExpired(instanceName string) {
+	token, err := m.store.Load(instanceName)
+	if err != nil || token == nil {
+		return
+	}
+	token.ExpiresAt = time.Now()
+	_ = m.store.Save(instanceName, *token)
+	slog.Info("token marked as expired", "instance", instanceName)
+}
+
+// ForceRefreshBackground triggers a token refresh in a background goroutine.
+func (m *Manager) ForceRefreshBackground(ctx context.Context, instanceName string) {
+	go func() {
+		_, err := m.ForceRefresh(ctx, instanceName)
+		if err != nil {
+			slog.Warn("background token refresh failed", "instance", instanceName, "error", err.Error())
+		}
+	}()
+}

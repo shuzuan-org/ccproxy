@@ -86,8 +86,10 @@ func newRetryBalancer(names ...string) *Balancer {
 }
 
 func okResponse() *http.Response {
-	return &http.Response{StatusCode: 200}
+	return &http.Response{StatusCode: 200, Header: http.Header{}}
 }
+
+var noCallbacks = RetryCallbacks{}
 
 // Test 7: Success on first try
 func TestExecuteWithRetry_SuccessFirstTry(t *testing.T) {
@@ -99,7 +101,7 @@ func TestExecuteWithRetry_SuccessFirstTry(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,12 +121,12 @@ func TestExecuteWithRetry_503ThenSuccess(t *testing.T) {
 	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
 		calls++
 		if calls < 2 {
-			return &http.Response{StatusCode: 503}, 503, nil
+			return &http.Response{StatusCode: 503, Header: http.Header{}}, 503, nil
 		}
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,10 +145,10 @@ func TestExecuteWithRetry_400NoRetry(t *testing.T) {
 	calls := 0
 	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
 		calls++
-		return &http.Response{StatusCode: 400}, 400, nil
+		return &http.Response{StatusCode: 400, Header: http.Header{}}, 400, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,12 +171,12 @@ func TestExecuteWithRetry_429Failover(t *testing.T) {
 		// First call always returns 429, second call succeeds
 		failCount++
 		if failCount == 1 {
-			return &http.Response{StatusCode: 429}, 429, nil
+			return &http.Response{StatusCode: 429, Header: http.Header{}}, 429, nil
 		}
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,10 +203,10 @@ func TestExecuteWithRetry_AllFail(t *testing.T) {
 	b := NewBalancer(instances, NewConcurrencyTracker())
 
 	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
-		return &http.Response{StatusCode: 429}, 429, nil
+		return &http.Response{StatusCode: 429, Header: http.Header{}}, 429, nil
 	}
 
-	_, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	_, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err == nil {
 		t.Fatal("expected error when all instances fail")
 	}
@@ -218,10 +220,10 @@ func TestExecuteWithRetry_ContextCancelled(t *testing.T) {
 
 	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
 		cancel() // cancel context during request
-		return &http.Response{StatusCode: 503}, 503, nil
+		return &http.Response{StatusCode: 503, Header: http.Header{}}, 503, nil
 	}
 
-	_, err := ExecuteWithRetry(ctx, b, "", fn)
+	_, err := ExecuteWithRetry(ctx, b, "", false, noCallbacks, fn)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
@@ -241,7 +243,7 @@ func TestExecuteWithRetry_NetworkError(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,5 +271,37 @@ func TestClassifyError_Various(t *testing.T) {
 		if got != tc.action {
 			t.Errorf("ClassifyError(%d): expected %v, got %v", tc.code, tc.action, got)
 		}
+	}
+}
+
+// Test: RetryCallbacks.OnTokenRefreshNeeded is called on 401
+func TestExecuteWithRetry_401TriggersRefresh(t *testing.T) {
+	b := newRetryBalancer("inst1", "inst2")
+
+	refreshCalled := false
+	callbacks := RetryCallbacks{
+		OnTokenRefreshNeeded: func(ctx context.Context, instanceName string) {
+			refreshCalled = true
+		},
+	}
+
+	callCount := 0
+	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+		callCount++
+		if callCount == 1 {
+			return &http.Response{StatusCode: 401, Header: http.Header{}}, 401, nil
+		}
+		return okResponse(), 200, nil
+	}
+
+	result, err := ExecuteWithRetry(context.Background(), b, "", false, callbacks, fn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("expected 200, got %d", result.StatusCode)
+	}
+	if !refreshCalled {
+		t.Error("expected OnTokenRefreshNeeded to be called on 401")
 	}
 }

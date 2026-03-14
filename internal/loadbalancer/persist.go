@@ -26,8 +26,10 @@ type PersistedState struct {
 
 // PersistedAccount holds the persisted health fields for one instance.
 type PersistedAccount struct {
-	Disabled       bool   `json:"disabled"`
-	DisabledReason string `json:"disabled_reason,omitempty"`
+	Disabled       bool    `json:"disabled"`
+	DisabledReason string  `json:"disabled_reason,omitempty"`
+	Utilization5h  float64 `json:"utilization_5h,omitempty"`
+	Utilization7d  float64 `json:"utilization_7d,omitempty"`
 }
 
 // SaveState atomically writes health state to dataDir/health_state.json.
@@ -38,11 +40,21 @@ func SaveState(dataDir string, health map[string]*AccountHealth) error {
 	}
 	for name, h := range health {
 		h.mu.RLock()
-		state.Accounts[name] = &PersistedAccount{
+		pa := &PersistedAccount{
 			Disabled:       h.disabled,
 			DisabledReason: h.disabledReason,
 		}
 		h.mu.RUnlock()
+
+		// Persist budget utilization
+		if h.budget != nil {
+			w5 := h.budget.Window5h()
+			w7 := h.budget.Window7d()
+			pa.Utilization5h = w5.Utilization
+			pa.Utilization7d = w7.Utilization
+		}
+
+		state.Accounts[name] = pa
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -90,6 +102,13 @@ func ApplyState(health map[string]*AccountHealth, state *PersistedState) {
 		}
 		if pa.Disabled {
 			h.Disable(pa.DisabledReason)
+		}
+		// Restore budget utilization as initial estimates
+		if h.budget != nil && (pa.Utilization5h > 0 || pa.Utilization7d > 0) {
+			h.budget.UpdateFromUsageAPI(
+				UsageAPIWindow{Utilization: pa.Utilization5h * 100}, // convert back to 0-100
+				UsageAPIWindow{Utilization: pa.Utilization7d * 100},
+			)
 		}
 	}
 }

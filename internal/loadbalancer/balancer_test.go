@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -32,11 +33,13 @@ func newTestBalancer(instances []config.InstanceConfig) *Balancer {
 	return NewBalancer(instances, tracker)
 }
 
+var testCtx = context.Background()
+
 // Test 1: Single instance → always selected
 func TestBalancer_SingleInstance(t *testing.T) {
 	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 
-	result, err := b.SelectInstance("", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,15 +58,15 @@ func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Record errors on "unhealthy" to give it a worse score
-	b.ReportResult("unhealthy", 500, 1000, 0)
-	b.ReportResult("unhealthy", 500, 1000, 0)
+	b.ReportResult("unhealthy", 500, 1000, 0, nil)
+	b.ReportResult("unhealthy", 500, 1000, 0, nil)
 	// Clear cooldown so instance is available but has high error rate
 	h := b.GetHealth("unhealthy")
 	h.mu.Lock()
 	h.cooldownUntil = time.Time{}
 	h.mu.Unlock()
 
-	result, err := b.SelectInstance("", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +91,7 @@ func TestBalancer_LoadRateOrder(t *testing.T) {
 	defer r2()
 
 	// inst-b is at 0% load → should be selected
-	result, err := b.SelectInstance("", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +110,7 @@ func TestBalancer_StickySession(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// First selection
-	r1, err := b.SelectInstance("session-1", map[string]bool{})
+	r1, err := b.SelectInstance(testCtx, "session-1", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +121,7 @@ func TestBalancer_StickySession(t *testing.T) {
 	b.BindSession("session-1", firstInstance)
 
 	// Second selection with same session key → same instance
-	r2, err := b.SelectInstance("session-1", map[string]bool{})
+	r2, err := b.SelectInstance(testCtx, "session-1", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error on second select: %v", err)
 	}
@@ -142,7 +145,7 @@ func TestBalancer_SessionExpired(t *testing.T) {
 	})
 
 	// Should still work (expired session cleared, fallback to layer 2)
-	result, err := b.SelectInstance("old-session", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "old-session", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +176,7 @@ func TestBalancer_StickyAtCapacity(t *testing.T) {
 	defer r1()
 
 	// Session points to inst-a but it's full → should fall through to inst-b
-	result, err := b.SelectInstance("session-x", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "session-x", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +194,7 @@ func TestBalancer_ExcludeInstances(t *testing.T) {
 	}
 	b := newTestBalancer(instances)
 
-	result, err := b.SelectInstance("", map[string]bool{"inst-a": true})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{"inst-a": true}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +218,7 @@ func TestBalancer_AllBusy(t *testing.T) {
 	defer r1()
 	defer r2()
 
-	_, err := b.SelectInstance("", map[string]bool{})
+	_, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != ErrAllInstancesBusy {
 		t.Errorf("expected ErrAllInstancesBusy, got %v", err)
 	}
@@ -232,7 +235,7 @@ func TestBalancer_BindThenSelect(t *testing.T) {
 	// Bind to higher-priority-value instance (inst-b)
 	b.BindSession("my-session", "inst-b")
 
-	result, err := b.SelectInstance("my-session", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "my-session", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -282,7 +285,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			result, err := b.SelectInstance("", map[string]bool{})
+			result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 			if err != nil {
 				return // acceptable if all slots are briefly full
 			}
@@ -306,7 +309,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 // Test: No healthy instances → ErrNoHealthyInstances
 func TestBalancer_NoInstances(t *testing.T) {
 	b := newTestBalancer([]config.InstanceConfig{})
-	_, err := b.SelectInstance("", map[string]bool{})
+	_, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != ErrNoHealthyInstances {
 		t.Errorf("expected ErrNoHealthyInstances, got %v", err)
 	}
@@ -360,9 +363,9 @@ func TestSelectInstance_CooldownSkipped(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Put "cool" in cooldown
-	b.ReportResult("cool", 429, 1000, 30*time.Second)
+	b.ReportResult("cool", 429, 1000, 30*time.Second, nil)
 
-	result, err := b.SelectInstance("", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,9 +384,9 @@ func TestSelectInstance_DisabledSkipped(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Disable "forbidden" with a 403
-	b.ReportResult("forbidden", 403, 1000, 0)
+	b.ReportResult("forbidden", 403, 1000, 0, nil)
 
-	result, err := b.SelectInstance("", map[string]bool{})
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -397,7 +400,7 @@ func TestSelectInstance_DisabledSkipped(t *testing.T) {
 func TestReportResult_UpdatesHealth(t *testing.T) {
 	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 
-	b.ReportResult("inst1", 200, 1000, 0)
+	b.ReportResult("inst1", 200, 1000, 0, nil)
 	h := b.GetHealth("inst1")
 	if h == nil {
 		t.Fatal("expected health tracker for inst1")
@@ -407,7 +410,7 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 	}
 
 	// Report error and check error rate increases
-	b.ReportResult("inst1", 500, 1000, 0)
+	b.ReportResult("inst1", 500, 1000, 0, nil)
 	if h.ErrorRate() == 0 {
 		t.Error("expected error rate to increase after error")
 	}
@@ -438,4 +441,29 @@ func TestBalancer_UpdateInstances_CleansHealth(t *testing.T) {
 	if b.GetHealth("inst-b") == nil {
 		t.Error("expected health for inst-b to still exist")
 	}
+}
+
+// Test: Budget state affects instance selection
+func TestBalancer_BudgetStateFiltering(t *testing.T) {
+	instances := []config.InstanceConfig{
+		makeInstance("high-util", 5),
+		makeInstance("low-util", 5),
+	}
+	b := newTestBalancer(instances)
+
+	// Set high utilization on one instance to make it Blocked
+	h := b.GetHealth("high-util")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.90")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	h.Budget().UpdateFromHeaders(headers)
+
+	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Instance.Name != "low-util" {
+		t.Errorf("expected low-util (high-util is blocked), got %s", result.Instance.Name)
+	}
+	result.Release()
 }

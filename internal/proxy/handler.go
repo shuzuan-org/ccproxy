@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -176,8 +177,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return nil, 500, fmt.Errorf("exhausted signature filter stages")
 	}
 
+	// Build retry callbacks for token refresh on 401.
+	callbacks := loadbalancer.RetryCallbacks{
+		OnTokenRefreshNeeded: func(ctx context.Context, instanceName string) {
+			if h.oauthManager != nil {
+				h.oauthManager.MarkTokenExpired(instanceName)
+				h.oauthManager.ForceRefreshBackground(ctx, instanceName)
+			}
+		},
+	}
+
 	requestStart := time.Now()
-	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, requestFn)
+	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, isStream, callbacks, requestFn)
 	if err != nil {
 		slog.Error("all retries exhausted",
 			"api_key", authInfo.APIKeyName,
@@ -197,12 +208,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"elapsed", time.Since(requestStart).String(),
 	)
 
-	// Report success to health tracker.
-	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
-		time.Since(requestStart).Microseconds(), 0)
-
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
+
+	// Report success to health tracker (with response headers for budget tracking).
+	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
+		time.Since(requestStart).Microseconds(), 0, resp.Header)
 
 	// Step 9: Handle error responses from upstream.
 	if resp.StatusCode >= 400 {

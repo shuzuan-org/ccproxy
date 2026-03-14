@@ -90,6 +90,24 @@ func New(cfg *config.Config) (*Server, error) {
 	oauthMgr.StartAutoRefresh(ctx)
 	slog.Info("oauth auto-refresh started")
 
+	// 5b. Create usage fetcher for adaptive backpressure.
+	usageFetcher := loadbalancer.NewUsageFetcher(
+		&oauthTokenAdapter{mgr: oauthMgr},
+		"claude-cli/2.1.25 (external, cli)",
+	)
+	balancer.SetUsageFetcher(usageFetcher)
+	usageFetcher.StartBackground(ctx,
+		func() []string { return registry.Names() },
+		func(name string) *loadbalancer.BudgetController {
+			h := balancer.GetHealth(name)
+			if h != nil {
+				return h.Budget()
+			}
+			return nil
+		},
+	)
+	slog.Info("usage fetcher started")
+
 	// 6. Register onChange callback to propagate dynamic instance changes.
 	registry.SetOnChange(func(instances []config.Instance) {
 		runtime := cfg.RuntimeInstances(registry)
@@ -254,4 +272,18 @@ func (lrw *loggingResponseWriter) Flush() {
 	if f, ok := lrw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// oauthTokenAdapter adapts oauth.Manager to the OAuthTokenProvider interface
+// used by the usage fetcher.
+type oauthTokenAdapter struct {
+	mgr *oauth.Manager
+}
+
+func (a *oauthTokenAdapter) GetValidToken(ctx context.Context, instanceName string) (string, error) {
+	token, err := a.mgr.GetValidToken(ctx, instanceName)
+	if err != nil {
+		return "", err
+	}
+	return token.AccessToken, nil
 }

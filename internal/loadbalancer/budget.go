@@ -1,0 +1,276 @@
+package loadbalancer
+
+import (
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// SchedulingState represents three-level scheduling status for an instance.
+type SchedulingState int
+
+const (
+	StateNormal     SchedulingState = iota // utilization below warning threshold
+	StateStickyOnly                        // only serve sticky sessions
+	StateBlocked                           // do not schedule any requests
+)
+
+const (
+	defaultNormalThreshold  = 0.60 // below this → Normal
+	defaultDangerThreshold  = 0.80 // at or above this → Blocked; between normal and danger → StickyOnly
+	penaltyStep             = 0.03 // per consecutive true 429
+	penaltyMax              = 0.15 // maximum penalty shift
+	penaltyRecoveryInterval = 5 * time.Minute
+)
+
+// BudgetWindow holds rate-limit state for a single time window (5h or 7d).
+type BudgetWindow struct {
+	Utilization float64   // 0-1 normalized
+	ResetAt     time.Time // when the window resets
+	Status      string    // "allowed", "allowed_warning", "rejected"
+	LastUpdated time.Time
+}
+
+// BudgetController tracks dual-window (5h/7d) rate-limit budget for one instance.
+type BudgetController struct {
+	mu             sync.RWMutex
+	window5h       BudgetWindow
+	window7d       BudgetWindow
+	consecutive429 int
+	lastPenaltyAt  time.Time
+	penaltyShift   float64 // threshold shift down per consecutive 429
+	lastSuccessAt  time.Time
+}
+
+// NewBudgetController creates a new budget controller with no data.
+func NewBudgetController() *BudgetController {
+	return &BudgetController{}
+}
+
+// UpdateFromHeaders parses anthropic-ratelimit-unified-* response headers.
+// Header format: anthropic-ratelimit-unified-{5h,7d}-{utilization,status,reset}
+// Utilization values from headers are 0-1 decimals.
+func (bc *BudgetController) UpdateFromHeaders(headers http.Header) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	now := time.Now()
+
+	// Parse 5h window
+	if v := headers.Get("anthropic-ratelimit-unified-5h-utilization"); v != "" {
+		if u, err := strconv.ParseFloat(v, 64); err == nil {
+			bc.window5h.Utilization = clamp01(u)
+			bc.window5h.LastUpdated = now
+		}
+	}
+	if v := headers.Get("anthropic-ratelimit-unified-5h-status"); v != "" {
+		bc.window5h.Status = strings.TrimSpace(v)
+		bc.window5h.LastUpdated = now
+	}
+	if v := headers.Get("anthropic-ratelimit-unified-5h-reset"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			bc.window5h.ResetAt = t
+			bc.window5h.LastUpdated = now
+		}
+	}
+
+	// Parse 7d window
+	if v := headers.Get("anthropic-ratelimit-unified-7d-utilization"); v != "" {
+		if u, err := strconv.ParseFloat(v, 64); err == nil {
+			bc.window7d.Utilization = clamp01(u)
+			bc.window7d.LastUpdated = now
+		}
+	}
+	if v := headers.Get("anthropic-ratelimit-unified-7d-status"); v != "" {
+		bc.window7d.Status = strings.TrimSpace(v)
+		bc.window7d.LastUpdated = now
+	}
+	if v := headers.Get("anthropic-ratelimit-unified-7d-reset"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			bc.window7d.ResetAt = t
+			bc.window7d.LastUpdated = now
+		}
+	}
+}
+
+// UsageAPIWindow represents a single window from the usage API response.
+type UsageAPIWindow struct {
+	Utilization float64 // 0-100 from API
+	ResetsAt    string  // RFC3339
+}
+
+// UpdateFromUsageAPI updates budget from usage API data.
+// API returns utilization as 0-100; this normalizes to 0-1.
+func (bc *BudgetController) UpdateFromUsageAPI(fiveHour, sevenDay UsageAPIWindow) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	now := time.Now()
+
+	bc.window5h.Utilization = clamp01(fiveHour.Utilization / 100.0)
+	bc.window5h.LastUpdated = now
+	if t, err := time.Parse(time.RFC3339, fiveHour.ResetsAt); err == nil {
+		bc.window5h.ResetAt = t
+	}
+
+	bc.window7d.Utilization = clamp01(sevenDay.Utilization / 100.0)
+	bc.window7d.LastUpdated = now
+	if t, err := time.Parse(time.RFC3339, sevenDay.ResetsAt); err == nil {
+		bc.window7d.ResetAt = t
+	}
+}
+
+// State returns the scheduling state based on the worse of the two windows.
+func (bc *BudgetController) State() SchedulingState {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.stateLocked()
+}
+
+func (bc *BudgetController) stateLocked() SchedulingState {
+	maxUtil := math.Max(bc.window5h.Utilization, bc.window7d.Utilization)
+	normalThresh := defaultNormalThreshold - bc.penaltyShift
+	dangerThresh := defaultDangerThreshold - bc.penaltyShift
+	if maxUtil >= dangerThresh {
+		return StateBlocked
+	}
+	if maxUtil >= normalThresh {
+		return StateStickyOnly
+	}
+	return StateNormal
+}
+
+// MaxUtilization returns max(5h.Utilization, 7d.Utilization).
+func (bc *BudgetController) MaxUtilization() float64 {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return math.Max(bc.window5h.Utilization, bc.window7d.Utilization)
+}
+
+// Record429 records a 429 response. hasResetHeaders indicates whether
+// the response included anthropic-ratelimit reset headers (true 429 vs fake).
+func (bc *BudgetController) Record429(hasResetHeaders bool) {
+	if !hasResetHeaders {
+		return // fake 429, don't adjust thresholds
+	}
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.consecutive429++
+	bc.lastPenaltyAt = time.Now()
+	bc.penaltyShift += penaltyStep
+	if bc.penaltyShift > penaltyMax {
+		bc.penaltyShift = penaltyMax
+	}
+}
+
+// RecordSuccess records a successful request. If enough time has passed
+// since the last 429, gradually recovers the threshold penalty.
+func (bc *BudgetController) RecordSuccess() {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.lastSuccessAt = time.Now()
+	if bc.consecutive429 > 0 && time.Since(bc.lastPenaltyAt) > penaltyRecoveryInterval {
+		bc.consecutive429--
+		bc.penaltyShift -= penaltyStep
+		if bc.penaltyShift < 0 {
+			bc.penaltyShift = 0
+		}
+		bc.lastPenaltyAt = time.Now() // reset timer for next step
+	}
+}
+
+// DynamicMaxConcurrency calculates adaptive concurrency based on utilization.
+// Returns a value between 1 and hardLimit.
+func (bc *BudgetController) DynamicMaxConcurrency(hardLimit int) int {
+	bc.mu.RLock()
+	maxUtil := math.Max(bc.window5h.Utilization, bc.window7d.Utilization)
+	bc.mu.RUnlock()
+
+	var dynamic int
+	switch {
+	case maxUtil < 0.5:
+		dynamic = 8
+	case maxUtil < 0.7:
+		dynamic = 5
+	case maxUtil < 0.85:
+		dynamic = 3
+	default:
+		dynamic = 1
+	}
+
+	if hardLimit > 0 && dynamic > hardLimit {
+		dynamic = hardLimit
+	}
+	if dynamic < 1 {
+		dynamic = 1
+	}
+	return dynamic
+}
+
+// HasRecentData returns true if either window was updated within the given duration.
+func (bc *BudgetController) HasRecentData(within time.Duration) bool {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	cutoff := time.Now().Add(-within)
+	return bc.window5h.LastUpdated.After(cutoff) || bc.window7d.LastUpdated.After(cutoff)
+}
+
+// CooldownUntil returns the latest reset time from headers, useful for true 429 cooldown.
+func (bc *BudgetController) CooldownUntil() time.Time {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	if bc.window5h.ResetAt.After(bc.window7d.ResetAt) {
+		return bc.window5h.ResetAt
+	}
+	return bc.window7d.ResetAt
+}
+
+// Window5h returns a snapshot of the 5-hour window.
+func (bc *BudgetController) Window5h() BudgetWindow {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.window5h
+}
+
+// Window7d returns a snapshot of the 7-day window.
+func (bc *BudgetController) Window7d() BudgetWindow {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.window7d
+}
+
+// PenaltyShift returns the current threshold penalty shift.
+func (bc *BudgetController) PenaltyShift() float64 {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.penaltyShift
+}
+
+// Consecutive429 returns the consecutive true 429 count.
+func (bc *BudgetController) Consecutive429() int {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.consecutive429
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// EffectiveMaxConcurrency computes the dynamic max concurrency for an instance.
+// If budget is nil or has no data, returns the hardLimit as-is.
+func EffectiveMaxConcurrency(budget *BudgetController, hardLimit int) int {
+	if budget == nil {
+		return hardLimit
+	}
+	return budget.DynamicMaxConcurrency(hardLimit)
+}

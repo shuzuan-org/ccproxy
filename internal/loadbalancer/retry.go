@@ -57,6 +57,11 @@ func RetryDelay(attempt int) time.Duration {
 // The response should only be read/used if error is nil.
 type RequestFunc func(instance config.InstanceConfig, requestID string) (*http.Response, int, error)
 
+// RetryCallbacks holds optional callbacks for retry events.
+type RetryCallbacks struct {
+	OnTokenRefreshNeeded func(ctx context.Context, instanceName string)
+}
+
 // RetryResult contains the result of ExecuteWithRetry.
 type RetryResult struct {
 	Response     *http.Response
@@ -70,6 +75,8 @@ func ExecuteWithRetry(
 	ctx context.Context,
 	balancer *Balancer,
 	sessionKey string,
+	isStream bool,
+	callbacks RetryCallbacks,
 	requestFn RequestFunc,
 ) (*RetryResult, error) {
 	startTime := time.Now()
@@ -88,7 +95,7 @@ func ExecuteWithRetry(
 		}
 
 		// Select instance
-		result, err := balancer.SelectInstance(sessionKey, failedInstances)
+		result, err := balancer.SelectInstance(ctx, sessionKey, failedInstances, isStream)
 		if err != nil {
 			slog.Warn("no instance available",
 				"error", err.Error(),
@@ -121,7 +128,12 @@ func ExecuteWithRetry(
 			attemptLatency := time.Since(attemptStart).Microseconds()
 
 			if err == nil && statusCode >= 200 && statusCode < 400 {
-				// Success — health is reported by handler after response is consumed.
+				// Success — report with response headers for budget tracking.
+				var headers http.Header
+				if resp != nil {
+					headers = resp.Header
+				}
+				balancer.ReportResult(instanceName, statusCode, attemptLatency, 0, headers)
 				balancer.BindSession(sessionKey, instanceName)
 				result.Release()
 				return &RetryResult{
@@ -134,6 +146,12 @@ func ExecuteWithRetry(
 			action := ClassifyError(statusCode)
 			retryAfter := parseRetryAfterHeader(resp)
 
+			// Extract response headers for budget tracking
+			var respHeaders http.Header
+			if resp != nil {
+				respHeaders = resp.Header
+			}
+
 			switch action {
 			case ReturnToClient:
 				result.Release()
@@ -144,16 +162,51 @@ func ExecuteWithRetry(
 				}, nil
 
 			case FailoverImmediate:
-				slog.Warn("failover immediate",
-					"instance", instanceName,
-					"status", statusCode,
-					"switch", switchCount+1,
-					"retry_after", retryAfter.String(),
-				)
+				// Special handling per status code
+				switch statusCode {
+				case 429:
+					hasResetHeaders := respHeaders != nil &&
+						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
+							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
+					slog.Warn("failover: rate limited",
+						"instance", instanceName,
+						"has_reset_headers", hasResetHeaders,
+						"switch", switchCount+1,
+					)
+				case 529:
+					// Check consecutive 529 across instances
+					h := balancer.GetHealth(instanceName)
+					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					if h != nil && h.Consecutive529() >= 2 {
+						// Multiple instances returning 529 — stop retrying
+						slog.Warn("consecutive 529s across instances, returning to client",
+							"instance", instanceName, "count", h.Consecutive529())
+						result.Release()
+						return &RetryResult{
+							Response:     resp,
+							StatusCode:   529,
+							InstanceName: instanceName,
+						}, nil
+					}
+				case 401:
+					if callbacks.OnTokenRefreshNeeded != nil {
+						callbacks.OnTokenRefreshNeeded(ctx, instanceName)
+					}
+				}
+
+				if statusCode != 529 { // 529 already reported above
+					slog.Warn("failover immediate",
+						"instance", instanceName,
+						"status", statusCode,
+						"switch", switchCount+1,
+						"retry_after", retryAfter.String(),
+					)
+					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+				}
+
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
-				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
 				result.Release()
 				failedInstances[instanceName] = true
 				balancer.ClearSession(sessionKey)
@@ -172,7 +225,7 @@ func ExecuteWithRetry(
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
 					}
-					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
+					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 					result.Release()
 					failedInstances[instanceName] = true
 					balancer.ClearSession(sessionKey)
@@ -181,7 +234,7 @@ func ExecuteWithRetry(
 					break
 				}
 				// Report the failed attempt (but don't trigger failover yet).
-				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter)
+				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 				// Close previous response body before retrying.
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
