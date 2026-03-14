@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/binn/ccproxy/internal/disguise"
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 // UsageInfo holds token usage extracted from SSE events.
@@ -111,7 +111,7 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 		case "error":
 			usage.SSEError = true
 			usage.SSEErrorData = string(data)
-			slog.Warn("SSE error event received", "data", string(data))
+			observe.Logger(ctx).Warn("SSE error event received", "data", string(data))
 		}
 
 		// Merge 3 writes into 1 buffered write

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 type Manager struct {
@@ -102,7 +104,7 @@ func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenSt
 		return nil, fmt.Errorf("save token: %w", err)
 	}
 
-	slog.Info("token refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
+	observe.Logger(ctx).Info("token refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
 	return newToken, nil
 }
 
@@ -139,7 +141,7 @@ func (m *Manager) ForceRefresh(ctx context.Context, instanceName string) (*OAuth
 		return nil, fmt.Errorf("save token: %w", err)
 	}
 
-	slog.Info("token force-refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
+	observe.Logger(ctx).Info("token force-refreshed", "instance", instanceName, "expires_at", newToken.ExpiresAt)
 	return newToken, nil
 }
 
@@ -190,6 +192,12 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 						continue
 					}
 					remaining := time.Until(token.ExpiresAt)
+					if remaining > 0 && remaining < 2*time.Minute {
+						slog.Warn("oauth: token expiring soon",
+							"instance", name,
+							"expires_in", remaining.Round(time.Second),
+						)
+					}
 					if remaining < 60*time.Second {
 						slog.Info("oauth: auto-refreshing expiring token", "instance", name, "expires_in", remaining.String())
 						_, err := m.refreshToken(ctx, name, token.RefreshToken)
