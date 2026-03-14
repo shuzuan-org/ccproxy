@@ -131,7 +131,7 @@ func TestUsageFetcher_FetchIfNeeded_RecentData(t *testing.T) {
 	// Set recent data
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-5h-utilization", "0.3")
-	budget.UpdateFromHeaders(h)
+	budget.UpdateFromHeaders(context.Background(), h)
 
 	// Should not fetch because budget has recent data
 	result := uf.FetchIfNeeded(context.Background(), "inst1", budget)

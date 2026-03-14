@@ -58,8 +58,8 @@ func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Record errors on "unhealthy" to give it a worse score
-	b.ReportResult("unhealthy", 500, 1000, 0, nil)
-	b.ReportResult("unhealthy", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
 	// Clear cooldown so instance is available but has high error rate
 	h := b.GetHealth("unhealthy")
 	h.mu.Lock()
@@ -363,7 +363,7 @@ func TestSelectInstance_CooldownSkipped(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Put "cool" in cooldown
-	b.ReportResult("cool", 429, 1000, 30*time.Second, nil)
+	b.ReportResult(testCtx,"cool", 429, 1000, 30*time.Second, nil)
 
 	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
@@ -384,7 +384,7 @@ func TestSelectInstance_DisabledSkipped(t *testing.T) {
 	b := newTestBalancer(instances)
 
 	// Disable "forbidden" with a 403
-	b.ReportResult("forbidden", 403, 1000, 0, nil)
+	b.ReportResult(testCtx,"forbidden", 403, 1000, 0, nil)
 
 	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {
@@ -400,7 +400,7 @@ func TestSelectInstance_DisabledSkipped(t *testing.T) {
 func TestReportResult_UpdatesHealth(t *testing.T) {
 	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
 
-	b.ReportResult("inst1", 200, 1000, 0, nil)
+	b.ReportResult(testCtx,"inst1", 200, 1000, 0, nil)
 	h := b.GetHealth("inst1")
 	if h == nil {
 		t.Fatal("expected health tracker for inst1")
@@ -410,7 +410,7 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 	}
 
 	// Report error and check error rate increases
-	b.ReportResult("inst1", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"inst1", 500, 1000, 0, nil)
 	if h.ErrorRate() == 0 {
 		t.Error("expected error rate to increase after error")
 	}
@@ -456,7 +456,7 @@ func TestBalancer_BudgetStateFiltering(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.90")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
-	h.Budget().UpdateFromHeaders(headers)
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
 
 	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
 	if err != nil {

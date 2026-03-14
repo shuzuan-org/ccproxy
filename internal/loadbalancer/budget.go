@@ -1,13 +1,15 @@
 package loadbalancer
 
 import (
-	"log/slog"
+	"context"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 // SchedulingState represents three-level scheduling status for an instance.
@@ -69,7 +71,7 @@ func NewBudgetController(name string) *BudgetController {
 // UpdateFromHeaders parses anthropic-ratelimit-unified-* response headers.
 // Header format: anthropic-ratelimit-unified-{5h,7d}-{utilization,status,reset}
 // Utilization values from headers are 0-1 decimals.
-func (bc *BudgetController) UpdateFromHeaders(headers http.Header) {
+func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.Header) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
@@ -111,13 +113,13 @@ func (bc *BudgetController) UpdateFromHeaders(headers http.Header) {
 		}
 	}
 
-	slog.Debug("budget: headers updated",
+	observe.Logger(ctx).Debug("budget: headers updated",
 		"instance", bc.name,
 		"util_5h", bc.window5h.Utilization,
 		"util_7d", bc.window7d.Utilization,
 		"state", bc.stateLocked().String(),
 	)
-	bc.checkStateChange()
+	bc.checkStateChange(ctx)
 }
 
 // UsageAPIWindow represents a single window from the usage API response.
@@ -168,10 +170,10 @@ func (bc *BudgetController) stateLocked() SchedulingState {
 }
 
 // checkStateChange logs when state transitions. Must be called with bc.mu held.
-func (bc *BudgetController) checkStateChange() {
+func (bc *BudgetController) checkStateChange(ctx context.Context) {
 	current := bc.stateLocked()
 	if current != bc.lastState {
-		slog.Info("budget: state changed",
+		observe.Logger(ctx).Info("budget: state changed",
 			"instance", bc.name,
 			"from", bc.lastState.String(),
 			"to", current.String(),
@@ -189,7 +191,7 @@ func (bc *BudgetController) MaxUtilization() float64 {
 
 // Record429 records a 429 response. hasResetHeaders indicates whether
 // the response included anthropic-ratelimit reset headers (true 429 vs fake).
-func (bc *BudgetController) Record429(hasResetHeaders bool) {
+func (bc *BudgetController) Record429(ctx context.Context, hasResetHeaders bool) {
 	if !hasResetHeaders {
 		return // fake 429, don't adjust thresholds
 	}
@@ -201,18 +203,18 @@ func (bc *BudgetController) Record429(hasResetHeaders bool) {
 	if bc.penaltyShift > penaltyMax {
 		bc.penaltyShift = penaltyMax
 	}
-	slog.Warn("budget: 429 recorded",
+	observe.Logger(ctx).Warn("budget: 429 recorded",
 		"instance", bc.name,
 		"true_429", hasResetHeaders,
 		"consecutive", bc.consecutive429,
 		"penalty", bc.penaltyShift,
 	)
-	bc.checkStateChange()
+	bc.checkStateChange(ctx)
 }
 
 // RecordSuccess records a successful request. If enough time has passed
 // since the last 429, gradually recovers the threshold penalty.
-func (bc *BudgetController) RecordSuccess() {
+func (bc *BudgetController) RecordSuccess(ctx context.Context) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.lastSuccessAt = time.Now()
@@ -223,11 +225,11 @@ func (bc *BudgetController) RecordSuccess() {
 			bc.penaltyShift = 0
 		}
 		bc.lastPenaltyAt = time.Now() // reset timer for next step
-		slog.Info("budget: penalty recovered",
+		observe.Logger(ctx).Info("budget: penalty recovered",
 			"instance", bc.name,
 			"penalty", bc.penaltyShift,
 		)
-		bc.checkStateChange()
+		bc.checkStateChange(ctx)
 	}
 }
 

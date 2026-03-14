@@ -104,7 +104,7 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 	budgets := b.allBudgets()
 	poolUtil := PoolUtilization(budgets)
 	if delay := UtilizationDelay(poolUtil); delay > 0 {
-		slog.Debug("backpressure: utilization delay", "pool_util", poolUtil, "delay", delay.String())
+		observe.Logger(ctx).Debug("backpressure: utilization delay", "pool_util", poolUtil, "delay", delay.String())
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
@@ -172,7 +172,7 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 		if h != nil && h.budget != nil {
 			state := h.budget.State()
 			if state == StateBlocked || state == StateStickyOnly {
-				slog.Debug("balancer: instance filtered",
+				observe.Logger(ctx).Debug("balancer: instance filtered",
 					"instance", inst.Name,
 					"reason", state.String(),
 				)
@@ -243,7 +243,7 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 		}
 		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
-			slog.Debug("balancer: instance selected",
+			observe.Logger(ctx).Debug("balancer: instance selected",
 				"instance", c.instance.Name,
 				"score", c.score,
 				"candidates", len(candidates),
@@ -350,7 +350,7 @@ func (b *Balancer) cleanupSessions() {
 }
 
 // ReportResult reports a request outcome to the health tracker for the given instance.
-func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
+func (b *Balancer) ReportResult(ctx context.Context, instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
 	b.mu.RLock()
 	h := b.health[instanceName]
 	b.mu.RUnlock()
@@ -358,10 +358,10 @@ func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs i
 		return
 	}
 	if statusCode >= 200 && statusCode < 400 {
-		h.RecordSuccess(latencyUs)
+		h.RecordSuccess(ctx, latencyUs)
 		// Update budget from response headers on success
 		if responseHeaders != nil {
-			h.budget.UpdateFromHeaders(responseHeaders)
+			h.budget.UpdateFromHeaders(ctx, responseHeaders)
 		}
 		// Record accept for SRE throttle
 		b.throttle.RecordAccept()
@@ -370,7 +370,7 @@ func (b *Balancer) ReportResult(instanceName string, statusCode int, latencyUs i
 			go b.usageFetcher.FetchIfNeeded(context.Background(), instanceName, h.budget)
 		}
 	} else {
-		h.RecordError(statusCode, retryAfter, responseHeaders)
+		h.RecordError(ctx, statusCode, retryAfter, responseHeaders)
 	}
 }
 
@@ -390,6 +390,32 @@ func (b *Balancer) AllHealth() map[string]*AccountHealth {
 		result[k] = v
 	}
 	return result
+}
+
+// InstanceStates returns a snapshot of all instance states for observability.
+func (b *Balancer) InstanceStates() map[string]observe.InstanceState {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	states := make(map[string]observe.InstanceState, len(b.instances))
+	for _, inst := range b.instances {
+		name := inst.Name
+		state := observe.InstanceState{
+			Concurrency:    b.tracker.ActiveSlots(name),
+			MaxConcurrency: inst.MaxConcurrency,
+		}
+		if h, ok := b.health[name]; ok {
+			if h.IsDisabled() {
+				state.Health = "disabled"
+			} else if !h.IsAvailable() {
+				state.Health = "cooldown"
+			} else {
+				state.Health = "healthy"
+			}
+			state.BudgetState = h.Budget().State().String()
+		}
+		states[name] = state
+	}
+	return states
 }
 
 // GetInstances returns current instance list (for admin API).

@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ func TestCooldown_429WithRetryAfter(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// 429 without reset headers → soft cooldown
-	h.RecordError(429, 60*time.Second, nil)
+	h.RecordError(context.Background(), 429, 60*time.Second, nil)
 	if h.IsAvailable() {
 		t.Error("should be unavailable during cooldown")
 	}
@@ -23,7 +24,7 @@ func TestCooldown_429WithResetHeaders(t *testing.T) {
 
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-reset", "2026-03-14T12:00:00Z")
-	h.RecordError(429, 0, headers)
+	h.RecordError(context.Background(), 429, 0, headers)
 	if h.IsAvailable() {
 		t.Error("should be unavailable during cooldown from true 429")
 	}
@@ -49,7 +50,7 @@ func TestDisable_403(t *testing.T) {
 	t.Parallel()
 	h := NewAccountHealth("test")
 
-	h.RecordError(403, 0, nil)
+	h.RecordError(context.Background(), 403, 0, nil)
 	if h.IsAvailable() {
 		t.Error("should be disabled after 403")
 	}
@@ -66,10 +67,10 @@ func TestErrorRate_SlidingWindow(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// Record 3 successes and 1 error
-	h.RecordSuccess(1000)
-	h.RecordSuccess(1000)
-	h.RecordSuccess(1000)
-	h.RecordError(500, 0, nil)
+	h.RecordSuccess(context.Background(), 1000)
+	h.RecordSuccess(context.Background(), 1000)
+	h.RecordSuccess(context.Background(), 1000)
+	h.RecordError(context.Background(), 500, 0, nil)
 
 	rate := h.ErrorRate()
 	want := 0.25 // 1/4
@@ -83,14 +84,14 @@ func TestLatencyEMA_Convergence(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// First measurement initializes
-	h.RecordSuccess(1000)
+	h.RecordSuccess(context.Background(), 1000)
 	if h.LatencyEMA() != 1000 {
 		t.Errorf("expected initial latency 1000, got %d", h.LatencyEMA())
 	}
 
 	// Feed many high-latency values; EMA should converge upward
 	for i := 0; i < 50; i++ {
-		h.RecordSuccess(5000)
+		h.RecordSuccess(context.Background(), 5000)
 	}
 	ema := h.LatencyEMA()
 	if ema < 4000 {
@@ -111,8 +112,8 @@ func TestScore_Composite(t *testing.T) {
 	}
 
 	// With errors, score should increase
-	h.RecordError(500, 0, nil)
-	h.RecordError(500, 0, nil)
+	h.RecordError(context.Background(), 500, 0, nil)
+	h.RecordError(context.Background(), 500, 0, nil)
 	scoreWithErrors := h.Score(50)
 	if scoreWithErrors <= score {
 		t.Errorf("score with errors (%.2f) should be > cold start score (%.2f)", scoreWithErrors, score)
@@ -139,14 +140,14 @@ func TestRecordSuccess_ResetsCounters(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// Record some errors first
-	h.RecordError(529, 0, nil)
-	h.RecordError(529, 0, nil)
+	h.RecordError(context.Background(), 529, 0, nil)
+	h.RecordError(context.Background(), 529, 0, nil)
 	if h.Consecutive529() != 2 {
 		t.Errorf("expected 2 consecutive 529s, got %d", h.Consecutive529())
 	}
 
 	// Success should reset
-	h.RecordSuccess(1000)
+	h.RecordSuccess(context.Background(), 1000)
 	if h.Consecutive529() != 0 {
 		t.Errorf("expected 0 consecutive 529s after success, got %d", h.Consecutive529())
 	}
@@ -157,9 +158,9 @@ func TestConsecutive401_Disable(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// 3 consecutive 401s within 5 minutes should disable
-	h.RecordError(401, 0, nil)
-	h.RecordError(401, 0, nil)
-	h.RecordError(401, 0, nil)
+	h.RecordError(context.Background(), 401, 0, nil)
+	h.RecordError(context.Background(), 401, 0, nil)
+	h.RecordError(context.Background(), 401, 0, nil)
 
 	if !h.IsDisabled() {
 		t.Error("expected instance to be disabled after 3 consecutive 401s")
@@ -174,12 +175,12 @@ func TestRecordTimeout(t *testing.T) {
 	h := NewAccountHealth("test")
 
 	// 3 timeouts should trigger cooldown
-	h.RecordTimeout()
-	h.RecordTimeout()
+	h.RecordTimeout(context.Background())
+	h.RecordTimeout(context.Background())
 	if !h.IsAvailable() {
 		t.Error("should still be available after 2 timeouts")
 	}
-	h.RecordTimeout()
+	h.RecordTimeout(context.Background())
 	if h.IsAvailable() {
 		t.Error("should be in cooldown after 3 timeouts")
 	}

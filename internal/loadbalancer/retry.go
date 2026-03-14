@@ -3,7 +3,6 @@ package loadbalancer
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -65,10 +64,13 @@ type RetryCallbacks struct {
 
 // RetryResult contains the result of ExecuteWithRetry.
 type RetryResult struct {
-	Response     *http.Response
-	StatusCode   int
-	InstanceName string
-	Body         []byte // for error responses that should be forwarded
+	Response       *http.Response
+	StatusCode     int
+	InstanceName   string
+	Body           []byte // for error responses that should be forwarded
+	InstancesTried []string
+	Retries        int
+	Failovers      int
 }
 
 // ExecuteWithRetry runs the request function with retry and failover logic.
@@ -83,11 +85,14 @@ func ExecuteWithRetry(
 	startTime := time.Now()
 	failedInstances := make(map[string]bool)
 	switchCount := 0
+	var instancesTried []string
+	retries := 0
+	failovers := 0
 
 	for switchCount <= maxAccountSwitches {
 		// Check total elapsed time
 		if time.Since(startTime) > maxRetryElapsed {
-			slog.Warn("retry elapsed time exceeded",
+			observe.Logger(ctx).Warn("retry elapsed time exceeded",
 				"elapsed", time.Since(startTime).String(),
 				"max", maxRetryElapsed.String(),
 				"switches", switchCount,
@@ -98,7 +103,7 @@ func ExecuteWithRetry(
 		// Select instance
 		result, err := balancer.SelectInstance(ctx, sessionKey, failedInstances, isStream)
 		if err != nil {
-			slog.Warn("no instance available",
+			observe.Logger(ctx).Warn("no instance available",
 				"error", err.Error(),
 				"failed_count", len(failedInstances),
 				"switches", switchCount,
@@ -107,9 +112,10 @@ func ExecuteWithRetry(
 		}
 
 		instanceName := result.Instance.Name
+		instancesTried = append(instancesTried, instanceName)
 		sameInstanceRetries := 0
 		switched := false
-		slog.Debug("selected instance", "instance", instanceName, "switch", switchCount)
+		observe.Logger(ctx).Debug("selected instance", "instance", instanceName, "switch", switchCount)
 
 		for sameInstanceRetries < maxSameInstanceRetries {
 			// Check context cancellation
@@ -134,13 +140,16 @@ func ExecuteWithRetry(
 				if resp != nil {
 					headers = resp.Header
 				}
-				balancer.ReportResult(instanceName, statusCode, attemptLatency, 0, headers)
+				balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, 0, headers)
 				balancer.BindSession(sessionKey, instanceName)
 				result.Release()
 				return &RetryResult{
-					Response:     resp,
-					StatusCode:   statusCode,
-					InstanceName: instanceName,
+					Response:       resp,
+					StatusCode:     statusCode,
+					InstanceName:   instanceName,
+					InstancesTried: instancesTried,
+					Retries:        retries,
+					Failovers:      failovers,
 				}, nil
 			}
 
@@ -157,9 +166,12 @@ func ExecuteWithRetry(
 			case ReturnToClient:
 				result.Release()
 				return &RetryResult{
-					Response:     resp,
-					StatusCode:   statusCode,
-					InstanceName: instanceName,
+					Response:       resp,
+					StatusCode:     statusCode,
+					InstanceName:   instanceName,
+					InstancesTried: instancesTried,
+					Retries:        retries,
+					Failovers:      failovers,
 				}, nil
 
 			case FailoverImmediate:
@@ -170,7 +182,7 @@ func ExecuteWithRetry(
 					hasResetHeaders := respHeaders != nil &&
 						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
 							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
-					slog.Warn("failover: rate limited",
+					observe.Logger(ctx).Warn("failover: rate limited",
 						"instance", instanceName,
 						"has_reset_headers", hasResetHeaders,
 						"switch", switchCount+1,
@@ -179,16 +191,19 @@ func ExecuteWithRetry(
 					observe.Global.Instances529.Add(1)
 					// Check consecutive 529 across instances
 					h := balancer.GetHealth(instanceName)
-					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 					if h != nil && h.Consecutive529() >= 2 {
 						// Multiple instances returning 529 — stop retrying
-						slog.Warn("consecutive 529s across instances, returning to client",
+						observe.Logger(ctx).Warn("consecutive 529s across instances, returning to client",
 							"instance", instanceName, "count", h.Consecutive529())
 						result.Release()
 						return &RetryResult{
-							Response:     resp,
-							StatusCode:   529,
-							InstanceName: instanceName,
+							Response:       resp,
+							StatusCode:     529,
+							InstanceName:   instanceName,
+							InstancesTried: instancesTried,
+							Retries:        retries,
+							Failovers:      failovers,
 						}, nil
 					}
 				case 401:
@@ -198,13 +213,13 @@ func ExecuteWithRetry(
 				}
 
 				if statusCode != 529 { // 529 already reported above
-					slog.Warn("failover immediate",
+					observe.Logger(ctx).Warn("failover immediate",
 						"instance", instanceName,
 						"status", statusCode,
 						"switch", switchCount+1,
 						"retry_after", retryAfter.String(),
 					)
-					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 				}
 
 				if resp != nil && resp.Body != nil {
@@ -214,13 +229,15 @@ func ExecuteWithRetry(
 				failedInstances[instanceName] = true
 				balancer.ClearSession(sessionKey)
 				switchCount++
+				failovers++
 				switched = true
 				observe.Global.FailoversTotal.Add(1)
 
 			case RetryThenFailover:
 				sameInstanceRetries++
+				retries++
 				observe.Global.RetriesTotal.Add(1)
-				slog.Warn("retry on same instance",
+				observe.Logger(ctx).Warn("retry on same instance",
 					"instance", instanceName,
 					"status", statusCode,
 					"attempt", sameInstanceRetries,
@@ -230,17 +247,18 @@ func ExecuteWithRetry(
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
 					}
-					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 					result.Release()
 					failedInstances[instanceName] = true
 					balancer.ClearSession(sessionKey)
 					switchCount++
+					failovers++
 					switched = true
 					observe.Global.FailoversTotal.Add(1)
 					break
 				}
 				// Report the failed attempt (but don't trigger failover yet).
-				balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+				balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
 				// Close previous response body before retrying.
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
@@ -263,7 +281,7 @@ func ExecuteWithRetry(
 		}
 	}
 
-	slog.Error("max account switches exceeded",
+	observe.Logger(ctx).Error("max account switches exceeded",
 		"max", maxAccountSwitches,
 		"elapsed", time.Since(startTime).String(),
 	)

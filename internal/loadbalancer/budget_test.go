@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func TestBudgetController_UpdateFromHeaders(t *testing.T) {
 	h.Set("anthropic-ratelimit-unified-7d-status", "allowed")
 	h.Set("anthropic-ratelimit-unified-7d-reset", "2026-03-20T00:00:00Z")
 
-	bc.UpdateFromHeaders(h)
+	bc.UpdateFromHeaders(context.Background(), h)
 
 	w5 := bc.Window5h()
 	w7 := bc.Window7d()
@@ -105,7 +106,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 	t.Run("true 429 increases penalty", func(t *testing.T) {
 		t.Parallel()
 		bc := NewBudgetController("test")
-		bc.Record429(true)
+		bc.Record429(context.Background(), true)
 		if bc.Consecutive429() != 1 {
 			t.Errorf("consecutive429 = %d, want 1", bc.Consecutive429())
 		}
@@ -117,7 +118,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 	t.Run("fake 429 does nothing", func(t *testing.T) {
 		t.Parallel()
 		bc := NewBudgetController("test")
-		bc.Record429(false)
+		bc.Record429(context.Background(), false)
 		if bc.Consecutive429() != 0 {
 			t.Errorf("consecutive429 = %d, want 0", bc.Consecutive429())
 		}
@@ -130,7 +131,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 		t.Parallel()
 		bc := NewBudgetController("test")
 		for i := 0; i < 10; i++ {
-			bc.Record429(true)
+			bc.Record429(context.Background(), true)
 		}
 		if bc.PenaltyShift() != penaltyMax {
 			t.Errorf("penaltyShift = %f, want cap %f", bc.PenaltyShift(), penaltyMax)
@@ -143,15 +144,15 @@ func TestBudgetController_RecordSuccess_Recovery(t *testing.T) {
 
 	bc := NewBudgetController("test")
 	// Record 3 true 429s
-	bc.Record429(true)
-	bc.Record429(true)
-	bc.Record429(true)
+	bc.Record429(context.Background(), true)
+	bc.Record429(context.Background(), true)
+	bc.Record429(context.Background(), true)
 	if bc.Consecutive429() != 3 {
 		t.Fatalf("consecutive429 = %d, want 3", bc.Consecutive429())
 	}
 
 	// Success too soon doesn't recover
-	bc.RecordSuccess()
+	bc.RecordSuccess(context.Background())
 	if bc.Consecutive429() != 3 {
 		t.Errorf("consecutive429 = %d, want 3 (too soon to recover)", bc.Consecutive429())
 	}
@@ -161,7 +162,7 @@ func TestBudgetController_RecordSuccess_Recovery(t *testing.T) {
 	bc.lastPenaltyAt = time.Now().Add(-penaltyRecoveryInterval - time.Second)
 	bc.mu.Unlock()
 
-	bc.RecordSuccess()
+	bc.RecordSuccess(context.Background())
 	if bc.Consecutive429() != 2 {
 		t.Errorf("consecutive429 = %d, want 2 (should have recovered by 1)", bc.Consecutive429())
 	}
@@ -230,7 +231,7 @@ func TestBudgetController_HasRecentData(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-5h-utilization", "0.1")
-	bc.UpdateFromHeaders(h)
+	bc.UpdateFromHeaders(context.Background(), h)
 
 	if !bc.HasRecentData(5 * time.Minute) {
 		t.Error("should have recent data after update")
@@ -244,7 +245,7 @@ func TestBudgetController_CooldownUntil(t *testing.T) {
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-5h-reset", "2026-03-14T12:00:00Z")
 	h.Set("anthropic-ratelimit-unified-7d-reset", "2026-03-14T14:00:00Z")
-	bc.UpdateFromHeaders(h)
+	bc.UpdateFromHeaders(context.Background(), h)
 
 	cd := bc.CooldownUntil()
 	expected, _ := time.Parse(time.RFC3339, "2026-03-14T14:00:00Z")

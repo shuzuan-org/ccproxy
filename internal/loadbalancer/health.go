@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 const (
@@ -46,6 +49,10 @@ type AccountHealth struct {
 	latencyEMA  atomic.Int64 // slow α=0.1
 	latencyFast atomic.Int64 // fast α=0.5
 
+	// Cooldown recovery tracking (lock-free)
+	wasCoolingDown       atomic.Bool
+	lastCooldownDuration atomic.Int64 // stored as nanoseconds
+
 	// Sliding window
 	windowMu     sync.Mutex
 	windowErrors []time.Time
@@ -66,10 +73,10 @@ func (h *AccountHealth) Budget() *BudgetController {
 }
 
 // RecordSuccess updates health after a successful request.
-func (h *AccountHealth) RecordSuccess(latencyUs int64) {
+func (h *AccountHealth) RecordSuccess(ctx context.Context, latencyUs int64) {
 	h.updateLatency(latencyUs)
 	h.recordWindow(false)
-	h.budget.RecordSuccess()
+	h.budget.RecordSuccess(ctx)
 
 	h.mu.Lock()
 	h.consecutive401 = 0
@@ -80,7 +87,7 @@ func (h *AccountHealth) RecordSuccess(latencyUs int64) {
 
 // RecordError updates health after a failed request.
 // responseHeaders may be nil for errors without response headers.
-func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration, responseHeaders http.Header) {
+func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAfter time.Duration, responseHeaders http.Header) {
 	switch statusCode {
 	case 429:
 		hasResetHeaders := false
@@ -91,29 +98,29 @@ func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration, re
 
 		if hasResetHeaders {
 			// True 429: use reset time from headers as cooldown
-			h.budget.Record429(true)
-			h.budget.UpdateFromHeaders(responseHeaders)
+			h.budget.Record429(ctx, true)
+			h.budget.UpdateFromHeaders(ctx, responseHeaders)
 			cooldownUntil := h.budget.CooldownUntil()
 			cd := time.Until(cooldownUntil)
 			if cd <= 0 {
 				cd = cooldown429
 			}
-			slog.Warn("instance rate limited (true 429)", "instance", h.Name, "cooldown", cd.String())
-			h.SetCooldown(cd, "rate_limited")
+			observe.Logger(ctx).Warn("instance rate limited (true 429)", "instance", h.Name, "cooldown", cd.String())
+			h.setCooldownWithTracking(cd, "rate_limited")
 			h.recordWindow(true)
 		} else {
 			// Fake 429: short cooldown, don't affect budget or SRE
-			h.budget.Record429(false)
-			slog.Warn("instance rate limited (no reset headers)", "instance", h.Name, "cooldown", "5s")
-			h.SetCooldown(5*time.Second, "rate_limited_soft")
+			h.budget.Record429(ctx, false)
+			observe.Logger(ctx).Warn("instance rate limited (no reset headers)", "instance", h.Name, "cooldown", "5s")
+			h.setCooldownWithTracking(5*time.Second, "rate_limited_soft")
 			// Don't record in error window — not a real rate limit
 		}
 
 	case 529:
 		jitter := time.Duration(rand.Int63n(int64(15 * time.Second)))
 		cd := cooldown529 + jitter
-		slog.Warn("instance overloaded", "instance", h.Name, "cooldown", cd.String())
-		h.SetCooldown(cd, "overloaded")
+		observe.Logger(ctx).Warn("instance overloaded", "instance", h.Name, "cooldown", cd.String())
+		h.setCooldownWithTracking(cd, "overloaded")
 		h.recordWindow(true)
 
 		h.mu.Lock()
@@ -121,8 +128,8 @@ func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration, re
 		h.mu.Unlock()
 
 	case 401:
-		slog.Warn("instance auth error, cooling down", "instance", h.Name, "cooldown", cooldown401.String())
-		h.SetCooldown(cooldown401, "auth_refresh")
+		observe.Logger(ctx).Warn("instance auth error, cooling down", "instance", h.Name, "cooldown", cooldown401.String())
+		h.setCooldownWithTracking(cooldown401, "auth_refresh")
 
 		h.mu.Lock()
 		now := time.Now()
@@ -132,14 +139,14 @@ func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration, re
 		h.consecutive401++
 		if h.consecutive401 >= auth401Threshold && now.Sub(h.first401At) < cooldown401Disable {
 			h.mu.Unlock()
-			slog.Error("instance disabled: too many consecutive 401s", "instance", h.Name, "count", auth401Threshold)
+			observe.Logger(ctx).Error("instance disabled: too many consecutive 401s", "instance", h.Name, "count", auth401Threshold)
 			h.Disable("consecutive_401")
 		} else {
 			h.mu.Unlock()
 		}
 
 	case 403:
-		slog.Error("instance forbidden, disabling", "instance", h.Name)
+		observe.Logger(ctx).Error("instance forbidden, disabling", "instance", h.Name)
 		h.Disable("forbidden")
 
 	case 400:
@@ -158,7 +165,7 @@ func (h *AccountHealth) RecordError(statusCode int, retryAfter time.Duration, re
 }
 
 // RecordTimeout records a request timeout.
-func (h *AccountHealth) RecordTimeout() {
+func (h *AccountHealth) RecordTimeout(ctx context.Context) {
 	h.mu.Lock()
 	now := time.Now()
 	if h.timeoutCount == 0 {
@@ -167,8 +174,8 @@ func (h *AccountHealth) RecordTimeout() {
 	h.timeoutCount++
 	if h.timeoutCount >= timeoutThreshold && now.Sub(h.firstTimeoutAt) < healthWindowSize {
 		h.mu.Unlock()
-		slog.Warn("instance cooldown: timeout threshold reached", "instance", h.Name, "count", h.timeoutCount)
-		h.SetCooldown(2*time.Minute, "timeout_threshold")
+		observe.Logger(ctx).Warn("instance cooldown: timeout threshold reached", "instance", h.Name, "count", h.timeoutCount)
+		h.setCooldownWithTracking(2*time.Minute, "timeout_threshold")
 		return
 	}
 	h.mu.Unlock()
@@ -195,7 +202,14 @@ func (h *AccountHealth) IsAvailable() bool {
 	if h.disabled {
 		return false
 	}
-	return time.Now().After(h.cooldownUntil) || h.cooldownUntil.IsZero()
+	available := time.Now().After(h.cooldownUntil) || h.cooldownUntil.IsZero()
+	if available && h.wasCoolingDown.CompareAndSwap(true, false) {
+		slog.Info("instance recovered from cooldown",
+			"instance", h.Name,
+			"cooldown_duration", time.Duration(h.lastCooldownDuration.Load()),
+		)
+	}
+	return available
 }
 
 // Score computes a composite score (lower is better).
@@ -243,6 +257,13 @@ func (h *AccountHealth) SetCooldown(d time.Duration, reason string) {
 	defer h.mu.Unlock()
 	h.cooldownUntil = time.Now().Add(d)
 	h.cooldownReason = reason
+}
+
+// setCooldownWithTracking sets a cooldown and records tracking for recovery logging.
+func (h *AccountHealth) setCooldownWithTracking(d time.Duration, reason string) {
+	h.wasCoolingDown.Store(true)
+	h.lastCooldownDuration.Store(int64(d))
+	h.SetCooldown(d, reason)
 }
 
 // Disable permanently disables this instance.
