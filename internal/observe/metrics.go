@@ -50,6 +50,9 @@ type InstanceMetrics struct {
 // creating one lazily if it does not exist. The same pointer is returned
 // on every subsequent call for the same name.
 func (m *Metrics) Instance(name string) *InstanceMetrics {
+	if v, ok := m.instances.Load(name); ok {
+		return v.(*InstanceMetrics)
+	}
 	im := &InstanceMetrics{}
 	actual, _ := m.instances.LoadOrStore(name, im)
 	return actual.(*InstanceMetrics)

@@ -179,6 +179,7 @@ func ExecuteWithRetry(
 				switch statusCode {
 				case 429:
 					observe.Global.Instances429.Add(1)
+					observe.Global.Instance(instanceName).Errors429.Add(1)
 					hasResetHeaders := respHeaders != nil &&
 						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
 							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
@@ -189,6 +190,7 @@ func ExecuteWithRetry(
 					)
 				case 529:
 					observe.Global.Instances529.Add(1)
+					observe.Global.Instance(instanceName).Errors529.Add(1)
 					// Check consecutive 529 across instances
 					h := balancer.GetHealth(instanceName)
 					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
