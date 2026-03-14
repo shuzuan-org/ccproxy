@@ -110,7 +110,7 @@ func New(cfg *config.Config) (*Server, error) {
 	slog.Info("usage fetcher started")
 
 	// Start periodic metrics logging.
-	observe.Global.StartPeriodicLog(ctx, 5*time.Minute)
+	observe.Global.StartPeriodicLog(ctx, 5*time.Minute, balancer, nil)
 
 	// 6. Register onChange callback to propagate dynamic instance changes.
 	registry.SetOnChange(func(instances []config.Instance) {
