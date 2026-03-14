@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/binn/ccproxy/internal/fileutil"
 )
 
 // Instance represents a dynamically managed backend instance.
@@ -199,7 +201,7 @@ func (r *InstanceRegistry) save() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
-	return atomicWriteFile(r.path, data, 0o600)
+	return fileutil.AtomicWriteFile(r.path, data, 0o600)
 }
 
 func (r *InstanceRegistry) load() error {

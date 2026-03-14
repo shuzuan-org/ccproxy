@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-ccproxy is a single-binary Claude API proxy written in Go. It pools Anthropic OAuth subscription accounts for team sharing and impersonates Claude CLI identity at six layers (TLS fingerprint, HTTP headers, beta tokens, system prompt, metadata.user_id, model mapping). See `docs/superpowers/specs/2026-03-10-ccproxy-design.md` for the full design spec.
+ccproxy is a single-binary Claude API proxy written in Go. It pools Anthropic OAuth subscription accounts for team sharing and impersonates Claude CLI identity at six layers (TLS fingerprint, HTTP headers, beta tokens, system prompt, metadata.user_id, model mapping).
 
 Module path: `github.com/binn/ccproxy`
 
@@ -11,7 +11,7 @@ Module path: `github.com/binn/ccproxy`
 ```bash
 make build          # Compile to bin/ccproxy
 make test           # Run all tests with -race
-make run            # Build then run: ./bin/ccproxy start
+make run            # Build then run: ./bin/ccproxy
 make clean          # Remove bin/ and data/
 ```
 
@@ -32,20 +32,25 @@ go test ./internal/disguise/... -v -race
 ```
 cmd/ccproxy/        Entry point (main.go)
 internal/
-  auth/             Bearer token validation middleware (constant-time compare)
   admin/            Embedded HTML dashboard handler and static assets
-  cli/              Cobra commands: start, stop, reload, test, oauth, version
-  config/           TOML config loading, validation, defaults, fsnotify hot-reload
+  apierror/         Shared API error types
+  auth/             Bearer token validation middleware (constant-time compare)
+  cli/              Cobra commands: root (start), version
+  config/           TOML config loading, validation, defaults, fsnotify hot-reload, instance registry
   disguise/         6-layer Claude CLI impersonation engine
-  loadbalancer/     3-layer balancer, concurrency tracker, retry/failover engine
-  oauth/            PKCE flow, AES-256-GCM token store, Anthropic provider
-  proxy/            HTTP proxy handler, SSE streaming, error mapping
+  fileutil/         File I/O helpers (atomic write, etc.)
+  loadbalancer/     3-layer balancer, concurrency tracker, retry/failover, budget, health, usage
+  netutil/          SOCKS5 proxy support
+  oauth/            PKCE flow, AES-256-GCM token store, session store, Anthropic provider
+  observe/          Request tracing context and metrics
+  proxy/            HTTP proxy handler, SSE streaming, body filter, error mapping
+  ratelimit/        Per-IP rate limiting middleware
   server/           HTTP server setup (net/http mux, middleware wiring)
+  session/          Session affinity with TTL management
+  tls/              TLS fingerprint spoofing
 data/               Runtime data — NOT committed (.gitignore)
-  ccproxy.pid       PID file written by `start`, read by `stop`/`reload`
   instances.json    Dynamic instance registry (0600)
   oauth_tokens.json Encrypted OAuth tokens (0600)
-docs/               Design specs and notes
 config.toml.example Reference configuration
 ```
 
@@ -64,7 +69,7 @@ config.toml.example Reference configuration
 - `config.Watch(path, callback)` starts a background fsnotify watcher with 500ms debounce.
 - `base_url`, `request_timeout`, `max_concurrency` are global settings under `[server]`.
 - Instances are **not** defined in TOML. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/instances.json` by `config.InstanceRegistry`.
-- `config.RuntimeInstance(name, enabled)` and `config.RuntimeInstances(registry)` build `InstanceConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).
+- `config.RuntimeInstance(inst)` and `config.RuntimeInstances(registry)` build `InstanceConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).
 - `InstanceRegistry.SetOnChange(fn)` propagates dynamic add/remove to balancer and OAuth manager at runtime.
 
 ### Concurrency
@@ -107,8 +112,8 @@ Copy and edit `config.toml.example`:
 cp config.toml.example config.toml
 ```
 
-Validate before starting:
+Then run:
 
 ```bash
-./bin/ccproxy test
+make run
 ```

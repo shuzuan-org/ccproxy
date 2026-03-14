@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/binn/ccproxy/internal/fileutil"
 )
 
 const (
@@ -104,7 +106,7 @@ func writeGeneratedToFile(path string, cfg *Config, password, apiKey bool) error
 		content = appendAPIKey(content, k)
 	}
 
-	if err := atomicWriteFile(path, []byte(content), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 	return nil
