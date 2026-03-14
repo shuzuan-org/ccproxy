@@ -16,30 +16,33 @@ Every function on the request path that currently calls `slog.Info/Warn/Error/De
 
 ### Files affected
 
-| Package | File | Current direct slog calls | Has ctx | Action |
-|---------|------|--------------------------|---------|--------|
-| loadbalancer | retry.go | ~12 | Yes | Replace with observe.Logger(ctx) |
-| loadbalancer | balancer.go | ~4 | Yes | Replace with observe.Logger(ctx) |
-| loadbalancer | health.go | ~8 | No → add ctx | Add ctx param, replace with observe.Logger(ctx) |
-| loadbalancer | budget.go | ~6 | No → add ctx | Add ctx param, replace with observe.Logger(ctx) |
-| loadbalancer | throttle.go | ~3 | Yes | Replace with observe.Logger(ctx) |
-| loadbalancer | concurrency.go | ~3 | No (background) | Keep slog (non-request path) |
-| oauth | manager.go | ~8 | Partial | Replace where ctx available |
-| disguise | engine.go | ~14 | Yes (via *http.Request) | Use req.Context(), replace |
-| proxy | handler.go | ~9 | Already uses observe.Logger ✓ | No change needed |
-| admin | handler.go | ~16 | No (admin path) | Keep slog (non-request path) |
-| config | config.go | ~6 | No (startup) | Keep slog (non-request path) |
-| server | server.go | ~8 | No (startup/shutdown) | Keep slog (non-request path) |
+| Package | File | Has ctx | Action |
+|---------|------|---------|--------|
+| loadbalancer | retry.go | Yes | Replace slog calls with observe.Logger(ctx) |
+| loadbalancer | balancer.go | Yes | Replace slog calls with observe.Logger(ctx) |
+| loadbalancer | health.go | No → add ctx | Add ctx param to RecordSuccess/RecordError, replace |
+| loadbalancer | budget.go | No → add ctx | Add ctx param to UpdateFromHeaders/Record429, replace |
+| loadbalancer | throttle.go | Yes | Replace slog calls with observe.Logger(ctx) |
+| loadbalancer | usage.go | Yes | Replace slog calls with observe.Logger(ctx) |
+| loadbalancer | concurrency.go | No (background) | Keep slog (non-request path) |
+| oauth | manager.go | Partial | Replace where ctx available |
+| disguise | engine.go | Yes (via *http.Request) | Use req.Context(), replace |
+| proxy | handler.go | Yes | Already uses observe.Logger for some; extend to doRequest() |
+| proxy | streaming.go | Yes | Replace slog calls with observe.Logger(ctx) |
+| admin | handler.go | No (admin path) | Keep slog (non-request path) |
+| config | config.go | No (startup) | Keep slog (non-request path) |
+| server | server.go | No (startup/shutdown) | Keep slog (non-request path) |
 
 ### Internal signature changes
 
-These are package-internal methods called on the request path:
+These are package-internal methods called on the request path. Note: `AccountHealth` methods are per-instance (no instance param needed), and `BudgetController` is per-instance (no instance param needed). Only ctx is added.
 
-- `HealthTracker.RecordResult(instance, statusCode)` → `RecordResult(ctx, instance, statusCode)`
-- `BudgetController.UpdateFromHeaders(instance, headers)` → `UpdateFromHeaders(ctx, instance, headers)`
-- `BudgetController.Record429(instance, hasResetHeaders)` → `Record429(ctx, instance, hasResetHeaders)`
+- `AccountHealth.RecordSuccess()` → `RecordSuccess(ctx context.Context)`
+- `AccountHealth.RecordError(statusCode int)` → `RecordError(ctx context.Context, statusCode int)`
+- `BudgetController.UpdateFromHeaders(headers http.Header)` → `UpdateFromHeaders(ctx context.Context, headers http.Header)`
+- `BudgetController.Record429(hasResetHeaders bool)` → `Record429(ctx context.Context, hasResetHeaders bool)`
 
-The callers (retry.go) already have ctx, so these are straightforward additions.
+The callers (retry.go, balancer.go) already have ctx. The `Balancer.ReportResult` method that calls `AccountHealth.RecordSuccess/RecordError` will also need ctx added to its signature.
 
 ## 2. Missing Key Events
 
@@ -65,15 +68,15 @@ instances_tried=[acct-1,acct-2,acct-1]
 
 ### OAuth token expiry warning
 
-In the auto-refresh check loop, when a token has < 10 minutes remaining, emit a Warn:
+In the auto-refresh check loop, when a token has < 2 minutes remaining (aligned with the 60s refresh threshold, providing one extra ticker interval of advance warning), emit a Warn:
 
 ```
-"oauth: token expiring soon" instance=acct-1 expires_in=8m30s
+"oauth: token expiring soon" instance=acct-1 expires_in=90s
 ```
 
 ### Instance health recovery
 
-When an instance transitions from cooldown back to healthy (cooldown timer expires), emit Info:
+When an instance transitions from cooldown back to healthy, emit Info. Implementation: add a `wasCoolingDown` flag to `AccountHealth`. When `IsAvailable()` is called and `time.Now().After(cooldownUntil)` transitions from false to true (i.e., `wasCoolingDown` was set), log the recovery and clear the flag.
 
 ```
 "instance recovered from cooldown" instance=acct-1 cooldown_duration=30s
@@ -90,12 +93,12 @@ type InstanceMetrics struct {
     RequestsTotal   atomic.Int64
     RequestsSuccess atomic.Int64
     RequestsError   atomic.Int64
-    Instances429    atomic.Int64
-    Instances529    atomic.Int64
+    Errors429       atomic.Int64
+    Errors529       atomic.Int64
 }
 ```
 
-Stored in a `sync.Map[string, *InstanceMetrics]` keyed by instance name. Lazy-initialized on first access via `Global.Instance(name)`.
+Stored in a `sync.Map` keyed by instance name. Lazy-initialized on first access via `Global.Instance(name)`.
 
 ### Enhanced periodic output
 
@@ -113,10 +116,10 @@ Example:
   requests_success=1480 requests_error=20 retries=45 failovers=12
 
 "metrics instance" instance=acct-1 requests=800 success=790 errors=10
-  rate_429=3 rate_529=1 state=healthy concurrency=2/5 budget=normal
+  errors_429=3 errors_529=1 state=healthy concurrency=2/5 budget=normal
 
 "metrics instance" instance=acct-2 requests=700 success=690 errors=10
-  rate_429=5 rate_529=0 state=cooldown concurrency=0/5 budget=sticky_only
+  errors_429=5 errors_529=0 state=cooldown concurrency=0/5 budget=sticky_only
 ```
 
 ### State snapshot integration
@@ -134,12 +137,14 @@ type StateProvider interface {
 }
 
 type InstanceState struct {
-    Health      string // "healthy", "cooldown", "disabled"
-    Concurrency int    // current active slots
+    Health         string // "healthy", "cooldown", "disabled"
+    Concurrency    int    // current active slots
     MaxConcurrency int
-    BudgetState string // "normal", "sticky_only", "blocked"
+    BudgetState    string // "normal", "sticky_only", "blocked"
 }
 ```
+
+The `Balancer` struct implements `StateProvider` since it already holds references to HealthTracker, ConcurrencyTracker, and BudgetController.
 
 ## 4. What We Are NOT Doing
 
