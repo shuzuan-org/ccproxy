@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -17,6 +18,19 @@ const (
 	StateStickyOnly                        // only serve sticky sessions
 	StateBlocked                           // do not schedule any requests
 )
+
+func (s SchedulingState) String() string {
+	switch s {
+	case StateNormal:
+		return "normal"
+	case StateStickyOnly:
+		return "sticky_only"
+	case StateBlocked:
+		return "blocked"
+	default:
+		return "unknown"
+	}
+}
 
 const (
 	defaultNormalThreshold  = 0.60 // below this → Normal
@@ -36,6 +50,7 @@ type BudgetWindow struct {
 
 // BudgetController tracks dual-window (5h/7d) rate-limit budget for one instance.
 type BudgetController struct {
+	name           string // instance name for logging
 	mu             sync.RWMutex
 	window5h       BudgetWindow
 	window7d       BudgetWindow
@@ -43,11 +58,12 @@ type BudgetController struct {
 	lastPenaltyAt  time.Time
 	penaltyShift   float64 // threshold shift down per consecutive 429
 	lastSuccessAt  time.Time
+	lastState      SchedulingState // cached for state-change detection
 }
 
-// NewBudgetController creates a new budget controller with no data.
-func NewBudgetController() *BudgetController {
-	return &BudgetController{}
+// NewBudgetController creates a new budget controller for the named instance.
+func NewBudgetController(name string) *BudgetController {
+	return &BudgetController{name: name}
 }
 
 // UpdateFromHeaders parses anthropic-ratelimit-unified-* response headers.
@@ -94,6 +110,14 @@ func (bc *BudgetController) UpdateFromHeaders(headers http.Header) {
 			bc.window7d.LastUpdated = now
 		}
 	}
+
+	slog.Debug("budget: headers updated",
+		"instance", bc.name,
+		"util_5h", bc.window5h.Utilization,
+		"util_7d", bc.window7d.Utilization,
+		"state", bc.stateLocked().String(),
+	)
+	bc.checkStateChange()
 }
 
 // UsageAPIWindow represents a single window from the usage API response.
@@ -143,6 +167,19 @@ func (bc *BudgetController) stateLocked() SchedulingState {
 	return StateNormal
 }
 
+// checkStateChange logs when state transitions. Must be called with bc.mu held.
+func (bc *BudgetController) checkStateChange() {
+	current := bc.stateLocked()
+	if current != bc.lastState {
+		slog.Info("budget: state changed",
+			"instance", bc.name,
+			"from", bc.lastState.String(),
+			"to", current.String(),
+		)
+		bc.lastState = current
+	}
+}
+
 // MaxUtilization returns max(5h.Utilization, 7d.Utilization).
 func (bc *BudgetController) MaxUtilization() float64 {
 	bc.mu.RLock()
@@ -164,6 +201,13 @@ func (bc *BudgetController) Record429(hasResetHeaders bool) {
 	if bc.penaltyShift > penaltyMax {
 		bc.penaltyShift = penaltyMax
 	}
+	slog.Warn("budget: 429 recorded",
+		"instance", bc.name,
+		"true_429", hasResetHeaders,
+		"consecutive", bc.consecutive429,
+		"penalty", bc.penaltyShift,
+	)
+	bc.checkStateChange()
 }
 
 // RecordSuccess records a successful request. If enough time has passed
@@ -179,6 +223,11 @@ func (bc *BudgetController) RecordSuccess() {
 			bc.penaltyShift = 0
 		}
 		bc.lastPenaltyAt = time.Now() // reset timer for next step
+		slog.Info("budget: penalty recovered",
+			"instance", bc.name,
+			"penalty", bc.penaltyShift,
+		)
+		bc.checkStateChange()
 	}
 }
 

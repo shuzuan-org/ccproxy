@@ -16,8 +16,10 @@ import (
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
+	"github.com/binn/ccproxy/internal/observe"
 	"github.com/binn/ccproxy/internal/session"
 	proxytls "github.com/binn/ccproxy/internal/tls"
+	"github.com/google/uuid"
 )
 
 const maxResponseBodySize int64 = 8 << 20 // 8MB
@@ -116,8 +118,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 4: Compose session key.
 	sessionKey := session.ComposeSessionKey(authInfo.APIKeyName, sessionID)
 
-	slog.Info("proxy request",
-		"api_key", authInfo.APIKeyName,
+	// Inject request context for correlation.
+	requestID := uuid.New().String()
+	rc := &observe.RequestContext{
+		RequestID:  requestID,
+		APIKeyName: authInfo.APIKeyName,
+		SessionKey: sessionKey,
+	}
+	ctx := observe.WithRequestContext(r.Context(), rc)
+	r = r.WithContext(ctx)
+	log := observe.Logger(ctx)
+
+	observe.Global.RequestsTotal.Add(1)
+	log.Info("proxy request",
 		"model", originalModel,
 		"stream", isStream,
 		"session_key", sessionKey,
@@ -190,8 +203,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestStart := time.Now()
 	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, isStream, callbacks, requestFn)
 	if err != nil {
-		slog.Error("all retries exhausted",
-			"api_key", authInfo.APIKeyName,
+		observe.Global.RequestsError.Add(1)
+		log.Error("all retries exhausted",
 			"model", originalModel,
 			"elapsed", time.Since(requestStart).String(),
 			"error", err.Error(),
@@ -201,7 +214,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("upstream success",
+	observe.Global.RequestsSuccess.Add(1)
+	log.Info("upstream success",
 		"instance", result.InstanceName,
 		"status", result.StatusCode,
 		"model", originalModel,
@@ -210,6 +224,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
+
+	// Set request ID header for client correlation.
+	w.Header().Set("X-Request-ID", requestID)
 
 	// Report success to health tracker (with response headers for budget tracking).
 	h.balancer.ReportResult(result.InstanceName, result.StatusCode,
@@ -220,7 +237,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 		proxyStatus, errBody := MapUpstreamError(resp.StatusCode, upstreamBody)
 
-		slog.Warn("upstream error response",
+		log.Warn("upstream error response",
 			"instance", result.InstanceName,
 			"upstream_status", resp.StatusCode,
 			"proxy_status", proxyStatus,
@@ -249,7 +266,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 		if _, err := ForwardSSE(r.Context(), resp.Body, w, originalModel); err != nil {
-			slog.Error("SSE forwarding error", "error", err)
+			log.Error("SSE forwarding error", "error", err)
 		}
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
@@ -279,7 +296,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) doRequest(
 	origReq *http.Request,
 	inst config.InstanceConfig,
-	_ string, // requestID reserved for future tracing
+	requestID string, // used for tracing correlation
 	rawBody []byte,
 	isStream bool,
 ) (*http.Response, int, error) {

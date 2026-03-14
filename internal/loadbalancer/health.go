@@ -56,7 +56,7 @@ type AccountHealth struct {
 func NewAccountHealth(name string) *AccountHealth {
 	return &AccountHealth{
 		Name:   name,
-		budget: NewBudgetController(),
+		budget: NewBudgetController(name),
 	}
 }
 

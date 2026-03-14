@@ -126,7 +126,7 @@ func TestUsageFetcher_FetchIfNeeded_RecentData(t *testing.T) {
 	t.Parallel()
 
 	uf := NewUsageFetcher(&mockTokenProvider{token: "tok"}, "")
-	budget := NewBudgetController()
+	budget := NewBudgetController("test")
 
 	// Set recent data
 	h := http.Header{}

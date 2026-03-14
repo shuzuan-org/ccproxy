@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
+	"github.com/binn/ccproxy/internal/observe"
 )
 
 // FailureAction determines how to handle an upstream error.
@@ -165,6 +166,7 @@ func ExecuteWithRetry(
 				// Special handling per status code
 				switch statusCode {
 				case 429:
+					observe.Global.Instances429.Add(1)
 					hasResetHeaders := respHeaders != nil &&
 						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
 							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
@@ -174,6 +176,7 @@ func ExecuteWithRetry(
 						"switch", switchCount+1,
 					)
 				case 529:
+					observe.Global.Instances529.Add(1)
 					// Check consecutive 529 across instances
 					h := balancer.GetHealth(instanceName)
 					balancer.ReportResult(instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
@@ -212,9 +215,11 @@ func ExecuteWithRetry(
 				balancer.ClearSession(sessionKey)
 				switchCount++
 				switched = true
+				observe.Global.FailoversTotal.Add(1)
 
 			case RetryThenFailover:
 				sameInstanceRetries++
+				observe.Global.RetriesTotal.Add(1)
 				slog.Warn("retry on same instance",
 					"instance", instanceName,
 					"status", statusCode,
@@ -231,6 +236,7 @@ func ExecuteWithRetry(
 					balancer.ClearSession(sessionKey)
 					switchCount++
 					switched = true
+					observe.Global.FailoversTotal.Add(1)
 					break
 				}
 				// Report the failed attempt (but don't trigger failover yet).

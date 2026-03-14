@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"math/rand"
 	"sync"
@@ -72,7 +73,15 @@ func (pt *PoolThrottle) ShouldThrottle() bool {
 	if prob <= 0 {
 		return false
 	}
-	return rand.Float64() < prob
+	throttled := rand.Float64() < prob
+	if throttled {
+		slog.Debug("throttle: request throttled",
+			"probability", prob,
+			"requests", int(reqs),
+			"accepts", int(accs),
+		)
+	}
+	return throttled
 }
 
 // Enqueue attempts to acquire a queue slot with context-aware timeout.
@@ -90,10 +99,16 @@ func (pt *PoolThrottle) Enqueue(ctx context.Context, isStream bool) bool {
 	case pt.queue <- struct{}{}:
 		return true
 	case <-timer.C:
+		slog.Warn("throttle: queue timeout", "is_stream", isStream)
 		return false
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// QueueDepth returns the current number of queued requests.
+func (pt *PoolThrottle) QueueDepth() int {
+	return len(pt.queue)
 }
 
 // Dequeue releases a queue slot.

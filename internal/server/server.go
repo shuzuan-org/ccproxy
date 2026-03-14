@@ -14,6 +14,7 @@ import (
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
+	"github.com/binn/ccproxy/internal/observe"
 	"github.com/binn/ccproxy/internal/proxy"
 	"github.com/binn/ccproxy/internal/ratelimit"
 )
@@ -107,6 +108,9 @@ func New(cfg *config.Config) (*Server, error) {
 		},
 	)
 	slog.Info("usage fetcher started")
+
+	// Start periodic metrics logging.
+	observe.Global.StartPeriodicLog(ctx, 5*time.Minute)
 
 	// 6. Register onChange callback to propagate dynamic instance changes.
 	registry.SetOnChange(func(instances []config.Instance) {
@@ -231,13 +235,17 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		} else if lrw.statusCode >= 400 {
 			lvl = slog.LevelWarn
 		}
-		slog.Log(r.Context(), lvl, "http request",
+		attrs := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", lrw.statusCode,
 			"elapsed", elapsed.String(),
 			"remote", r.RemoteAddr,
-		)
+		}
+		if rc := observe.GetRequestContext(r.Context()); rc != nil {
+			attrs = append(attrs, "request_id", rc.RequestID)
+		}
+		slog.Log(r.Context(), lvl, "http request", attrs...)
 	})
 }
 

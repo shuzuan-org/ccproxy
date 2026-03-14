@@ -9,7 +9,7 @@ import (
 func TestBudgetController_UpdateFromHeaders(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-5h-utilization", "0.45")
 	h.Set("anthropic-ratelimit-unified-5h-status", "allowed")
@@ -43,7 +43,7 @@ func TestBudgetController_UpdateFromHeaders(t *testing.T) {
 func TestBudgetController_UpdateFromUsageAPI(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	bc.UpdateFromUsageAPI(
 		UsageAPIWindow{Utilization: 50, ResetsAt: "2026-03-14T12:00:00Z"},
 		UsageAPIWindow{Utilization: 75, ResetsAt: "2026-03-20T00:00:00Z"},
@@ -84,7 +84,7 @@ func TestBudgetController_StateThresholds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			bc := NewBudgetController()
+			bc := NewBudgetController("test")
 			bc.mu.Lock()
 			bc.window5h.Utilization = tt.util5h
 			bc.window7d.Utilization = tt.util7d
@@ -104,7 +104,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 
 	t.Run("true 429 increases penalty", func(t *testing.T) {
 		t.Parallel()
-		bc := NewBudgetController()
+		bc := NewBudgetController("test")
 		bc.Record429(true)
 		if bc.Consecutive429() != 1 {
 			t.Errorf("consecutive429 = %d, want 1", bc.Consecutive429())
@@ -116,7 +116,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 
 	t.Run("fake 429 does nothing", func(t *testing.T) {
 		t.Parallel()
-		bc := NewBudgetController()
+		bc := NewBudgetController("test")
 		bc.Record429(false)
 		if bc.Consecutive429() != 0 {
 			t.Errorf("consecutive429 = %d, want 0", bc.Consecutive429())
@@ -128,7 +128,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 
 	t.Run("penalty capped at max", func(t *testing.T) {
 		t.Parallel()
-		bc := NewBudgetController()
+		bc := NewBudgetController("test")
 		for i := 0; i < 10; i++ {
 			bc.Record429(true)
 		}
@@ -141,7 +141,7 @@ func TestBudgetController_Record429_TrueVsFake(t *testing.T) {
 func TestBudgetController_RecordSuccess_Recovery(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	// Record 3 true 429s
 	bc.Record429(true)
 	bc.Record429(true)
@@ -193,7 +193,7 @@ func TestBudgetController_DynamicMaxConcurrency(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			bc := NewBudgetController()
+			bc := NewBudgetController("test")
 			bc.mu.Lock()
 			bc.window5h.Utilization = tt.maxUtil
 			bc.mu.Unlock()
@@ -209,7 +209,7 @@ func TestBudgetController_DynamicMaxConcurrency(t *testing.T) {
 func TestBudgetController_MaxUtilization(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	bc.mu.Lock()
 	bc.window5h.Utilization = 0.30
 	bc.window7d.Utilization = 0.70
@@ -223,7 +223,7 @@ func TestBudgetController_MaxUtilization(t *testing.T) {
 func TestBudgetController_HasRecentData(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	if bc.HasRecentData(5 * time.Minute) {
 		t.Error("should not have recent data initially")
 	}
@@ -240,7 +240,7 @@ func TestBudgetController_HasRecentData(t *testing.T) {
 func TestBudgetController_CooldownUntil(t *testing.T) {
 	t.Parallel()
 
-	bc := NewBudgetController()
+	bc := NewBudgetController("test")
 	h := http.Header{}
 	h.Set("anthropic-ratelimit-unified-5h-reset", "2026-03-14T12:00:00Z")
 	h.Set("anthropic-ratelimit-unified-7d-reset", "2026-03-14T14:00:00Z")
@@ -265,7 +265,7 @@ func TestEffectiveMaxConcurrency(t *testing.T) {
 
 	t.Run("with budget delegates", func(t *testing.T) {
 		t.Parallel()
-		bc := NewBudgetController()
+		bc := NewBudgetController("test")
 		bc.mu.Lock()
 		bc.window5h.Utilization = 0.90
 		bc.mu.Unlock()

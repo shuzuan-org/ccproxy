@@ -107,12 +107,12 @@ func TestPoolUtilization(t *testing.T) {
 
 	t.Run("average calculation", func(t *testing.T) {
 		t.Parallel()
-		b1 := NewBudgetController()
+		b1 := NewBudgetController("test1")
 		b1.mu.Lock()
 		b1.window5h.Utilization = 0.40
 		b1.mu.Unlock()
 
-		b2 := NewBudgetController()
+		b2 := NewBudgetController("test2")
 		b2.mu.Lock()
 		b2.window5h.Utilization = 0.80
 		b2.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
+	"github.com/binn/ccproxy/internal/observe"
 	"github.com/google/uuid"
 )
 
@@ -91,6 +92,8 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 	// L1: Pool-level backpressure
 	b.throttle.RecordRequest()
 	if b.throttle.ShouldThrottle() {
+		observe.Global.RequestsThrottled.Add(1)
+		observe.Global.RequestsQueued.Add(1)
 		if !b.throttle.Enqueue(ctx, isStream) {
 			return nil, ErrAllInstancesBusy
 		}
@@ -169,6 +172,10 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 		if h != nil && h.budget != nil {
 			state := h.budget.State()
 			if state == StateBlocked || state == StateStickyOnly {
+				slog.Debug("balancer: instance filtered",
+					"instance", inst.Name,
+					"reason", state.String(),
+				)
 				continue
 			}
 		}
@@ -236,6 +243,11 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 		}
 		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.instance.Name, time.Now())
+			slog.Debug("balancer: instance selected",
+				"instance", c.instance.Name,
+				"score", c.score,
+				"candidates", len(candidates),
+			)
 			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
 		}
 	}
