@@ -87,6 +87,38 @@ func TestMetrics_ConcurrentAddSnapshot(t *testing.T) {
 	}
 }
 
+func TestInstanceMetrics(t *testing.T) {
+	t.Parallel()
+	m := &Metrics{}
+
+	im1 := m.Instance("acct-1")
+	if im1 == nil {
+		t.Fatal("Instance returned nil")
+	}
+
+	// Same pointer on repeated access
+	im2 := m.Instance("acct-1")
+	if im1 != im2 {
+		t.Fatal("Instance returned different pointer for same name")
+	}
+
+	// Different instance returns different pointer
+	im3 := m.Instance("acct-2")
+	if im1 == im3 {
+		t.Fatal("Different instances returned same pointer")
+	}
+
+	im1.RequestsTotal.Add(5)
+	im1.RequestsSuccess.Add(3)
+	im1.RequestsError.Add(2)
+	im1.Errors429.Add(1)
+	im1.Errors529.Add(1)
+
+	if im1.RequestsTotal.Load() != 5 {
+		t.Fatalf("expected 5, got %d", im1.RequestsTotal.Load())
+	}
+}
+
 func TestMetrics_StartPeriodicLog(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -18,6 +19,26 @@ type Metrics struct {
 	FailoversTotal    atomic.Int64
 	Instances429      atomic.Int64
 	Instances529      atomic.Int64
+
+	instances sync.Map // map[string]*InstanceMetrics
+}
+
+// InstanceMetrics holds per-instance atomic counters.
+type InstanceMetrics struct {
+	RequestsTotal   atomic.Int64
+	RequestsSuccess atomic.Int64
+	RequestsError   atomic.Int64
+	Errors429       atomic.Int64
+	Errors529       atomic.Int64
+}
+
+// Instance returns the InstanceMetrics for the given instance name,
+// creating one lazily if it does not exist. The same pointer is returned
+// on every subsequent call for the same name.
+func (m *Metrics) Instance(name string) *InstanceMetrics {
+	im := &InstanceMetrics{}
+	actual, _ := m.instances.LoadOrStore(name, im)
+	return actual.(*InstanceMetrics)
 }
 
 // Global is the singleton metrics instance used throughout the application.
