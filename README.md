@@ -8,7 +8,7 @@ A single-binary Claude API proxy that pools Anthropic OAuth subscription account
 - Multi-instance load balancing with session affinity, adaptive backpressure, and load-aware scheduling
 - OAuth PKCE flow with encrypted token storage and auto-refresh
 - Web-based admin dashboard for instance management and OAuth login
-- TOML configuration with hot-reload (fsnotify)
+- TOML configuration with auto-generation of missing credentials
 - Observability: request tracing, metrics, and periodic logging
 - Single binary, no external dependencies
 
@@ -35,7 +35,7 @@ The proxy listens on `http://0.0.0.0:3000` by default. Point your Claude-compati
 
 ## Configuration Reference
 
-Configuration is read from `config.toml` (override with `-c <path>`). The file is watched for changes; edits take effect within ~500ms without a restart.
+Configuration is read from `config.toml` (override with `-c <path>`). Changes require a restart to take effect.
 
 ### `[server]`
 
@@ -106,25 +106,26 @@ ccproxy (single binary)
 │   ├── Auth Guard           Bearer token validation (constant-time compare)
 │   ├── Rate Limiter         Per-IP rate limiting for admin routes
 │   ├── Proxy Handler        Request forwarding and SSE streaming
-│   ├── Disguise Engine      6-layer Claude CLI impersonation
-│   ├── Load Balancer        Session affinity → load-aware → fallback queue
+│   ├── Disguise Engine      8-layer Claude CLI impersonation
+│   ├── Load Balancer        L1 Pool throttle → L2 Sticky session → L3 Score selection
 │   ├── Concurrency Tracker  Per-instance slot management (in-memory)
-│   ├── Budget Controller    Adaptive backpressure with dual-window tracking
+│   ├── Budget Controller    Adaptive backpressure with dual-window (5h/7d) tracking
 │   ├── OAuth Manager        PKCE flow, AES-256-GCM token storage, auto-refresh
 │   └── Observability        Request tracing, metrics, periodic logging
 └── Storage Layer
     ├── JSON File            Encrypted OAuth tokens (data/oauth_tokens.json)
     ├── JSON File            Dynamic instance registry (data/instances.json)
-    └── TOML File            Configuration with fsnotify hot-reload
+    └── TOML File            Configuration (read at startup)
 ```
 
-**Load balancer selection order:**
-
-1. Sticky session (1h TTL) — reuse the same instance for a client session if it has capacity
-2. Load-aware selection — filter by load rate, sort by priority then load, shuffle within tiers
-3. Fallback queue — wait for any instance to free a slot; timeout returns 503
+**Load balancer** uses a 3-layer selection algorithm:
+1. **L1 Pool**: SRE adaptive throttle + utilization-based delay + wait queue
+2. **L2 Sticky**: Session affinity (1h TTL) with budget-aware concurrency
+3. **L3 Score**: `errorRate*0.3 + latency*0.2 + load*0.2 + utilization*0.3`, lower wins
 
 **Disguise engine** activates when the downstream client is not already a real Claude Code client. It rewrites TLS fingerprint, HTTP headers, anthropic-beta tokens, system prompt, metadata.user_id, and model IDs to match Claude Code traffic patterns.
+
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 
 ## Admin Dashboard
 

@@ -4,7 +4,6 @@ go 1.25.5
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/spf13/cobra v1.10.2

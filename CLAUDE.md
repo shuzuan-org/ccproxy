@@ -6,6 +6,8 @@ ccproxy is a single-binary Claude API proxy written in Go. It pools Anthropic OA
 
 Module path: `github.com/binn/ccproxy`
 
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+
 ## Build Commands
 
 ```bash
@@ -36,7 +38,7 @@ internal/
   apierror/         Shared API error types
   auth/             Bearer token validation middleware (constant-time compare)
   cli/              Cobra commands: root (start), version
-  config/           TOML config loading, validation, defaults, fsnotify hot-reload, instance registry
+  config/           TOML config loading, validation, defaults, instance registry
   disguise/         6-layer Claude CLI impersonation engine
   fileutil/         File I/O helpers (atomic write, etc.)
   loadbalancer/     3-layer balancer, concurrency tracker, retry/failover, budget, health, usage
@@ -66,7 +68,6 @@ config.toml.example Reference configuration
 
 - `config.Load(path)` reads, parses, applies defaults, auto-generates missing credentials, and validates in one call.
 - If `admin_password` is empty or `api_keys` has no enabled entries, `Load` auto-generates cryptographically secure values, persists them to the config file, and prints them to the console.
-- `config.Watch(path, callback)` starts a background fsnotify watcher with 500ms debounce.
 - `base_url`, `request_timeout`, `max_concurrency` are global settings under `[server]`.
 - Instances are **not** defined in TOML. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/instances.json` by `config.InstanceRegistry`.
 - `config.RuntimeInstance(inst)` and `config.RuntimeInstances(registry)` build `InstanceConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).

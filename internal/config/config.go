@@ -7,11 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/fsnotify/fsnotify"
 )
 
 type Config struct {
@@ -244,101 +241,3 @@ func (c *Config) RuntimeInstances(registry *InstanceRegistry) []InstanceConfig {
 	return result
 }
 
-// Watch starts watching the config file for changes.
-// On change, reloads and validates config, then calls onChange callback.
-// Returns a stop function and any error.
-func Watch(path string, onChange func(*Config)) (stop func(), err error) {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("create watcher: %w", err)
-	}
-
-	// Watch the directory (not the file directly) to handle editors that
-	// delete+recreate files (vim, etc.)
-	dir := filepath.Dir(path)
-	if err := watcher.Add(dir); err != nil {
-		_ = watcher.Close()
-		return nil, fmt.Errorf("watch directory: %w", err)
-	}
-
-	done := make(chan struct{})
-	resetCh := make(chan struct{}, 1) // buffered to avoid blocking the event loop
-	go func() {
-		defer func() { _ = watcher.Close() }()
-
-		debounceTimer := time.NewTimer(time.Hour) // starts idle
-		debounceTimer.Stop()
-		defer debounceTimer.Stop()
-
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				// Only react to writes/creates for our config file
-				if filepath.Base(event.Name) != filepath.Base(path) {
-					continue
-				}
-				if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
-					continue
-				}
-
-				// Signal debounce reset
-				select {
-				case resetCh <- struct{}{}:
-				default:
-				}
-
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				slog.Error("config watcher error", "error", err.Error())
-
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Dedicated debounce goroutine to avoid timer races
-	go func() {
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-resetCh:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(500 * time.Millisecond)
-			case <-timer.C:
-				cfg, err := Load(path)
-				if err != nil {
-					slog.Error("config reload failed", "path", path, "error", err.Error())
-					continue
-				}
-				slog.Info("config reloaded", "path", path)
-				onChange(cfg)
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	var once sync.Once
-	stopFn := func() {
-		// Use sync.Once to make stop idempotent; calling it multiple times is safe.
-		once.Do(func() {
-			close(done)
-		})
-	}
-
-	return stopFn, nil
-}
