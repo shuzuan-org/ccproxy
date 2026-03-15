@@ -1,6 +1,9 @@
 package tls
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -64,5 +67,63 @@ func TestClaudeCLIv2Spec_NoDuplicateCiphers(t *testing.T) {
 			t.Errorf("duplicate cipher suite: 0x%04x", cs)
 		}
 		seen[cs] = true
+	}
+}
+
+func TestWithProxyURL_RoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	proxyURL := "socks5://10.0.0.1:1080"
+	ctx = WithProxyURL(ctx, proxyURL)
+	got := ProxyURLFromContext(ctx)
+	if got != proxyURL {
+		t.Errorf("ProxyURLFromContext = %q, want %q", got, proxyURL)
+	}
+}
+
+func TestProxyURLFromContext_Missing(t *testing.T) {
+	t.Parallel()
+	got := ProxyURLFromContext(context.Background())
+	if got != "" {
+		t.Errorf("ProxyURLFromContext(empty) = %q, want empty", got)
+	}
+}
+
+func TestGetOrCreateTransport_Caching(t *testing.T) {
+	t.Parallel()
+	ft := &fingerprintTransport{transports: make(map[string]*http.Transport)}
+	tr1 := ft.getOrCreateTransport("")
+	tr2 := ft.getOrCreateTransport("")
+	if tr1 != tr2 {
+		t.Error("expected same transport for same proxyURL")
+	}
+}
+
+func TestGetOrCreateTransport_DifferentProxy(t *testing.T) {
+	t.Parallel()
+	ft := &fingerprintTransport{transports: make(map[string]*http.Transport)}
+	tr1 := ft.getOrCreateTransport("")
+	tr2 := ft.getOrCreateTransport("socks5://proxy:1080")
+	if tr1 == tr2 {
+		t.Error("expected different transports for different proxyURLs")
+	}
+}
+
+func TestRoundTrip_NonHTTPS(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tr := NewTransport()
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
