@@ -201,31 +201,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	requestStart := time.Now()
 	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, isStream, callbacks, requestFn)
+	elapsed := time.Since(requestStart)
+
 	if err != nil {
 		observe.Global.RequestsError.Add(1)
 		log.Error("all retries exhausted",
 			"model", originalModel,
-			"elapsed", time.Since(requestStart).String(),
+			"elapsed", elapsed.Round(time.Millisecond),
 			"error", err.Error(),
 		)
 
-		// Request summary log — error path.
-		summaryAttrs := []any{
-			"model", originalModel,
-			"stream", isStream,
-			"elapsed", time.Since(requestStart).Round(time.Millisecond),
-		}
+		// Request summary log and per-instance metrics — error path.
+		summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result)
 		if result != nil {
-			summaryAttrs = append(summaryAttrs,
-				"instance", result.InstanceName,
-				"status", result.StatusCode,
-				"retries", result.Retries,
-				"failovers", result.Failovers,
-				"instances_tried", result.InstancesTried,
-			)
-			im := observe.Global.Instance(result.InstanceName)
-			im.RequestsTotal.Add(1)
-			im.RequestsError.Add(1)
+			recordInstanceMetrics(result.InstanceName, result.StatusCode, true)
 		}
 		log.Warn("request completed", summaryAttrs...)
 
@@ -239,20 +228,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"instance", result.InstanceName,
 		"status", result.StatusCode,
 		"model", originalModel,
-		"elapsed", time.Since(requestStart).String(),
+		"elapsed", elapsed.Round(time.Millisecond),
 	)
 
 	// Request summary log — success path. Level varies by retry/failover count.
-	summaryAttrs := []any{
-		"model", originalModel,
-		"stream", isStream,
-		"elapsed", time.Since(requestStart).Round(time.Millisecond),
-		"instance", result.InstanceName,
-		"status", result.StatusCode,
-		"retries", result.Retries,
-		"failovers", result.Failovers,
-		"instances_tried", result.InstancesTried,
-	}
+	summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result)
 	if result.Retries > 0 || result.Failovers > 0 {
 		log.Info("request completed", summaryAttrs...)
 	} else {
@@ -260,13 +240,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per-instance metrics recording.
-	im := observe.Global.Instance(result.InstanceName)
-	im.RequestsTotal.Add(1)
-	if result.StatusCode >= 200 && result.StatusCode < 300 {
-		im.RequestsSuccess.Add(1)
-	} else {
-		im.RequestsError.Add(1)
-	}
+	recordInstanceMetrics(result.InstanceName, result.StatusCode, false)
 
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
@@ -470,6 +444,36 @@ func copyHeaders(dst, src http.Header) {
 		for _, v := range vals {
 			dst.Add(k, v)
 		}
+	}
+}
+
+// buildSummaryAttrs constructs the common structured log attributes for request summary.
+func buildSummaryAttrs(model string, isStream bool, elapsed time.Duration, result *loadbalancer.RetryResult) []any {
+	attrs := []any{
+		"model", model,
+		"stream", isStream,
+		"elapsed", elapsed.Round(time.Millisecond),
+	}
+	if result != nil {
+		attrs = append(attrs,
+			"instance", result.InstanceName,
+			"status", result.StatusCode,
+			"retries", result.Retries,
+			"failovers", result.Failovers,
+			"instances_tried", result.InstancesTried,
+		)
+	}
+	return attrs
+}
+
+// recordInstanceMetrics updates per-instance request counters.
+func recordInstanceMetrics(instanceName string, statusCode int, isError bool) {
+	im := observe.Global.Instance(instanceName)
+	im.RequestsTotal.Add(1)
+	if isError || statusCode < 200 || statusCode >= 300 {
+		im.RequestsError.Add(1)
+	} else {
+		im.RequestsSuccess.Add(1)
 	}
 }
 

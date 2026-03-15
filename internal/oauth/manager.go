@@ -192,18 +192,17 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 						continue
 					}
 					remaining := time.Until(token.ExpiresAt)
-					if remaining > 0 && remaining < 2*time.Minute {
-						slog.Warn("oauth: token expiring soon",
-							"instance", name,
-							"expires_in", remaining.Round(time.Second),
-						)
-					}
 					if remaining < 60*time.Second {
 						slog.Info("oauth: auto-refreshing expiring token", "instance", name, "expires_in", remaining.String())
 						_, err := m.refreshToken(ctx, name, token.RefreshToken)
 						if err != nil {
 							slog.Error("oauth: auto-refresh failed", "instance", name, "error", err.Error())
 						}
+					} else if remaining < 2*time.Minute {
+						slog.Warn("oauth: token expiring soon",
+							"instance", name,
+							"expires_in", remaining.Round(time.Second),
+						)
 					}
 				}
 			}
