@@ -57,6 +57,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		observe.Logger(ctx).Debug("disguise: native Claude Code client detected, lightweight pass-through",
 			"instance", instanceName,
 		)
+		// Learn fingerprint from real CC client for future disguise use
+		e.fingerprints.LearnFromHeaders(instanceName, origReq.Header)
+
 		// Real CC client via OAuth: lightweight processing only.
 		// 1. Supplement oauth beta header (preserve client's existing betas)
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
@@ -150,6 +153,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		"after", newBeta,
 	)
 
+	// Sanitize third-party tool prompts before system prompt injection
+	sanitizeSystemTextInPlace(parsed)
+
 	// Layer 4: System Prompt Injection (skip for Haiku)
 	if !IsHaikuModel(model) {
 		hasSystemBefore := parsed["system"] != nil
@@ -205,6 +211,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			"injected_empty_tools", !hadTools,
 		)
 	}
+
+	// Enforce cache_control limit (after all other modifications)
+	enforceCacheControlLimit(parsed)
 
 	// Marshal once at the end
 	result, err := json.Marshal(parsed)
@@ -271,6 +280,46 @@ func (e *Engine) ApplyResponseModelID(body []byte) []byte {
 }
 
 const claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
+
+// openCodeReplacements maps third-party tool prompts to Claude Code equivalents.
+var openCodeReplacements = [][2]string{
+	{"You are OpenCode, the best coding agent on the planet.", claudeCodeSystemPrompt},
+}
+
+// sanitizeSystemTextInPlace replaces known third-party tool prompts with
+// Claude Code equivalents in the system field of parsed. Mutates in-place.
+func sanitizeSystemTextInPlace(parsed map[string]interface{}) {
+	system, ok := parsed["system"]
+	if !ok {
+		return
+	}
+
+	switch v := system.(type) {
+	case string:
+		for _, r := range openCodeReplacements {
+			if strings.Contains(v, r[0]) {
+				v = strings.ReplaceAll(v, r[0], r[1])
+			}
+		}
+		parsed["system"] = v
+	case []interface{}:
+		for _, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			text, ok := m["text"].(string)
+			if !ok {
+				continue
+			}
+			for _, r := range openCodeReplacements {
+				if strings.Contains(text, r[0]) {
+					m["text"] = strings.ReplaceAll(text, r[0], r[1])
+				}
+			}
+		}
+	}
+}
 
 // injectSystemPromptInPlace injects the Claude Code system prompt into parsed map.
 // Mutates parsed in-place. No marshaling.
@@ -365,6 +414,88 @@ func sanitizeRequestBodyInPlace(parsed map[string]interface{}) {
 
 	// Remove tool_choice (Claude Code does not send it)
 	delete(parsed, "tool_choice")
+}
+
+// maxCacheControlBlocks is the maximum number of cache_control blocks allowed
+// in a single request (system + messages combined).
+const maxCacheControlBlocks = 4
+
+// enforceCacheControlLimit removes excess cache_control blocks when the total
+// count exceeds maxCacheControlBlocks. Removal priority:
+// 1. Messages from the beginning (oldest), skipping thinking blocks
+// 2. System blocks from the end (preserving the injected Claude Code prompt at index 0)
+func enforceCacheControlLimit(parsed map[string]interface{}) {
+	type loc struct {
+		parent map[string]interface{}
+	}
+
+	var systemLocs, messageLocs []loc
+
+	// Collect cache_control locations from system
+	if sysRaw, ok := parsed["system"]; ok {
+		if arr, ok := sysRaw.([]interface{}); ok {
+			for _, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					if _, has := m["cache_control"]; has {
+						systemLocs = append(systemLocs, loc{parent: m})
+					}
+				}
+			}
+		}
+	}
+
+	// Collect cache_control locations from messages
+	if msgsRaw, ok := parsed["messages"]; ok {
+		if msgs, ok := msgsRaw.([]interface{}); ok {
+			for _, msg := range msgs {
+				msgMap, ok := msg.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				contentRaw, ok := msgMap["content"]
+				if !ok {
+					continue
+				}
+				contentArr, ok := contentRaw.([]interface{})
+				if !ok {
+					continue
+				}
+				for _, block := range contentArr {
+					blockMap, ok := block.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if _, has := blockMap["cache_control"]; !has {
+						continue
+					}
+					// Skip thinking blocks
+					if blockType, _ := blockMap["type"].(string); blockType == "thinking" {
+						continue
+					}
+					messageLocs = append(messageLocs, loc{parent: blockMap})
+				}
+			}
+		}
+	}
+
+	total := len(systemLocs) + len(messageLocs)
+	if total <= maxCacheControlBlocks {
+		return
+	}
+
+	excess := total - maxCacheControlBlocks
+
+	// Remove from messages first (oldest → newest)
+	for i := 0; i < len(messageLocs) && excess > 0; i++ {
+		delete(messageLocs[i].parent, "cache_control")
+		excess--
+	}
+
+	// Remove from system (from the end, preserving index 0 which is the injected prompt)
+	for i := len(systemLocs) - 1; i >= 1 && excess > 0; i-- {
+		delete(systemLocs[i].parent, "cache_control")
+		excess--
+	}
 }
 
 // normalizeModelInPlace normalizes the model ID in parsed map in-place.

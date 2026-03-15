@@ -10,16 +10,21 @@ import (
 
 var (
 	claudeCLIRegex = regexp.MustCompile(`^claude-cli/\d+\.\d+\.\d+`)
-	metadataRegex  = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account__session_[\w-]+$`)
+	// Matches both user_id formats:
+	// Format A: user_{64hex}_account__session_{uuid}  (double underscore, no account UUID)
+	// Format B: user_{64hex}_account_{uuid}_session_{uuid}
+	metadataRegex = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account_([a-f0-9-]*)_?session_[\w-]+$`)
 )
 
 // Claude Code system prompt prefixes for similarity matching
 var claudeCodePromptPrefixes = []string{
 	"You are Claude Code, Anthropic's official CLI for Claude",
+	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
 	"You are a Claude agent, built on Anthropic's Claude Agent SDK",
 	"You are a file search specialist for Claude Code",
 	"You are a helpful AI assistant tasked with summarizing conversations",
 	"You are an agent for Claude Code",
+	"You are an interactive CLI tool that helps users",
 	"You are Claude, made by Anthropic",
 }
 
@@ -75,11 +80,12 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 		return true
 	}
 
-	// Messages path: strict multi-signal validation (need >=2 of 4)
+	// Messages path: strict multi-signal validation (need >=2 of 5)
 	xApp := headers.Get("X-App") == "cli"
 	hasBeta := strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode)
 	hasUserID := metadataRegex.MatchString(req.Metadata.UserID)
 	hasSystemPrompt := checkSystemPromptFromParsed(req.System)
+	hasAnthropicVersion := headers.Get("Anthropic-Version") != ""
 
 	score := 0
 	if xApp {
@@ -94,6 +100,9 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 	if hasSystemPrompt {
 		score++
 	}
+	if hasAnthropicVersion {
+		score++
+	}
 
 	isCC := score >= 2
 	slog.Debug("disguise/detect: multi-signal validation",
@@ -103,6 +112,7 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 		"has_cc_beta", hasBeta,
 		"has_user_id", hasUserID,
 		"has_system_prompt", hasSystemPrompt,
+		"has_anthropic_version", hasAnthropicVersion,
 		"user_agent", ua,
 	)
 	return isCC

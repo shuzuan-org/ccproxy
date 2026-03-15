@@ -686,3 +686,173 @@ func TestEngineApply_ThinkingCacheControlCleaned(t *testing.T) {
 		t.Error("expected cache_control preserved on text block")
 	}
 }
+
+// TestEngineApply_OpenCodeReplacement verifies that OpenCode system prompts
+// are replaced with Claude Code prompts during disguise.
+func TestEngineApply_OpenCodeReplacement(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"system":   "You are OpenCode, the best coding agent on the planet.",
+		"messages": []interface{}{},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+
+	// After replacement, the system text should not contain "OpenCode".
+	// Since the replaced text matches a CC prefix, it may remain as string
+	// (injectSystemPromptInPlace returns early) or be converted to array.
+	sysText := extractSystemText(parsed["system"])
+	if strings.Contains(sysText, "OpenCode") {
+		t.Errorf("expected OpenCode to be replaced, but found: %q", sysText)
+	}
+	if !strings.Contains(sysText, "Claude Code") {
+		t.Errorf("expected Claude Code in system text, got: %q", sysText)
+	}
+}
+
+// TestEngineApply_CacheControlLimit verifies that excess cache_control blocks
+// are removed, respecting the maxCacheControlBlocks limit.
+func TestEngineApply_CacheControlLimit(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	// Build a body with 6 cache_control blocks (> limit of 4)
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"system": []interface{}{
+			map[string]interface{}{
+				"type":          "text",
+				"text":          "You are Claude Code, Anthropic's official CLI for Claude.",
+				"cache_control": map[string]interface{}{"type": "ephemeral"},
+			},
+			map[string]interface{}{
+				"type":          "text",
+				"text":          "Additional context.",
+				"cache_control": map[string]interface{}{"type": "ephemeral"},
+			},
+		},
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":          "text",
+						"text":          "msg1",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+				},
+			},
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":          "text",
+						"text":          "msg2",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+				},
+			},
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":          "text",
+						"text":          "msg3",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+				},
+			},
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type":          "text",
+						"text":          "msg4",
+						"cache_control": map[string]interface{}{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+
+	// Count remaining cache_control blocks
+	count := 0
+	if sysRaw, ok := parsed["system"].([]interface{}); ok {
+		for _, item := range sysRaw {
+			if m, ok := item.(map[string]interface{}); ok {
+				if _, has := m["cache_control"]; has {
+					count++
+				}
+			}
+		}
+	}
+	if msgsRaw, ok := parsed["messages"].([]interface{}); ok {
+		for _, msg := range msgsRaw {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				if contentArr, ok := msgMap["content"].([]interface{}); ok {
+					for _, block := range contentArr {
+						if blockMap, ok := block.(map[string]interface{}); ok {
+							if _, has := blockMap["cache_control"]; has {
+								count++
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if count > maxCacheControlBlocks {
+		t.Errorf("expected at most %d cache_control blocks, got %d", maxCacheControlBlocks, count)
+	}
+}
+
+// TestEngineApply_LearnFingerprint verifies that fingerprint learning occurs
+// when a real CC client is detected.
+func TestEngineApply_LearnFingerprint(t *testing.T) {
+	e := newTestEngine(t)
+
+	origReq := newTestRequest(t, nil)
+	origReq.Header.Set("User-Agent", "claude-cli/2.3.0 (external, cli)")
+	origReq.Header.Set("X-App", "cli")
+	origReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+	origReq.Header.Set("X-Stainless-OS", "Darwin")
+	origReq.Header.Set("X-Stainless-Arch", "arm64")
+
+	upstreamReq := newTestRequest(t, nil)
+	upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+
+	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123"
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"system":   "You are Claude Code, Anthropic's official CLI for Claude.",
+		"metadata": map[string]interface{}{"user_id": validUserID},
+		"messages": []interface{}{},
+	})
+
+	e.Apply(origReq, upstreamReq, body, false, "seed", "inst-learn")
+
+	// After processing a real CC client, the fingerprint should be learned
+	fp := e.fingerprints.Get("inst-learn")
+	if fp.UserAgent != "claude-cli/2.3.0 (external, cli)" {
+		t.Errorf("expected learned UA from CC client, got %q", fp.UserAgent)
+	}
+	if fp.StainlessOS != "Darwin" {
+		t.Errorf("expected learned OS from CC client, got %q", fp.StainlessOS)
+	}
+}

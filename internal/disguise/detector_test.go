@@ -173,6 +173,37 @@ func TestDiceCoefficient_NoOverlap(t *testing.T) {
 	}
 }
 
+func TestIsClaudeCodeClient_UserIDFormatB(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+	headers.Set("X-App", "cli")
+
+	// Format B: user_{hex}_account_{uuid}_session_{uuid}
+	userID := "user_" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" + "_account_550e8400-e29b-41d4-a716-446655440000_session_abc-123"
+	body := buildTestBody(t, "You are Claude Code, Anthropic's official CLI for Claude.", userID)
+
+	// X-App (1) + user_id (1) + system_prompt (1) = 3 of 5 → true
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for Format B user_id with sufficient signals")
+	}
+}
+
+func TestIsClaudeCodeClient_AnthropicVersionSignal(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+	headers.Set("X-App", "cli")
+	headers.Set("Anthropic-Version", "2023-06-01")
+
+	// X-App (1) + Anthropic-Version (1) = 2 of 5 → true
+	body := buildTestBody(t, "Generate a JSON schema.", "")
+
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for UA + X-App + Anthropic-Version (2 of 5)")
+	}
+}
+
 func TestDiceCoefficient_SimilarStrings(t *testing.T) {
 	t.Parallel()
 	a := "You are Claude Code, Anthropic's official CLI"

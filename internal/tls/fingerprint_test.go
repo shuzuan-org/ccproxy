@@ -35,3 +35,34 @@ func TestClaudeCLIv2Spec_FreshPerCall(t *testing.T) {
 		t.Fatal("expected distinct spec instances per call")
 	}
 }
+
+func TestClaudeCLIv2Spec_CipherSuiteCount(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	// Full Node.js 20.x + OpenSSL 3.x profile: 56 cipher suites covering
+	// TLS 1.3, ECDHE, DHE, DHE-DSS, AES-CCM, ARIA, and legacy RSA.
+	if got := len(spec.CipherSuites); got != 56 {
+		t.Errorf("expected 56 cipher suites, got %d", got)
+	}
+}
+
+func TestClaudeCLIv2Spec_TLSVersionRange(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	// Node.js defaults: TLS 1.0 min, TLS 1.3 max.
+	if spec.TLSVersMin != 0x0301 { // VersionTLS10
+		t.Errorf("expected TLSVersMin=TLS1.0 (0x0301), got 0x%04x", spec.TLSVersMin)
+	}
+	if spec.TLSVersMax != 0x0304 { // VersionTLS13
+		t.Errorf("expected TLSVersMax=TLS1.3 (0x0304), got 0x%04x", spec.TLSVersMax)
+	}
+}
+
+func TestClaudeCLIv2Spec_NoDuplicateCiphers(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	seen := make(map[uint16]bool, len(spec.CipherSuites))
+	for _, cs := range spec.CipherSuites {
+		if seen[cs] {
+			t.Errorf("duplicate cipher suite: 0x%04x", cs)
+		}
+		seen[cs] = true
+	}
+}
