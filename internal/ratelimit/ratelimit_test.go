@@ -1,7 +1,9 @@
 package ratelimit
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -160,5 +162,69 @@ func TestClientIP(t *testing.T) {
 				t.Errorf("clientIP = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCleanup_RemovesExpiredVisitors(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(10, 50*time.Millisecond)
+
+	lim.Allow("1.1.1.1")
+
+	time.Sleep(60 * time.Millisecond)
+
+	lim.cleanup()
+
+	lim.mu.Lock()
+	_, exists := lim.visitors["1.1.1.1"]
+	lim.mu.Unlock()
+	if exists {
+		t.Error("expired visitor should have been cleaned up")
+	}
+}
+
+func TestCleanup_KeepsActiveVisitors(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(10, time.Hour)
+
+	lim.Allow("2.2.2.2")
+	lim.cleanup()
+
+	lim.mu.Lock()
+	_, exists := lim.visitors["2.2.2.2"]
+	lim.mu.Unlock()
+	if !exists {
+		t.Error("active visitor should NOT be cleaned up")
+	}
+}
+
+func TestStartCleanup_ContextCancel(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(10, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	lim.StartCleanup(ctx)
+
+	time.Sleep(30 * time.Millisecond)
+
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestAllow_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(1000, time.Minute)
+
+	done := make(chan struct{})
+	for i := 0; i < 100; i++ {
+		go func(ip string) {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 100; j++ {
+				lim.Allow(ip)
+			}
+		}(fmt.Sprintf("10.0.0.%d", i%10))
+	}
+	for i := 0; i < 100; i++ {
+		<-done
 	}
 }
