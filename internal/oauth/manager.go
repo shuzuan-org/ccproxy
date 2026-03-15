@@ -94,8 +94,15 @@ func (m *Manager) refreshToken(ctx context.Context, instanceName, refreshTokenSt
 		return token, nil
 	}
 
+	// Re-read refresh token from store after acquiring lock to avoid using
+	// a stale token that was already rotated by another goroutine.
+	freshToken, _ := m.store.Load(instanceName)
+	if freshToken == nil || freshToken.RefreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available for %s", instanceName)
+	}
+
 	proxyURL := m.resolveProxy(instanceName)
-	newToken, err := m.provider.RefreshToken(ctx, refreshTokenStr, proxyURL)
+	newToken, err := m.provider.RefreshToken(ctx, freshToken.RefreshToken, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("refresh token: %w", err)
 	}

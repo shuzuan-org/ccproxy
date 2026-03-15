@@ -545,11 +545,12 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		t.Error("expected first system element to have cache_control ephemeral")
 	}
 
-	// Second element should be original prompt prefixed with Claude Code banner
+	// Second element should be the original prompt WITHOUT double-prefixing.
+	// The Claude Code banner is already in the first element; duplicating it
+	// in the second block would be incorrect.
 	second := arr[1].(map[string]interface{})
-	expectedMerged := strings.TrimSpace(claudeCodeSystemPrompt) + "\n\n" + originalSystem
-	if second["text"] != expectedMerged {
-		t.Errorf("expected second system element to be prefixed prompt %q, got %q", expectedMerged, second["text"])
+	if second["text"] != originalSystem {
+		t.Errorf("expected second system element to be original prompt %q, got %q", originalSystem, second["text"])
 	}
 }
 

@@ -62,6 +62,7 @@ func (s *SessionStore) Create(instanceName string) (sessionID, authURL string, e
 }
 
 // Get retrieves a session if it exists and is not expired.
+// Returns a copy to prevent callers from mutating store internals.
 func (s *SessionStore) Get(sessionID string) (*PKCESession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -73,7 +74,8 @@ func (s *SessionStore) Get(sessionID string) (*PKCESession, bool) {
 	if time.Since(session.CreatedAt) > s.ttl {
 		return nil, false
 	}
-	return session, true
+	cp := *session
+	return &cp, true
 }
 
 // Delete removes a session.

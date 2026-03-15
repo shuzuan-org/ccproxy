@@ -88,6 +88,7 @@ func ExecuteWithRetry(
 	var instancesTried []string
 	retries := 0
 	failovers := 0
+	total529s := 0 // cross-instance 529 counter for storm detection
 
 	for switchCount <= maxAccountSwitches {
 		// Check total elapsed time
@@ -191,13 +192,12 @@ func ExecuteWithRetry(
 				case 529:
 					observe.Global.Instances529.Add(1)
 					observe.Global.Instance(instanceName).Errors529.Add(1)
-					// Check consecutive 529 across instances
-					h := balancer.GetHealth(instanceName)
+					total529s++
 					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
-					if h != nil && h.Consecutive529() >= 2 {
-						// Multiple instances returning 529 — stop retrying
+					if total529s >= 2 {
+						// Multiple instances returning 529 — system-wide overload, stop retrying
 						observe.Logger(ctx).Warn("consecutive 529s across instances, returning to client",
-							"instance", instanceName, "count", h.Consecutive529())
+							"instance", instanceName, "count", total529s)
 						result.Release()
 						return &RetryResult{
 							Response:       resp,

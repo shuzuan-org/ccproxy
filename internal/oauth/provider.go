@@ -145,13 +145,15 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
+		// Read body for diagnostics but do NOT include raw content in returned errors
+		// to avoid leaking potential token values per CLAUDE.md guidelines.
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		slog.Error("oauth: token endpoint error",
 			"status", resp.StatusCode,
-			"body", string(respBody),
+			"body_len", len(respBody),
 			"grant_type", body["grant_type"],
 		)
-		return nil, fmt.Errorf("token request failed: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("token request failed: status %d", resp.StatusCode)
 	}
 
 	var tokenResp struct {

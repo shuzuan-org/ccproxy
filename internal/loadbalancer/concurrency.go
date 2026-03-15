@@ -61,8 +61,14 @@ func (t *ConcurrencyTracker) TryAcquire(instanceName, requestID string, maxConcu
 
 	if slots == nil {
 		t.mapMu.Lock()
-		slots = make(map[string]time.Time)
-		t.slots[instanceName] = slots
+		// Double-check after acquiring write lock to avoid overwriting
+		// a map that another goroutine just created.
+		if existing := t.slots[instanceName]; existing != nil {
+			slots = existing
+		} else {
+			slots = make(map[string]time.Time)
+			t.slots[instanceName] = slots
+		}
 		t.mapMu.Unlock()
 	}
 
@@ -215,10 +221,15 @@ func (t *ConcurrencyTracker) ActiveSlots(instanceName string) int {
 }
 
 // RemoveInstance removes all tracking data for a removed instance.
+// The per-instance mutex is NOT deleted to prevent races where a goroutine
+// already holds a reference to the old mutex pointer.
 func (t *ConcurrencyTracker) RemoveInstance(instanceName string) {
+	mu := t.getInstMu(instanceName)
+	mu.Lock()
 	t.mapMu.Lock()
 	delete(t.slots, instanceName)
 	delete(t.waiting, instanceName)
-	delete(t.instMu, instanceName)
+	// Do NOT delete instMu — released mutex may still be referenced by in-flight goroutines
 	t.mapMu.Unlock()
+	mu.Unlock()
 }

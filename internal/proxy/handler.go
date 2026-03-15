@@ -248,9 +248,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Set request ID header for client correlation.
 	w.Header().Set("X-Request-ID", requestID)
 
-	// Report success to health tracker (with response headers for budget tracking).
-	h.balancer.ReportResult(r.Context(), result.InstanceName, result.StatusCode,
-		time.Since(requestStart).Microseconds(), 0, resp.Header)
+	// Note: ReportResult for success is already called inside ExecuteWithRetry.
+	// Only report here for error responses that need budget header tracking.
 
 	// Step 9: Handle error responses from upstream.
 	if resp.StatusCode >= 400 {

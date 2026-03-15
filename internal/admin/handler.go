@@ -40,10 +40,14 @@ func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessio
 
 // writeJSON writes v as JSON with Content-Type: application/json.
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	data, err := json.Marshal(v)
+	if err != nil {
 		http.Error(w, "json encode error", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	data = append(data, '\n')
+	_, _ = w.Write(data)
 }
 
 // writeError writes a JSON error response.
@@ -176,9 +180,12 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Validate OAuth state parameter to prevent CSRF
+	// Validate OAuth state parameter to prevent CSRF.
+	// The code field may contain "authcode#state" (state appended by frontend).
+	actualCode := req.Code
 	codeState := ""
 	if idx := strings.Index(req.Code, "#"); idx != -1 {
+		actualCode = req.Code[:idx]
 		codeState = req.Code[idx+1:]
 	}
 	if subtle.ConstantTimeCompare([]byte(session.State), []byte(codeState)) != 1 {
@@ -187,10 +194,10 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Exchange code for token
+	// Exchange code for token (use actualCode without the appended state)
 	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
 	proxyURL := h.registry.GetProxy(session.InstanceName)
-	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.InstanceName, req.Code, session.Verifier, proxyURL)
+	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.InstanceName, actualCode, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
 			"instance", session.InstanceName,
@@ -232,7 +239,7 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Instance)
 	if err != nil {
 		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
-		writeError(w, http.StatusBadGateway, "refresh failed: "+err.Error())
+		writeError(w, http.StatusBadGateway, "refresh failed")
 		return
 	}
 

@@ -85,6 +85,7 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 	}
 	startTime := time.Now()
 	var lastTotal int64
+	lastTick := time.Now()
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -96,8 +97,11 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 				snap := m.Snapshot()
 				currentTotal := snap["requests_total"]
 				elapsed := time.Since(startTime)
-				rate := float64(currentTotal-lastTotal) / interval.Minutes()
+				now := time.Now()
+				actualInterval := now.Sub(lastTick)
+				rate := float64(currentTotal-lastTotal) / actualInterval.Minutes()
 				lastTotal = currentTotal
+				lastTick = now
 
 				logger.Info("metrics summary",
 					"uptime", elapsed.Round(time.Second).String(),

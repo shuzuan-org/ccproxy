@@ -282,29 +282,7 @@
     return d.toLocaleString([], { hour12: false, month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
   }
 
-  function actionButtons(inst) {
-    const name = esc(inst.name);
-    let html = '<div class="actions">';
-    if (inst.token_status === 'no token') {
-      html += '<button class="btn btn-accent" onclick="startLogin(\'' + name + '\')">Login</button>';
-    } else {
-      html += '<button class="btn btn-accent" onclick="startLogin(\'' + name + '\')">Login</button>';
-      html += '<button class="btn" onclick="doRefresh(\'' + name + '\')">Refresh</button>';
-    }
-    html += '<button class="btn btn-danger" onclick="doRemove(\'' + name + '\')">Remove</button>';
-    html += '</div>';
-    return html;
-  }
-
   var PROXY_HINT = 'socks5://user:password@ip:port';
-
-  function proxyCell(inst) {
-    var name = esc(inst.name);
-    if (inst.proxy) {
-      return '<td class="proxy-cell" ondblclick="editProxy(\'' + name + '\', this)">' + esc(inst.proxy) + '</td>';
-    }
-    return '<td class="proxy-cell" ondblclick="editProxy(\'' + name + '\', this)"><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>';
-  }
 
   function renderInstances(data) {
     document.getElementById('instance-count').textContent = data.length + ' instances';
@@ -313,15 +291,79 @@
       tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No OAuth instances configured</td></tr>';
       return;
     }
-    tbody.innerHTML = data.map(function(inst) {
-      return '<tr>' +
-        '<td><strong>' + esc(inst.name) + '</strong></td>' +
-        proxyCell(inst) +
-        '<td>' + tokenChip(inst.token_status) + '</td>' +
-        '<td>' + fmtExpiry(inst.token_expires_at) + '</td>' +
-        '<td>' + actionButtons(inst) + '</td>' +
-        '</tr>';
-    }).join('');
+    tbody.innerHTML = '';
+    data.forEach(function(inst) {
+      var tr = document.createElement('tr');
+
+      // Name cell
+      var tdName = document.createElement('td');
+      var strong = document.createElement('strong');
+      strong.textContent = inst.name;
+      tdName.appendChild(strong);
+      tr.appendChild(tdName);
+
+      // Proxy cell (with dblclick to edit)
+      var tdProxy = document.createElement('td');
+      tdProxy.className = 'proxy-cell';
+      if (inst.proxy) {
+        tdProxy.textContent = inst.proxy;
+      } else {
+        var placeholder = document.createElement('span');
+        placeholder.className = 'proxy-placeholder';
+        placeholder.textContent = PROXY_HINT;
+        tdProxy.appendChild(placeholder);
+      }
+      tdProxy.addEventListener('dblclick', (function(name, td) {
+        return function() { editProxy(name, td); };
+      })(inst.name, tdProxy));
+      tr.appendChild(tdProxy);
+
+      // Token status cell
+      var tdStatus = document.createElement('td');
+      tdStatus.innerHTML = tokenChip(inst.token_status);
+      tr.appendChild(tdStatus);
+
+      // Expires at cell
+      var tdExpiry = document.createElement('td');
+      tdExpiry.textContent = fmtExpiry(inst.token_expires_at);
+      tr.appendChild(tdExpiry);
+
+      // Actions cell — use DOM API to prevent XSS via onclick injection
+      var tdActions = document.createElement('td');
+      var actionsDiv = document.createElement('div');
+      actionsDiv.className = 'actions';
+
+      var loginBtn = document.createElement('button');
+      loginBtn.className = 'btn btn-accent';
+      loginBtn.textContent = 'Login';
+      loginBtn.addEventListener('click', (function(name) {
+        return function() { startLogin(name); };
+      })(inst.name));
+      actionsDiv.appendChild(loginBtn);
+
+      if (inst.token_status !== 'no token') {
+        var refreshBtn = document.createElement('button');
+        refreshBtn.className = 'btn';
+        refreshBtn.textContent = 'Refresh';
+        refreshBtn.addEventListener('click', (function(name) {
+          return function() { doRefresh(name); };
+        })(inst.name));
+        actionsDiv.appendChild(refreshBtn);
+      }
+
+      var removeBtn = document.createElement('button');
+      removeBtn.className = 'btn btn-danger';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', (function(name) {
+        return function() { doRemove(name); };
+      })(inst.name));
+      actionsDiv.appendChild(removeBtn);
+
+      tdActions.appendChild(actionsDiv);
+      tr.appendChild(tdActions);
+
+      tbody.appendChild(tr);
+    });
   }
 
   async function fetchJSON(url, opts) {

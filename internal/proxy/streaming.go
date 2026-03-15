@@ -160,7 +160,10 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 
 		case strings.HasPrefix(line, "data:"):
 			val := strings.TrimSpace(line[len("data:"):])
-			currentData.Reset()
+			// Per SSE spec, multiple data: lines in one event are concatenated with newlines.
+			if currentData.Len() > 0 {
+				currentData.WriteByte('\n')
+			}
 			currentData.WriteString(val)
 
 		case line == "":

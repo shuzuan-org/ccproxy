@@ -46,12 +46,12 @@ func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Find matching API key using constant-time comparison
+			// Find matching API key using constant-time comparison.
+			// Iterate ALL keys without early exit to prevent timing oracles.
 			var matched *config.APIKeyConfig
 			for i := range apiKeys {
 				if apiKeys[i].Enabled && subtle.ConstantTimeCompare([]byte(apiKeys[i].Key), []byte(token)) == 1 {
 					matched = &apiKeys[i]
-					break
 				}
 			}
 

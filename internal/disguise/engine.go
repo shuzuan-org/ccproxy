@@ -302,11 +302,9 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 		if trimmed == "" || trimmed == claudeCodePrefix {
 			newSystem = []interface{}{claudeCodeBlock}
 		} else {
-			merged := system
-			if !strings.HasPrefix(system, claudeCodePrefix) {
-				merged = claudeCodePrefix + "\n\n" + system
-			}
-			newSystem = []interface{}{claudeCodeBlock, map[string]interface{}{"type": "text", "text": merged}}
+			// Place the original system prompt as a separate block.
+			// Do NOT prepend claudeCodePrefix again — it is already in claudeCodeBlock.
+			newSystem = []interface{}{claudeCodeBlock, map[string]interface{}{"type": "text", "text": system}}
 		}
 	case []interface{}:
 		newSystem = make([]interface{}, 0, len(system)+1)

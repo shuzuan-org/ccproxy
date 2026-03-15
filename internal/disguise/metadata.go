@@ -100,15 +100,27 @@ func RewriteUserIDWithMasking(originalUserID, instanceSeed, maskedSessionUUID st
 		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, maskedSessionUUID)
 	}
 
-	// Fallback: unknown format, generate fresh with masked session
-	clientID := GenerateClientID()
+	// Fallback: unknown format, derive deterministic clientID from seed
+	var clientID string
+	if instanceSeed != "" {
+		clientID = deterministicClientID(instanceSeed, "default-client")
+	} else {
+		clientID = GenerateClientID()
+	}
 	return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
 }
 
 // GenerateUserID creates a metadata.user_id in Claude Code format.
 // Format: user_{64hex}_account__session_{uuid}
+// When sessionSeed is provided, both clientID and sessionUUID are derived
+// deterministically so the same seed produces a stable identity.
 func GenerateUserID(sessionSeed string) string {
-	clientID := GenerateClientID()
+	var clientID string
+	if sessionSeed != "" {
+		clientID = deterministicClientID(sessionSeed, "default-client")
+	} else {
+		clientID = GenerateClientID()
+	}
 	sessionUUID := generateSessionUUID(sessionSeed)
 	return fmt.Sprintf("user_%s_account__session_%s", clientID, sessionUUID)
 }
