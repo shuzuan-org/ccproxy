@@ -2,11 +2,11 @@
 
 ## 概述
 
-ccproxy 是一个用 Go 编写的单二进制 Claude API 反向代理。它将多个 Anthropic OAuth 订阅账号池化，供团队共享使用，并通过六层伪装引擎让上游流量看起来像合法的 Claude Code 请求。
+ccproxy 是一个用 Go 编写的单二进制 Claude API 反向代理。它将多个 Anthropic OAuth 订阅账号池化，供团队共享使用，并通过八层伪装引擎让上游流量看起来像合法的 Claude Code 请求。
 
 **核心能力：**
 - 多账号池化 + 会话亲和性负载均衡
-- 六层 Claude CLI 身份伪装
+- 八层 Claude CLI 身份伪装
 - OAuth PKCE 认证 + 加密令牌存储
 - 自适应背压与双窗口预算追踪
 - Web 管理仪表盘
@@ -84,10 +84,11 @@ cmd/ccproxy/main.go
 |------|------|------|
 | 1 | `InstanceRegistry` | 从 `data/instances.json` 加载实例列表 |
 | 2 | `ConcurrencyTracker` + `Balancer` | 并发追踪器 + 三层负载均衡器 |
-| 3 | `DisguiseEngine` | 六层伪装引擎 + 会话掩码清理 |
+| 3 | `DisguiseEngine` | 八层伪装引擎 + 会话掩码清理 |
 | 4 | `TokenStore` + `OAuthManager` | AES-256-GCM 加密令牌存储 + OAuth 管理器 |
 | 5 | `SessionStore` | PKCE 会话存储（10 分钟 TTL） |
 | 5b | `UsageFetcher` | 自适应背压用量抓取器 |
+| 5c | `Metrics.StartPeriodicLog` | 启动周期指标日志（5 分钟间隔，Balancer 作为 StateProvider） |
 | 6 | `registry.SetOnChange` | 注册动态实例变更回调 |
 | 7 | `ProxyHandler` | 代理请求处理器 |
 | 8 | `AdminHandler` | 管理面板处理器 |
@@ -308,7 +309,7 @@ TOML 配置在启动时一次性加载，变更需要重启生效。代码中存
 - `APIKeyName`：使用的 API key 名称
 - `SessionKey`：会话键
 
-`observe.Logger(ctx)` 返回带 `request_id` 和 `api_key` 的 slog.Logger。
+`observe.Logger(ctx)` 返回带 `request_id` 和 `api_key` 的 slog.Logger。各子系统（loadbalancer、disguise、proxy、oauth、streaming）通过 context logger 关联请求级日志。
 
 #### 全局指标 (`Metrics`)
 
@@ -326,7 +327,21 @@ TOML 配置在启动时一次性加载，变更需要重启生效。代码中存
 | `Instances429` | 429 响应次数 |
 | `Instances529` | 529 响应次数 |
 
-每 5 分钟输出一次摘要日志。
+#### 每实例指标 (`InstanceMetrics`)
+
+通过 `Metrics.Instance(name)` 按需创建（`sync.Map` + `LoadOrStore`），每个实例独立追踪：
+
+| 指标 | 说明 |
+|------|------|
+| `RequestsTotal` | 实例请求数 |
+| `RequestsSuccess` | 实例成功数 |
+| `RequestsError` | 实例失败数 |
+| `Errors429` | 实例 429 次数 |
+| `Errors529` | 实例 529 次数 |
+
+#### 周期指标日志 (`StartPeriodicLog`)
+
+每 5 分钟输出一次全局摘要日志（含 uptime、requests_per_min 等），并通过 `StateProvider` 接口获取每实例运行时状态（健康、并发、预算），输出 per-instance 指标日志。`Balancer` 实现了 `StateProvider` 接口。
 
 ### 7. 管理面板 (internal/admin)
 

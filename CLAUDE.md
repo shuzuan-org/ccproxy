@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-ccproxy is a single-binary Claude API proxy written in Go. It pools Anthropic OAuth subscription accounts for team sharing and impersonates Claude CLI identity at six layers (TLS fingerprint, HTTP headers, beta tokens, system prompt, metadata.user_id, model mapping).
+ccproxy is a single-binary Claude API proxy written in Go. It pools Anthropic OAuth subscription accounts for team sharing and impersonates Claude CLI identity at eight layers (TLS fingerprint, HTTP headers, beta tokens, system prompt, metadata.user_id, model mapping, thinking block cleanup, body sanitization).
 
 Module path: `github.com/binn/ccproxy`
 
@@ -39,12 +39,12 @@ internal/
   auth/             Bearer token validation middleware (constant-time compare)
   cli/              Cobra commands: root (start), version
   config/           TOML config loading, validation, defaults, instance registry
-  disguise/         6-layer Claude CLI impersonation engine
+  disguise/         8-layer Claude CLI impersonation engine
   fileutil/         File I/O helpers (atomic write, etc.)
   loadbalancer/     3-layer balancer, concurrency tracker, retry/failover, budget, health, usage
   netutil/          SOCKS5 proxy support
   oauth/            PKCE flow, AES-256-GCM token store, session store, Anthropic provider
-  observe/          Request tracing context and metrics
+  observe/          Request tracing context, per-instance metrics, StateProvider, periodic logging
   proxy/            HTTP proxy handler, SSE streaming, body filter, error mapping
   ratelimit/        Per-IP rate limiting middleware
   server/           HTTP server setup (net/http mux, middleware wiring)
@@ -83,7 +83,7 @@ config.toml.example Reference configuration
 
 Activation condition: `!isClaudeCodeClient(request)`. All instances use OAuth; disguise is always applied for non-Claude Code clients. TLS fingerprint is always enabled.
 
-The `isClaudeCodeClient` detector in `internal/disguise/detector.go` checks five dimensions (User-Agent, X-App, anthropic-beta, metadata.user_id pattern, system prompt Dice coefficient). All five must pass before a request is considered native Claude Code traffic.
+The `isClaudeCodeClient` detector in `internal/disguise/detector.go` uses a gated scoring system: User-Agent must match `claude-cli/x.x.x` (gate), then for `/v1/messages` requests, at least 2 of 4 signals must match (X-App header, anthropic-beta token, metadata.user_id pattern, system prompt Dice coefficient). Non-messages paths pass with UA gate alone.
 
 ### OAuth
 

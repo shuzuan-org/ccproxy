@@ -4,7 +4,7 @@ A single-binary Claude API proxy that pools Anthropic OAuth subscription account
 
 ## Features
 
-- Full 6-layer Claude CLI impersonation: TLS fingerprint, HTTP headers, anthropic-beta tokens, system prompt injection, metadata.user_id generation, and model ID mapping
+- Full 8-layer Claude CLI impersonation: TLS fingerprint, HTTP headers, anthropic-beta tokens, system prompt injection, metadata.user_id generation, model ID mapping, thinking block cleanup, and body sanitization
 - Multi-instance load balancing with session affinity, adaptive backpressure, and load-aware scheduling
 - OAuth PKCE flow with encrypted token storage and auto-refresh
 - Web-based admin dashboard for instance management and OAuth login
