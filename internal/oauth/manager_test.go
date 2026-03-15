@@ -197,3 +197,244 @@ func TestProvider_AuthorizationURL(t *testing.T) {
 		t.Errorf("scope %q missing user:inference", scope)
 	}
 }
+
+func TestExchangeCode_Success(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	token, err := m.GetProvider().ExchangeCode(context.Background(), "auth-code", "verifier", "")
+	if err != nil {
+		t.Fatalf("ExchangeCode: %v", err)
+	}
+	if token.AccessToken != "new-access" {
+		t.Errorf("access_token = %q, want new-access", token.AccessToken)
+	}
+	if token.RefreshToken != "new-refresh" {
+		t.Errorf("refresh_token = %q, want new-refresh", token.RefreshToken)
+	}
+}
+
+func TestExchangeCode_WithState(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	token, err := m.GetProvider().ExchangeCode(context.Background(), "auth-code#mystate", "verifier", "")
+	if err != nil {
+		t.Fatalf("ExchangeCode: %v", err)
+	}
+	if token.AccessToken != "new-access" {
+		t.Errorf("access_token = %q, want new-access", token.AccessToken)
+	}
+}
+
+func TestExchangeCode_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	_, err := m.GetProvider().ExchangeCode(context.Background(), "bad-code", "verifier", "")
+	if err == nil {
+		t.Fatal("expected error for server error response")
+	}
+	if !strings.Contains(err.Error(), "status 400") {
+		t.Errorf("error = %q, want 'status 400'", err.Error())
+	}
+}
+
+func TestRefreshToken_Success(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	token, err := m.GetProvider().RefreshToken(context.Background(), "old-refresh", "")
+	if err != nil {
+		t.Fatalf("RefreshToken: %v", err)
+	}
+	if token.AccessToken != "new-access" {
+		t.Errorf("access_token = %q, want new-access", token.AccessToken)
+	}
+}
+
+func TestRefreshToken_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	_, err := m.GetProvider().RefreshToken(context.Background(), "bad-refresh", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestGetProxyClient_Caching(t *testing.T) {
+	p := NewAnthropicProvider()
+
+	c1 := p.getProxyClient("socks5://127.0.0.1:19999")
+	c2 := p.getProxyClient("socks5://127.0.0.1:19999")
+	if c1 != c2 {
+		t.Error("expected same cached client for same proxyURL")
+	}
+
+	c3 := p.getProxyClient("socks5://127.0.0.1:29999")
+	if c1 == c3 {
+		t.Error("expected different client for different proxyURL")
+	}
+}
+
+func TestUpdateAccounts_AddNew(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	m.UpdateAccounts([]string{"test-oauth", "new-account"})
+
+	_, err := m.GetValidToken(context.Background(), "new-account")
+	if err == nil {
+		t.Fatal("expected error for account with no token")
+	}
+	if !strings.Contains(err.Error(), "no token") {
+		t.Errorf("error = %q, want 'no token' hint", err.Error())
+	}
+}
+
+func TestUpdateAccounts_MutexNotCleaned(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	m.UpdateAccounts([]string{"test-oauth", "extra"})
+	m.UpdateAccounts([]string{"test-oauth"})
+
+	m.mu.RLock()
+	_, exists := m.refreshMu["extra"]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("mutex for removed account should still exist (known limitation)")
+	}
+}
+
+func TestExchangeAndSave(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+
+	token, err := m.ExchangeAndSave(context.Background(), "test-oauth", "auth-code", "verifier", "")
+	if err != nil {
+		t.Fatalf("ExchangeAndSave: %v", err)
+	}
+	if token.AccessToken != "new-access" {
+		t.Errorf("access_token = %q, want new-access", token.AccessToken)
+	}
+
+	loaded, err := store.Load("test-oauth")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected persisted token")
+	}
+	if loaded.AccessToken != "new-access" {
+		t.Errorf("persisted access_token = %q, want new-access", loaded.AccessToken)
+	}
+}
+
+func TestForceRefresh(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+
+	tok := OAuthToken{
+		AccessToken:  "old",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	_ = store.Save("test-oauth", tok)
+
+	newToken, err := m.ForceRefresh(context.Background(), "test-oauth")
+	if err != nil {
+		t.Fatalf("ForceRefresh: %v", err)
+	}
+	if newToken.AccessToken != "new-access" {
+		t.Errorf("access_token = %q, want new-access", newToken.AccessToken)
+	}
+}
+
+func TestForceRefresh_NoToken(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	_, err := m.ForceRefresh(context.Background(), "test-oauth")
+	if err == nil {
+		t.Fatal("expected error when no token stored")
+	}
+}
+
+func TestMarkTokenExpired(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+
+	tok := OAuthToken{
+		AccessToken:  "still-valid",
+		RefreshToken: "refresh-me",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	_ = store.Save("test-oauth", tok)
+
+	m.MarkTokenExpired("test-oauth")
+
+	loaded, _ := store.Load("test-oauth")
+	if loaded == nil {
+		t.Fatal("expected token to still exist")
+	}
+	if time.Until(loaded.ExpiresAt) > time.Second {
+		t.Errorf("token should be expired, expires_at = %v", loaded.ExpiresAt)
+	}
+}
+
+func TestGetValidToken_ConcurrentRefresh(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+
+	tok := OAuthToken{
+		AccessToken:  "expiring",
+		RefreshToken: "refresh-me",
+		ExpiresAt:    time.Now().Add(30 * time.Second),
+	}
+	_ = store.Save("test-oauth", tok)
+
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			_, err := m.GetValidToken(context.Background(), "test-oauth")
+			errs <- err
+		}()
+	}
+
+	for i := 0; i < 10; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+}
