@@ -315,6 +315,104 @@ func TestLoadConfig_NoAutoGenerateWhenPresent(t *testing.T) {
 	}
 }
 
+func TestValidate_PortRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		port    int
+		wantErr bool
+	}{
+		{"zero", 0, true},
+		{"negative", -1, true},
+		{"too high", 65536, true},
+		{"min", 1, false},
+		{"max", 65535, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &Config{
+				Server: ServerConfig{
+					AdminPassword:  "pass",
+					Port:           tc.port,
+					MaxConcurrency: 1,
+					RequestTimeout: 1,
+				},
+				APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_NegativeConcurrency(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Server: ServerConfig{
+			AdminPassword:  "pass",
+			Port:           3000,
+			MaxConcurrency: -1,
+			RequestTimeout: 1,
+		},
+		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_concurrency")
+	}
+	if !strings.Contains(err.Error(), "max_concurrency") {
+		t.Errorf("error = %q, want max_concurrency mention", err.Error())
+	}
+}
+
+func TestValidate_NegativeTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Server: ServerConfig{
+			AdminPassword:  "pass",
+			Port:           3000,
+			MaxConcurrency: 1,
+			RequestTimeout: -1,
+		},
+		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative request_timeout")
+	}
+}
+
+func TestRuntimeAccounts_Multiple(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Server: ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 300,
+			MaxConcurrency: 5,
+		},
+	}
+	dir := t.TempDir()
+	registry := NewAccountRegistry(dir)
+	_ = registry.Add("alice")
+	_ = registry.Add("bob")
+
+	accounts := cfg.RuntimeAccounts(registry)
+	if len(accounts) != 2 {
+		t.Fatalf("len = %d, want 2", len(accounts))
+	}
+	if accounts[0].Name != "alice" || accounts[1].Name != "bob" {
+		t.Errorf("names = [%s, %s]", accounts[0].Name, accounts[1].Name)
+	}
+	for _, a := range accounts {
+		if a.MaxConcurrency != 5 {
+			t.Errorf("%s: max_concurrency = %d, want 5", a.Name, a.MaxConcurrency)
+		}
+	}
+}
+
 func TestRuntimeAccount(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{

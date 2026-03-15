@@ -178,3 +178,48 @@ func TestRegistryOnChange(t *testing.T) {
 		t.Error("onChange was not called after Add")
 	}
 }
+
+func TestRegistryUpdateProxy(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r := NewAccountRegistry(dir)
+	_ = r.Add("alice")
+
+	if err := r.UpdateProxy("alice", "socks5://10.0.0.1:1080"); err != nil {
+		t.Fatalf("UpdateProxy: %v", err)
+	}
+
+	got := r.GetProxy("alice")
+	if got != "socks5://10.0.0.1:1080" {
+		t.Errorf("proxy = %q, want socks5://10.0.0.1:1080", got)
+	}
+
+	// Verify persistence
+	r2 := NewAccountRegistry(dir)
+	got2 := r2.GetProxy("alice")
+	if got2 != "socks5://10.0.0.1:1080" {
+		t.Errorf("persisted proxy = %q", got2)
+	}
+}
+
+func TestRegistryUpdateProxy_NotFound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r := NewAccountRegistry(dir)
+
+	err := r.UpdateProxy("nonexistent", "socks5://x:1080")
+	if err == nil {
+		t.Fatal("expected error for nonexistent account")
+	}
+}
+
+func TestRegistryGetProxy_NotFound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r := NewAccountRegistry(dir)
+
+	got := r.GetProxy("nonexistent")
+	if got != "" {
+		t.Errorf("proxy = %q, want empty", got)
+	}
+}
