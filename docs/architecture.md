@@ -106,7 +106,7 @@ cmd/ccproxy/main.go
 L1 Pool — SRE 节流 + 利用率延迟 + 等待队列
   │
   ▼
-L2 Sticky — 会话亲和（1h TTL），预算感知并发
+L2 Sticky — 会话亲和（1h 滑动 TTL），预算感知并发
   │
   ▼
 L3 Score — 负载感知选择 + 预算状态过滤
@@ -118,7 +118,7 @@ L3 Score — 负载感知选择 + 预算状态过滤
 - 等待队列：被节流的请求进入有界队列等待（默认 30s，流式 10s）
 
 **L2 会话亲和 (`Balancer.sessions`)**
-- key = `{apiKeyName}:{sessionID}`，TTL = 1 小时
+- key = `{apiKeyName}:{sessionID}`，滑动 TTL = 1 小时（每次请求命中时重置）
 - 用 `sync.Map` 存储，60 秒清理一次过期条目
 - 检查账号健康和预算动态并发后再复用
 
