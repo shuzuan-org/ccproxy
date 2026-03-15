@@ -1,7 +1,7 @@
 # Test Coverage Improvement Design
 
 **Date:** 2026-03-15
-**Goal:** Bring all packages to 80%+ coverage (整体覆盖率 ≥ 80%)
+**Goal:** Bring most packages to 80%+ coverage; tls (~45%) and server (~50%) limited by architecture
 **Strategy:** Bottom-up (方案 A) — utility packages first, then core, then integration
 **Approach:** Pure unit tests with mocks; no external dependencies required
 
@@ -40,9 +40,13 @@ Single `Write()` function + two structs. Table-driven tests.
 |------|-----------|
 | `TestWrite_Success` | Status code, Content-Type header, JSON body structure |
 | `TestWrite_ErrorTypes` | Table-driven: overloaded, invalid_request, authentication_error |
-| `TestWrite_MarshalFailure` | Broken ResponseWriter → fallback JSON output |
+| `TestWrite_WriterError` | Broken ResponseWriter → no panic (error silently ignored) |
 
-**Mocking:** `httptest.ResponseRecorder` (stdlib)
+**Note:** The `json.Marshal` fallback branch (line 27-31) is dead code — the `Response` struct
+contains only string fields and always marshals successfully. This branch is excluded from
+coverage targets.
+
+**Mocking:** `httptest.ResponseRecorder` (stdlib); broken writer stub for error path
 
 #### 2. `internal/fileutil` (0% → ~90%)
 
@@ -54,6 +58,7 @@ Single `AtomicWriteFile()` function. Test with temp directories.
 | `TestAtomicWriteFile_Overwrite` | Overwrites existing file atomically |
 | `TestAtomicWriteFile_InvalidDir` | Non-existent target directory → error |
 | `TestAtomicWriteFile_Permissions` | Table-driven: 0644, 0600, 0400 |
+| `TestAtomicWriteFile_NoTempFileOnError` | Verify temp file cleaned up on write/chmod/sync failure |
 
 **Mocking:** `t.TempDir()` for isolated filesystem
 
@@ -76,9 +81,11 @@ Two functions: `NewSOCKS5Dialer()` and `MaskProxyURL()`.
 
 ### T2: Low-Coverage Core Packages
 
-#### 4. `internal/tls` (3.2% → ~75%)
+#### 4. `internal/tls` (3.2% → ~45%)
 
-Mock `net.Conn` and `net.Dialer`; test logic branches, not real TLS handshakes.
+Test pure functions, context helpers, and transport caching logic. The TLS handshake path
+(`utls.UClient.Handshake()`) requires a real TCP peer and cannot be covered by pure unit tests —
+this is excluded from coverage targets.
 
 | Test | Validates |
 |------|-----------|
@@ -86,12 +93,13 @@ Mock `net.Conn` and `net.Dialer`; test logic branches, not real TLS handshakes.
 | `TestProxyURLFromContext_Missing` | Empty context returns empty string |
 | `TestGetOrCreateTransport_Caching` | Same proxyURL → same transport instance |
 | `TestGetOrCreateTransport_DifferentProxy` | Different proxyURL → different instance |
-| `TestRoundTrip_HTTPS` | HTTPS requests go through pooled transport |
-| `TestRoundTrip_HTTP` | HTTP requests bypass TLS fingerprinting |
-| `TestDialTCP_Direct` | No proxy → direct dial |
-| `TestDialTCP_WithSOCKS5` | Proxy URL in context → SOCKS5 dialer used |
+| `TestRoundTrip_NonHTTPS` | Non-HTTPS requests bypass TLS fingerprinting |
 
-**Mocking:** Custom `net.Conn` stub, `httptest.NewServer` for HTTP tests
+**Limitation:** `RoundTrip` (HTTPS path), `makeDialTLSContext`, and `dialTCP` success paths
+require real network I/O and `utls` handshake — not coverable under "pure unit tests" constraint.
+Error paths (connection refused, dial timeout) can be partially tested.
+
+**Mocking:** Context manipulation only; no network mocks needed for achievable tests
 
 #### 5. `internal/ratelimit` (64.9% → ~85%)
 
@@ -104,7 +112,11 @@ Missing: `cleanup()` logic and `StartCleanup()` goroutine.
 | `TestStartCleanup_ContextCancel` | Goroutine exits on context cancel |
 | `TestAllow_ConcurrentAccess` | Multiple goroutines don't panic or corrupt state |
 
-**Mocking:** None needed; use short window durations for timing tests
+**Approach:** White-box tests in same package. Call `cleanup()` directly with manually
+manipulated `visitor.resetAt` timestamps — avoid goroutine timing dependencies that cause
+flaky tests under `-race`. Only `TestStartCleanup_ContextCancel` uses goroutines (brief).
+
+**Mocking:** None needed
 
 #### 6. `internal/oauth` (54.3% → ~80%)
 
@@ -121,7 +133,7 @@ Mock Anthropic token endpoint with `httptest.NewServer`.
 | `TestGetProxyClient_Caching` | Same proxyURL returns cached client |
 | **manager.go** | |
 | `TestUpdateAccounts_AddNew` | New account creates mutex |
-| `TestUpdateAccounts_RemoveOld` | Removed account cleaned up |
+| `TestUpdateAccounts_RemoveOld` | Removed account's mutex NOT cleaned (known limitation — document as memory leak note) |
 | `TestExchangeAndSave` | Code exchange + token persist |
 | `TestForceRefresh` | Force refresh path |
 | `TestMarkTokenExpired` | Expired flag triggers refresh on next get |
@@ -137,6 +149,7 @@ Mock Anthropic token endpoint with `httptest.NewServer`.
 |------|-----------|
 | `TestHandleOAuthLoginComplete_Success` | 200 + account bound |
 | `TestHandleOAuthLoginComplete_InvalidSession` | 404/400 response |
+| `TestHandleOAuthLoginComplete_StateMismatch` | CSRF state validation → 400 (security-critical) |
 | `TestHandleOAuthRefresh_Success` | Force refresh + 200 |
 | `TestHandleOAuthLogout_Success` | Logout + token cleared |
 | `TestHandleAddAccount_Success` | Account created + callback |
@@ -148,7 +161,15 @@ Mock Anthropic token endpoint with `httptest.NewServer`.
 | `TestHandleDashboard` | Returns HTML + 200 |
 | `TestWriteJSON_WriteError` | Helper functions format correctly |
 
-**Mocking:** Mock `OAuthManager` interface, mock `AccountRegistry`, mock `SessionStore`
+**Note:** `Handler` holds concrete type pointers (`*oauth.Manager`, `*config.AccountRegistry`,
+etc.), not interfaces. Tests must construct real objects with `t.TempDir()` for filesystem
+isolation, following the pattern already established in existing `handler_test.go`.
+
+Some tests listed above may already exist in `handler_test.go` — verify before implementing
+and only add truly missing cases (e.g., `TestHandleUpdateProxy`, `TestHandleOAuthLoginComplete`
+full flow, `TestHandleOAuthLoginComplete_StateMismatch` for CSRF validation).
+
+**Mocking:** Real objects with `t.TempDir()` isolation (no interfaces available)
 
 ---
 
@@ -166,21 +187,25 @@ Small gap; only edge cases needed.
 | `TestRegistrySetProxy` | Proxy URL persisted |
 | `TestValidate_EdgeCases` | Port 0, negative concurrency, empty base_url |
 
-#### 9. `internal/server` (0% → ~80%)
+#### 9. `internal/server` (0% → ~50%)
 
-Glue layer — test wiring correctness, not business logic.
+Glue layer. `New()` uses concrete types (not interfaces) and creates real filesystem state,
+so it cannot be purely mocked. Focus on **middleware functions** which are independently testable.
 
 | Test | Validates |
 |------|-----------|
-| `TestNew_InitializesSubsystems` | All subsystems non-nil |
-| `TestNew_RoutesRegistered` | Key routes exist (/v1/messages, /admin/, /health) |
 | `TestRecoveryMiddleware` | Panic recovery → 500 response |
 | `TestRequestLogMiddleware` | Logs key fields |
 | `TestBasicAuth` | Correct/wrong password auth |
 | `TestLoggingResponseWriter` | WriteHeader captures status |
-| `TestShutdown_PersistsState` | Shutdown saves usage data |
+| `TestNew_WithTempDir` | Full init with `t.TempDir()` — verifies subsystems non-nil (semi-integration) |
+| `TestShutdown_PersistsState` | Shutdown saves usage data (requires init first) |
 
-**Mocking:** Stub all internal subsystems; test middleware in isolation
+**Limitation:** `New()` depends on concrete types (`config.NewAccountRegistry`, `oauth.NewTokenStore`,
+etc.) that perform real file I/O. Tests use `t.TempDir()` for isolation rather than pure mocks.
+80% target is unrealistic — middleware tests alone cover ~50% of statements.
+
+**Mocking:** `t.TempDir()` for filesystem isolation; `httptest.ResponseRecorder` for middleware
 
 #### 10. `internal/cli` (0% → ~60%)
 
@@ -196,18 +221,18 @@ CLI entry layer — low ROI, cover testable parts only.
 
 ## Target Coverage Summary
 
-| Package | Current | Target |
-|---------|---------|--------|
-| apierror | 0% | ~100% |
-| fileutil | 0% | ~90% |
-| netutil | 0% | ~80% |
-| tls | 3.2% | ~75% |
-| ratelimit | 64.9% | ~85% |
-| oauth | 54.3% | ~80% |
-| admin | 53.2% | ~80% |
-| config | 79.3% | ~85% |
-| server | 0% | ~80% |
-| cli | 0% | ~60% |
+| Package | Current | Target | Notes |
+|---------|---------|--------|-------|
+| apierror | 0% | ~90% | Marshal fallback is dead code |
+| fileutil | 0% | ~90% | |
+| netutil | 0% | ~80% | |
+| tls | 3.2% | ~45% | TLS handshake path excluded (needs real network) |
+| ratelimit | 64.9% | ~85% | |
+| oauth | 54.3% | ~80% | |
+| admin | 53.2% | ~80% | Some tests may already exist — verify first |
+| config | 79.3% | ~85% | |
+| server | 0% | ~50% | Concrete deps limit pure unit test coverage |
+| cli | 0% | ~60% | |
 
 ## Constraints
 
@@ -224,3 +249,10 @@ CLI entry layer — low ROI, cover testable parts only.
 3. T3: config → server → cli (3 packages, ~1-2 sessions)
 
 Total: ~60 test cases across 10 packages.
+
+## Known Limitations
+
+- `tls`: TLS handshake path requires real network I/O; pure unit test ceiling is ~45%
+- `server`: `New()` uses concrete types without interfaces; cannot be fully mocked
+- `apierror`: `json.Marshal` fallback branch is dead code (struct has only string fields)
+- `oauth`: `UpdateAccounts()` does not clean up mutexes for removed accounts (memory leak)
