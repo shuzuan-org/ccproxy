@@ -104,8 +104,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.Server.BaseURL != "https://api.anthropic.com" {
 		t.Errorf("base_url default = %q, want https://api.anthropic.com", cfg.Server.BaseURL)
 	}
-	if cfg.Server.RequestTimeout != 300 {
-		t.Errorf("request_timeout default = %d, want 300", cfg.Server.RequestTimeout)
+	if cfg.Server.RequestTimeout != 600 {
+		t.Errorf("request_timeout default = %d, want 600", cfg.Server.RequestTimeout)
 	}
 	if cfg.Server.MaxConcurrency != 5 {
 		t.Errorf("max_concurrency default = %d, want 5", cfg.Server.MaxConcurrency)

@@ -4,10 +4,9 @@ port = 3000
 # admin_password = ""  # Leave empty or omit to auto-generate on first start
 # rate_limit = 60  # max requests per minute per IP for admin routes (default: 60)
 base_url = "https://api.anthropic.com"
-request_timeout = 300
-max_concurrency = 5
+request_timeout = 600
+max_concurrency = 5  # hard limit per account; effective value is dynamically adjusted by budget utilization
 # log_level = "info"    # debug, info, warn, error
-# log_format = "text"   # text or json (json recommended for Docker/log aggregation)
 
 # API keys — leave this section empty or omit entirely to auto-generate on first start
 # [[api_keys]]

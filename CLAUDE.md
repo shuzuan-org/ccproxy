@@ -75,7 +75,7 @@ config.toml.example 参考配置
 
 ### 并发
 
-- `ConcurrencyTracker` 位于 `internal/loadbalancer/concurrency.go`，使用 `sync.Mutex` 和 `map[accountName]map[requestID]time.Time` 进行槽位追踪。无 Redis。
+- `ConcurrencyTracker` 位于 `internal/loadbalancer/concurrency.go`，使用 `sync.RWMutex` + per-account `sync.Mutex` 和 `map[accountName]map[requestID]time.Time` 进行槽位追踪（15 分钟陈旧清理）。无 Redis。
 - 会话亲和性使用 `sync.Map`，键格式为 `{apiKeyName}:{sessionID}`，滑动 TTL 1 小时（每次命中重置）。
 - OAuth 令牌存储使用按账户的互斥锁防止并发刷新竞争。
 
@@ -83,7 +83,7 @@ config.toml.example 参考配置
 
 激活条件：`!isClaudeCodeClient(request)`。所有账户使用 OAuth；对非 Claude Code 客户端始终应用伪装。TLS 指纹始终启用。
 
-`internal/disguise/detector.go` 中的 `isClaudeCodeClient` 检测器使用门控评分系统：User-Agent 必须匹配 `claude-cli/x.x.x`（门控），然后对 `/v1/messages` 请求，4 个信号中至少 2 个匹配（X-App 头部、anthropic-beta token、metadata.user_id 模式、系统提示词 Dice 系数）。非 messages 路径仅需通过 UA 门控。
+`internal/disguise/detector.go` 中的 `isClaudeCodeClient` 检测器使用门控评分系统：User-Agent 必须匹配 `claude-cli/x.x.x`（门控），然后对 `/v1/messages` 请求，5 个信号中至少 2 个匹配（X-App 头部、anthropic-beta token、metadata.user_id 模式、系统提示词 Dice 系数、Anthropic-Version 非空）。非 messages 路径仅需通过 UA 门控。
 
 ### OAuth
 
@@ -95,7 +95,7 @@ config.toml.example 参考配置
 
 ### SSE 流式传输
 
-代理将上游响应作为原始字节流转发。令牌用量在流式传输期间从 `message_delta` 事件中提取。
+代理将上游响应作为原始字节流转发。令牌用量从 `message_start`（input tokens）和 `message_delta`（output tokens）事件中提取。SSE 缓冲区最大 1MB，使用 `sync.Pool` 复用 buffer。
 
 ## 测试方法
 

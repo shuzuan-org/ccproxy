@@ -58,7 +58,7 @@ func NewHandler(
 ) *Handler {
 	timeout := time.Duration(requestTimeout) * time.Second
 	if timeout == 0 {
-		timeout = 300 * time.Second
+		timeout = 600 * time.Second
 	}
 	transport := proxytls.NewTransport()
 

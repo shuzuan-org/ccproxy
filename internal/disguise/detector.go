@@ -45,7 +45,7 @@ type detectorRequest struct {
 //   - Gate: User-Agent MUST match claude-cli pattern (mandatory).
 //   - Non-messages path: UA match alone is sufficient.
 //   - Haiku probe: max_tokens=1 + haiku + !stream passes immediately.
-//   - Messages path: requires >=2 of 4 additional signals.
+//   - Messages path: requires >=2 of 5 additional signals.
 func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 	ua := headers.Get("User-Agent")
 	// Gate: UA MUST match (mandatory)

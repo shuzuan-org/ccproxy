@@ -22,10 +22,9 @@ type ServerConfig struct {
 	AdminPassword  string `toml:"admin_password"`
 	RateLimit      int    `toml:"rate_limit"`       // max requests per minute per IP for admin routes
 	BaseURL        string `toml:"base_url"`          // upstream API base URL (default: https://api.anthropic.com)
-	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 300)
-	MaxConcurrency int    `toml:"max_concurrency"`   // per-account concurrency limit (default: 5)
-	LogLevel       string `toml:"log_level"`         // debug, info, warn, error (default: info)
-	LogFormat      string `toml:"log_format"`        // text or json (default: text)
+	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 600, aligned with Claude Code's X-Stainless-Timeout)
+	MaxConcurrency int    `toml:"max_concurrency"`   // per-account concurrency hard limit; actual value is dynamically adjusted by budget utilization (default: 5)
+	LogLevel string `toml:"log_level"` // debug, info, warn, error (default: info)
 }
 
 type APIKeyConfig struct {
@@ -126,16 +125,13 @@ func applyDefaults(cfg *Config) {
 		cfg.Server.BaseURL = "https://api.anthropic.com"
 	}
 	if cfg.Server.RequestTimeout == 0 {
-		cfg.Server.RequestTimeout = 300
+		cfg.Server.RequestTimeout = 600
 	}
 	if cfg.Server.MaxConcurrency == 0 {
 		cfg.Server.MaxConcurrency = 5
 	}
 	if cfg.Server.LogLevel == "" {
 		cfg.Server.LogLevel = "info"
-	}
-	if cfg.Server.LogFormat == "" {
-		cfg.Server.LogFormat = "text"
 	}
 }
 
@@ -180,11 +176,11 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// SetupLoggingDefaults initializes slog with sensible defaults (text, info level)
+// SetupLoggingDefaults initializes slog with sensible defaults (JSON, info level)
 // before config is parsed. config.Load() calls SetupLogging() again with the
 // actual configured values once the TOML is parsed.
 func SetupLoggingDefaults() {
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
 }
 
@@ -203,14 +199,7 @@ func SetupLogging(cfg *Config) {
 	}
 
 	opts := &slog.HandlerOptions{Level: level}
-
-	var handler slog.Handler
-	if strings.ToLower(cfg.Server.LogFormat) == "json" {
-		handler = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stderr, opts)
-	}
-
+	handler := slog.NewJSONHandler(os.Stderr, opts)
 	slog.SetDefault(slog.New(handler))
 }
 

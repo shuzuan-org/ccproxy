@@ -46,10 +46,9 @@ make build
 | `admin_password` | （自动生成） | `/admin/` 和 `/api/*` 路由的 Basic Auth 密码 |
 | `rate_limit` | `60` | 管理路由每 IP 每分钟最大请求数 |
 | `base_url` | `https://api.anthropic.com` | 上游 Anthropic API 基础 URL |
-| `request_timeout` | `300` | 每请求超时（秒） |
-| `max_concurrency` | `5` | 每账户并发限制 |
+| `request_timeout` | `600` | 上游请求超时（秒），对齐 Claude Code 的 X-Stainless-Timeout |
+| `max_concurrency` | `5` | 每账户并发硬上限（实际值由预算利用率动态调整） |
 | `log_level` | `info` | 日志级别（`debug`、`info`、`warn`、`error`） |
-| `log_format` | `text` | 日志格式（`text` 或 `json`） |
 
 ### `[[api_keys]]`
 
@@ -74,7 +73,7 @@ make build
 host = "0.0.0.0"
 port = 3000
 base_url = "https://api.anthropic.com"
-request_timeout = 300
+request_timeout = 600
 max_concurrency = 5
 
 [[api_keys]]
@@ -115,6 +114,8 @@ ccproxy（单二进制）
 └── 存储层
     ├── JSON 文件            加密的 OAuth 令牌 (data/oauth_tokens.json)
     ├── JSON 文件            动态账户注册表 (data/accounts.json)
+    ├── JSON 文件            每账户指纹 (data/fingerprints.json)
+    ├── JSON 文件            持久化健康状态 (data/health_state.json)
     └── TOML 文件            配置（启动时读取）
 ```
 
