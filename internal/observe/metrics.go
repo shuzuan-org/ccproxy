@@ -11,11 +11,11 @@ import (
 
 // StateProvider supplies runtime state for periodic metrics snapshots.
 type StateProvider interface {
-	InstanceStates() map[string]InstanceState
+	AccountStates() map[string]AccountState
 }
 
-// InstanceState represents the runtime state of a single instance.
-type InstanceState struct {
+// AccountState represents the runtime state of a single account.
+type AccountState struct {
 	Health         string
 	Concurrency    int
 	MaxConcurrency int
@@ -31,14 +31,14 @@ type Metrics struct {
 	RequestsError     atomic.Int64
 	RetriesTotal      atomic.Int64
 	FailoversTotal    atomic.Int64
-	Instances429      atomic.Int64
-	Instances529      atomic.Int64
+	Accounts429      atomic.Int64
+	Accounts529      atomic.Int64
 
-	instances sync.Map // map[string]*InstanceMetrics
+	accounts sync.Map // map[string]*AccountMetrics
 }
 
-// InstanceMetrics holds per-instance atomic counters.
-type InstanceMetrics struct {
+// AccountMetrics holds per-account atomic counters.
+type AccountMetrics struct {
 	RequestsTotal   atomic.Int64
 	RequestsSuccess atomic.Int64
 	RequestsError   atomic.Int64
@@ -46,19 +46,19 @@ type InstanceMetrics struct {
 	Errors529       atomic.Int64
 }
 
-// Instance returns the InstanceMetrics for the given instance name,
+// Account returns the AccountMetrics for the given account name,
 // creating one lazily if it does not exist. The same pointer is returned
 // on every subsequent call for the same name.
-func (m *Metrics) Instance(name string) *InstanceMetrics {
-	if v, ok := m.instances.Load(name); ok {
-		return v.(*InstanceMetrics)
+func (m *Metrics) Account(name string) *AccountMetrics {
+	if v, ok := m.accounts.Load(name); ok {
+		return v.(*AccountMetrics)
 	}
-	im := &InstanceMetrics{}
-	actual, _ := m.instances.LoadOrStore(name, im)
-	return actual.(*InstanceMetrics)
+	am := &AccountMetrics{}
+	actual, _ := m.accounts.LoadOrStore(name, am)
+	return actual.(*AccountMetrics)
 }
 
-// Global is the singleton metrics instance used throughout the application.
+// Global is the singleton metrics object used throughout the application.
 var Global = &Metrics{}
 
 // Snapshot returns a point-in-time copy of all counters.
@@ -71,13 +71,13 @@ func (m *Metrics) Snapshot() map[string]int64 {
 		"requests_error":     m.RequestsError.Load(),
 		"retries_total":      m.RetriesTotal.Load(),
 		"failovers_total":    m.FailoversTotal.Load(),
-		"instances_429":      m.Instances429.Load(),
-		"instances_529":      m.Instances529.Load(),
+		"accounts_429":      m.Accounts429.Load(),
+		"accounts_529":      m.Accounts529.Load(),
 	}
 }
 
 // StartPeriodicLog starts a goroutine that logs a metrics snapshot every interval.
-// If state is non-nil, per-instance state is also logged. If logger is nil, slog.Default() is used.
+// If state is non-nil, per-account state is also logged. If logger is nil, slog.Default() is used.
 // It stops when ctx is cancelled.
 func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, state StateProvider, logger *slog.Logger) {
 	if logger == nil {
@@ -113,23 +113,23 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 					"requests_queued", snap["requests_queued"],
 					"retries_total", snap["retries_total"],
 					"failovers_total", snap["failovers_total"],
-					"instances_429", snap["instances_429"],
-					"instances_529", snap["instances_529"],
+					"accounts_429", snap["accounts_429"],
+					"accounts_529", snap["accounts_529"],
 				)
 
 				if state != nil {
-					for name, is := range state.InstanceStates() {
-						im := m.Instance(name)
-						logger.Info("metrics instance",
-							"instance", name,
-							"requests", im.RequestsTotal.Load(),
-							"success", im.RequestsSuccess.Load(),
-							"errors", im.RequestsError.Load(),
-							"errors_429", im.Errors429.Load(),
-							"errors_529", im.Errors529.Load(),
-							"state", is.Health,
-							"concurrency", fmt.Sprintf("%d/%d", is.Concurrency, is.MaxConcurrency),
-							"budget", is.BudgetState,
+					for name, as := range state.AccountStates() {
+						am := m.Account(name)
+						logger.Info("metrics account",
+							"account", name,
+							"requests", am.RequestsTotal.Load(),
+							"success", am.RequestsSuccess.Load(),
+							"errors", am.RequestsError.Load(),
+							"errors_429", am.Errors429.Load(),
+							"errors_529", am.Errors529.Load(),
+							"state", as.Health,
+							"concurrency", fmt.Sprintf("%d/%d", as.Concurrency, as.MaxConcurrency),
+							"budget", as.BudgetState,
 						)
 					}
 				}

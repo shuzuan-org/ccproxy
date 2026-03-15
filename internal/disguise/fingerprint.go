@@ -15,8 +15,8 @@ import (
 	"github.com/binn/ccproxy/internal/fileutil"
 )
 
-// Fingerprint holds per-instance HTTP header values that distinguish one
-// instance from another, preventing Anthropic from correlating them.
+// Fingerprint holds per-account HTTP header values that distinguish one
+// account from another, preventing Anthropic from correlating them.
 // Timestamps are stored in milliseconds for sub-second precision.
 type Fingerprint struct {
 	ClientID                string `json:"client_id"`
@@ -29,12 +29,12 @@ type Fingerprint struct {
 	UpdatedAt               int64  `json:"updated_at"`  // milliseconds
 }
 
-// FingerprintStore manages per-instance fingerprints with lazy renewal.
+// FingerprintStore manages per-account fingerprints with lazy renewal.
 // Fingerprints are persisted to disk and expire after maxAge of inactivity.
 type FingerprintStore struct {
 	mu           sync.RWMutex
 	path         string                  // data/fingerprints.json
-	fingerprints map[string]*Fingerprint // instanceName → Fingerprint
+	fingerprints map[string]*Fingerprint // accountName → Fingerprint
 	maxAge       time.Duration           // 7 days since last use
 	renewAfter   time.Duration           // 24 hours
 }
@@ -51,15 +51,15 @@ func NewFingerprintStore(dataDir string) *FingerprintStore {
 	return s
 }
 
-// Get returns the fingerprint for the given instance, creating one if needed.
-// Active instances get their TTL refreshed; expired fingerprints are regenerated.
+// Get returns the fingerprint for the given account, creating one if needed.
+// Active accounts get their TTL refreshed; expired fingerprints are regenerated.
 // Uses RLock fast path for fresh fingerprints to avoid write-lock contention.
-func (s *FingerprintStore) Get(instanceName string) *Fingerprint {
+func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 	now := time.Now()
 
 	// Fast path: RLock for fresh fingerprints (no disk write needed)
 	s.mu.RLock()
-	fp, exists := s.fingerprints[instanceName]
+	fp, exists := s.fingerprints[accountName]
 	if exists {
 		age := now.Sub(time.UnixMilli(fp.UpdatedAt))
 		if age <= s.renewAfter {
@@ -74,7 +74,7 @@ func (s *FingerprintStore) Get(instanceName string) *Fingerprint {
 	defer s.mu.Unlock()
 
 	// Re-check after acquiring write lock (another goroutine may have updated)
-	fp, exists = s.fingerprints[instanceName]
+	fp, exists = s.fingerprints[accountName]
 	if exists {
 		age := now.Sub(time.UnixMilli(fp.UpdatedAt))
 		if age <= s.renewAfter {
@@ -83,7 +83,7 @@ func (s *FingerprintStore) Get(instanceName string) *Fingerprint {
 		if age > s.maxAge {
 			// Expired — regenerate
 			fp = generateFingerprint(now)
-			s.fingerprints[instanceName] = fp
+			s.fingerprints[accountName] = fp
 			s.saveLocked()
 		} else {
 			// Renew TTL
@@ -93,19 +93,19 @@ func (s *FingerprintStore) Get(instanceName string) *Fingerprint {
 		return fp
 	}
 
-	// New instance — generate and persist
+	// New account — generate and persist
 	fp = generateFingerprint(now)
-	s.fingerprints[instanceName] = fp
+	s.fingerprints[accountName] = fp
 	s.saveLocked()
 	return fp
 }
 
-// Remove deletes a fingerprint for the given instance.
-func (s *FingerprintStore) Remove(instanceName string) error {
+// Remove deletes a fingerprint for the given account.
+func (s *FingerprintStore) Remove(accountName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.fingerprints, instanceName)
+	delete(s.fingerprints, accountName)
 	return s.saveLocked()
 }
 
@@ -147,10 +147,10 @@ func (s *FingerprintStore) saveLocked() error {
 	return fileutil.AtomicWriteFile(s.path, data, 0600)
 }
 
-// LearnFromHeaders updates the fingerprint for an instance based on headers
+// LearnFromHeaders updates the fingerprint for an account based on headers
 // observed from a real Claude Code client. If the request carries a newer CLI
 // version, the fingerprint is merged/updated; otherwise only the TTL is refreshed.
-func (s *FingerprintStore) LearnFromHeaders(instanceName string, headers http.Header) {
+func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Header) {
 	ua := headers.Get("User-Agent")
 	if ua == "" {
 		return
@@ -161,11 +161,11 @@ func (s *FingerprintStore) LearnFromHeaders(instanceName string, headers http.He
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	fp, exists := s.fingerprints[instanceName]
+	fp, exists := s.fingerprints[accountName]
 	if !exists {
-		// No fingerprint yet — create from observed headers
+		// No fingerprint yet -- create from observed headers
 		fp = createFromHeaders(headers, now)
-		s.fingerprints[instanceName] = fp
+		s.fingerprints[accountName] = fp
 		s.saveLocked()
 		return
 	}

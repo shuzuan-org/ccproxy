@@ -38,12 +38,12 @@ var forwardHeaders = []string{
 	"Anthropic-Dangerous-Direct-Browser-Access",
 }
 
-// Handler routes incoming /v1/messages requests to upstream Anthropic instances.
+// Handler routes incoming /v1/messages requests to upstream Anthropic accounts.
 type Handler struct {
 	balancer     *loadbalancer.Balancer
 	disguise     *disguise.Engine
 	oauthManager *oauth.Manager
-	httpClient   *http.Client // shared client for all instances
+	httpClient   *http.Client // shared client for all accounts
 	baseURL      string       // global upstream base URL
 	upstreamURL  string       // precomputed baseURL + "/v1/messages"
 }
@@ -143,10 +143,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Stage 0: send original body
 	// Stage 1: on signature error → filter thinking blocks and retry
 	// Stage 2: on signature+tool error → filter tool blocks and retry
-	requestFn := func(inst config.InstanceConfig, requestID string) (*http.Response, int, error) {
+	requestFn := func(acct config.AccountConfig, requestID string) (*http.Response, int, error) {
 		bodyToSend := rawBody
 		for stage := 0; stage <= 2; stage++ {
-			resp, statusCode, err := h.doRequest(origReq, inst, requestID, bodyToSend, isStream)
+			resp, statusCode, err := h.doRequest(origReq, acct, requestID, bodyToSend, isStream)
 			if err != nil || statusCode != 400 || resp == nil {
 				return resp, statusCode, err
 			}
@@ -164,7 +164,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if stage == 0 && IsSignatureError(errBody) {
 				log.Info("signature error detected, retrying with thinking blocks filtered",
-					"instance", inst.Name,
+					"account", acct.Name,
 					"stage", stage,
 				)
 				bodyToSend = FilterThinkingBlocks(rawBody)
@@ -172,7 +172,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if stage == 1 && (IsSignatureError(errBody) || IsToolRelatedError(errBody)) {
 				log.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
-					"instance", inst.Name,
+					"account", acct.Name,
 					"stage", stage,
 				)
 				bodyToSend = FilterSignatureSensitiveBlocks(rawBody)
@@ -191,10 +191,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Build retry callbacks for token refresh on 401.
 	callbacks := loadbalancer.RetryCallbacks{
-		OnTokenRefreshNeeded: func(ctx context.Context, instanceName string) {
+		OnTokenRefreshNeeded: func(ctx context.Context, accountName string) {
 			if h.oauthManager != nil {
-				h.oauthManager.MarkTokenExpired(instanceName)
-				h.oauthManager.ForceRefreshBackground(ctx, instanceName)
+				h.oauthManager.MarkTokenExpired(accountName)
+				h.oauthManager.ForceRefreshBackground(ctx, accountName)
 			}
 		},
 	}
@@ -211,10 +211,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error", err.Error(),
 		)
 
-		// Request summary log and per-instance metrics — error path.
+		// Request summary log and per-account metrics — error path.
 		summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result)
 		if result != nil {
-			recordInstanceMetrics(result.InstanceName, result.StatusCode, true)
+			recordAccountMetrics(result.AccountName, result.StatusCode, true)
 		}
 		log.Warn("request completed", summaryAttrs...)
 
@@ -225,7 +225,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	observe.Global.RequestsSuccess.Add(1)
 	log.Info("upstream success",
-		"instance", result.InstanceName,
+		"account", result.AccountName,
 		"status", result.StatusCode,
 		"model", originalModel,
 		"elapsed", elapsed.Round(time.Millisecond),
@@ -239,8 +239,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Debug("request completed", summaryAttrs...)
 	}
 
-	// Per-instance metrics recording.
-	recordInstanceMetrics(result.InstanceName, result.StatusCode, false)
+	// Per-account metrics recording.
+	recordAccountMetrics(result.AccountName, result.StatusCode, false)
 
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
@@ -257,7 +257,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxyStatus, errBody := MapUpstreamError(resp.StatusCode, upstreamBody)
 
 		log.Warn("upstream error response",
-			"instance", result.InstanceName,
+			"account", result.AccountName,
 			"upstream_status", resp.StatusCode,
 			"proxy_status", proxyStatus,
 			"body", truncateBody(upstreamBody, 512),
@@ -311,10 +311,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// doRequest builds and executes a single upstream request for one instance attempt.
+// doRequest builds and executes a single upstream request for one account attempt.
 func (h *Handler) doRequest(
 	origReq *http.Request,
-	inst config.InstanceConfig,
+	acct config.AccountConfig,
 	requestID string, // used for tracing correlation
 	rawBody []byte,
 	isStream bool,
@@ -322,23 +322,23 @@ func (h *Handler) doRequest(
 	ctx := origReq.Context()
 	log := observe.Logger(ctx)
 
-	// Inject per-instance SOCKS5 proxy into context for fingerprintTransport.
-	if inst.Proxy != "" {
-		ctx = proxytls.WithProxyURL(ctx, inst.Proxy)
+	// Inject per-account SOCKS5 proxy into context for fingerprintTransport.
+	if acct.Proxy != "" {
+		ctx = proxytls.WithProxyURL(ctx, acct.Proxy)
 	}
 
 	// Step 5a: Resolve OAuth token.
 	if h.oauthManager == nil {
-		log.Error("oauth manager not configured", "instance", inst.Name)
-		return nil, 0, fmt.Errorf("oauth manager not configured for instance %q", inst.Name)
+		log.Error("oauth manager not configured", "account", acct.Name)
+		return nil, 0, fmt.Errorf("oauth manager not configured for account %q", acct.Name)
 	}
-	token, err := h.oauthManager.GetValidToken(ctx, inst.Name)
+	token, err := h.oauthManager.GetValidToken(ctx, acct.Name)
 	if err != nil {
-		log.Error("oauth token error", "instance", inst.Name, "error", err.Error())
+		log.Error("oauth token error", "account", acct.Name, "error", err.Error())
 		return nil, 401, fmt.Errorf("get oauth token: %w", err)
 	}
 	log.Debug("oauth token resolved",
-		"instance", inst.Name,
+		"account", acct.Name,
 		"expires_in", time.Until(token.ExpiresAt).String(),
 	)
 	authHeader := "Bearer " + token.AccessToken
@@ -368,7 +368,7 @@ func (h *Handler) doRequest(
 		upstreamReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Step 5b: Apply disguise (all instances are OAuth).
+	// Step 5b: Apply disguise (all accounts are OAuth).
 	// Use origReq for Claude Code client detection (upstreamReq lacks User-Agent, X-App headers).
 	disguised := false
 	if h.disguise != nil {
@@ -377,9 +377,9 @@ func (h *Handler) doRequest(
 			sessionSeed = upstreamURL // fallback seed
 		}
 		var modifiedBody []byte
-		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, inst.Name)
+		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, acct.Name)
 		body = modifiedBody
-		log.Debug("disguise applied", "instance", inst.Name, "disguised", disguised)
+		log.Debug("disguise applied", "account", acct.Name, "disguised", disguised)
 	}
 
 	// Step 5d: Apply disguise URL modification for OAuth.
@@ -403,16 +403,16 @@ func (h *Handler) doRequest(
 	if err != nil {
 		// Network-level error: treat as 503 for retry classification.
 		if ctx.Err() != nil {
-			log.Debug("request cancelled", "instance", inst.Name, "error", ctx.Err().Error())
+			log.Debug("request cancelled", "account", acct.Name, "error", ctx.Err().Error())
 			return nil, 0, ctx.Err()
 		}
-		log.Error("upstream network error", "instance", inst.Name, "error", err.Error())
+		log.Error("upstream network error", "account", acct.Name, "error", err.Error())
 		return nil, 503, fmt.Errorf("upstream request failed: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
 		log.Warn("upstream returned error",
-			"instance", inst.Name,
+			"account", acct.Name,
 			"status", resp.StatusCode,
 			"url", upstreamReq.URL.String(),
 		)
@@ -455,19 +455,19 @@ func buildSummaryAttrs(model string, isStream bool, elapsed time.Duration, resul
 	}
 	if result != nil {
 		attrs = append(attrs,
-			"instance", result.InstanceName,
+			"account", result.AccountName,
 			"status", result.StatusCode,
 			"retries", result.Retries,
 			"failovers", result.Failovers,
-			"instances_tried", result.InstancesTried,
+			"accounts_tried", result.AccountsTried,
 		)
 	}
 	return attrs
 }
 
-// recordInstanceMetrics updates per-instance request counters.
-func recordInstanceMetrics(instanceName string, statusCode int, isError bool) {
-	im := observe.Global.Instance(instanceName)
+// recordAccountMetrics updates per-account request counters.
+func recordAccountMetrics(accountName string, statusCode int, isError bool) {
+	im := observe.Global.Account(accountName)
 	im.RequestsTotal.Add(1)
 	if isError || statusCode < 200 || statusCode >= 300 {
 		im.RequestsError.Add(1)

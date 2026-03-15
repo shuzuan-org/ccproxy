@@ -24,7 +24,7 @@ type PersistedState struct {
 	UpdatedAt time.Time                     `json:"updated_at"`
 }
 
-// PersistedAccount holds the persisted health fields for one instance.
+// PersistedAccount holds the persisted health fields for one account.
 type PersistedAccount struct {
 	Disabled       bool    `json:"disabled"`
 	DisabledReason string  `json:"disabled_reason,omitempty"`

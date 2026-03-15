@@ -17,7 +17,7 @@ import (
 
 // OAuthTokenProvider abstracts token retrieval to decouple from oauth.Manager.
 type OAuthTokenProvider interface {
-	GetValidToken(ctx context.Context, instanceName string) (accessToken string, err error)
+	GetValidToken(ctx context.Context, accountName string) (accessToken string, err error)
 }
 
 // UsageResponse represents the Anthropic usage API response.
@@ -74,14 +74,14 @@ func NewUsageFetcher(tokenProvider OAuthTokenProvider, userAgent string) *UsageF
 
 // FetchIfNeeded checks if the budget has stale data and fetches if necessary.
 // Returns the response or nil if fetch is not needed or fails.
-func (uf *UsageFetcher) FetchIfNeeded(ctx context.Context, instanceName string, budget *BudgetController) *UsageResponse {
+func (uf *UsageFetcher) FetchIfNeeded(ctx context.Context, accountName string, budget *BudgetController) *UsageResponse {
 	if budget != nil && budget.HasRecentData(usageStaleThreshold) {
 		return nil
 	}
 
 	// Check cache
 	uf.mu.RLock()
-	entry := uf.cache[instanceName]
+	entry := uf.cache[accountName]
 	uf.mu.RUnlock()
 
 	if entry != nil {
@@ -94,14 +94,14 @@ func (uf *UsageFetcher) FetchIfNeeded(ctx context.Context, instanceName string, 
 		}
 	}
 
-	return uf.fetch(ctx, instanceName)
+	return uf.fetch(ctx, accountName)
 }
 
 // fetchFromURL fetches usage data from a specific URL (for testing).
-func (uf *UsageFetcher) fetchFromURL(ctx context.Context, instanceName, url string) *UsageResponse {
+func (uf *UsageFetcher) fetchFromURL(ctx context.Context, accountName, url string) *UsageResponse {
 	// Check cache first
 	uf.mu.RLock()
-	entry := uf.cache[instanceName]
+	entry := uf.cache[accountName]
 	uf.mu.RUnlock()
 
 	if entry != nil {
@@ -114,16 +114,16 @@ func (uf *UsageFetcher) fetchFromURL(ctx context.Context, instanceName, url stri
 		}
 	}
 
-	return uf.doFetch(ctx, instanceName, url)
+	return uf.doFetch(ctx, accountName, url)
 }
 
-func (uf *UsageFetcher) fetch(ctx context.Context, instanceName string) *UsageResponse {
-	return uf.doFetch(ctx, instanceName, usageAPIURL)
+func (uf *UsageFetcher) fetch(ctx context.Context, accountName string) *UsageResponse {
+	return uf.doFetch(ctx, accountName, usageAPIURL)
 }
 
-func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string) *UsageResponse {
-	// Use singleflight to deduplicate concurrent fetches for the same instance
-	result, err, _ := uf.inflight.Do(instanceName, func() (interface{}, error) {
+func (uf *UsageFetcher) doFetch(ctx context.Context, accountName, apiURL string) *UsageResponse {
+	// Use singleflight to deduplicate concurrent fetches for the same account
+	result, err, _ := uf.inflight.Do(accountName, func() (interface{}, error) {
 		// Random jitter before fetch
 		jitter := time.Duration(rand.Int63n(int64(usageMaxJitter)))
 		timer := time.NewTimer(jitter)
@@ -134,10 +134,10 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 			return nil, ctx.Err()
 		}
 
-		token, err := uf.tokenProvider.GetValidToken(ctx, instanceName)
+		token, err := uf.tokenProvider.GetValidToken(ctx, accountName)
 		if err != nil {
-			observe.Logger(ctx).Debug("usage: token error", "instance", instanceName, "error", err.Error())
-			uf.cacheError(instanceName)
+			observe.Logger(ctx).Debug("usage: token error", "account", accountName, "error", err.Error())
+			uf.cacheError(accountName)
 			return nil, err
 		}
 
@@ -153,29 +153,29 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 
 		resp, err := uf.httpClient.Do(req)
 		if err != nil {
-			observe.Logger(ctx).Debug("usage: fetch error", "instance", instanceName, "error", err.Error())
-			uf.cacheError(instanceName)
+			observe.Logger(ctx).Debug("usage: fetch error", "account", accountName, "error", err.Error())
+			uf.cacheError(accountName)
 			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			observe.Logger(ctx).Warn("usage: API error", "instance", instanceName, "status", resp.StatusCode, "body", string(body))
-			uf.cacheError(instanceName)
+			observe.Logger(ctx).Warn("usage: API error", "account", accountName, "status", resp.StatusCode, "body", string(body))
+			uf.cacheError(accountName)
 			return nil, fmt.Errorf("usage API returned %d", resp.StatusCode)
 		}
 
 		var usageResp UsageResponse
 		if err := json.NewDecoder(resp.Body).Decode(&usageResp); err != nil {
-			observe.Logger(ctx).Warn("usage: decode error", "instance", instanceName, "error", err.Error())
-			uf.cacheError(instanceName)
+			observe.Logger(ctx).Warn("usage: decode error", "account", accountName, "error", err.Error())
+			uf.cacheError(accountName)
 			return nil, err
 		}
 
-		uf.cacheSuccess(instanceName, &usageResp)
+		uf.cacheSuccess(accountName, &usageResp)
 		observe.Logger(ctx).Debug("usage: fetched",
-			"instance", instanceName,
+			"account", accountName,
 			"5h_util", usageResp.FiveHour.Utilization,
 			"7d_util", usageResp.SevenDay.Utilization,
 		)
@@ -188,9 +188,9 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, instanceName, apiURL string
 	return result.(*UsageResponse)
 }
 
-func (uf *UsageFetcher) cacheSuccess(instanceName string, resp *UsageResponse) {
+func (uf *UsageFetcher) cacheSuccess(accountName string, resp *UsageResponse) {
 	uf.mu.Lock()
-	uf.cache[instanceName] = &usageCacheEntry{
+	uf.cache[accountName] = &usageCacheEntry{
 		resp:      resp,
 		fetchedAt: time.Now(),
 		isError:   false,
@@ -198,9 +198,9 @@ func (uf *UsageFetcher) cacheSuccess(instanceName string, resp *UsageResponse) {
 	uf.mu.Unlock()
 }
 
-func (uf *UsageFetcher) cacheError(instanceName string) {
+func (uf *UsageFetcher) cacheError(accountName string) {
 	uf.mu.Lock()
-	uf.cache[instanceName] = &usageCacheEntry{
+	uf.cache[accountName] = &usageCacheEntry{
 		resp:      nil,
 		fetchedAt: time.Now(),
 		isError:   true,
@@ -209,10 +209,10 @@ func (uf *UsageFetcher) cacheError(instanceName string) {
 }
 
 // StartBackground starts a background goroutine that periodically checks
-// all instances and fetches usage data when needed.
+// all accounts and fetches usage data when needed.
 func (uf *UsageFetcher) StartBackground(
 	ctx context.Context,
-	getInstanceNames func() []string,
+	getAccountNames func() []string,
 	getBudget func(string) *BudgetController,
 ) {
 	go func() {
@@ -223,7 +223,7 @@ func (uf *UsageFetcher) StartBackground(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				names := getInstanceNames()
+				names := getAccountNames()
 				for _, name := range names {
 					budget := getBudget(name)
 					resp := uf.FetchIfNeeded(ctx, name, budget)

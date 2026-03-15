@@ -78,7 +78,7 @@ func TestGenerateUserID_DifferentSeedDifferentSessionUUID(t *testing.T) {
 
 func TestRewriteUserID_FormatA(t *testing.T) {
 	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
-	result := RewriteUserID(original, "my-instance-seed")
+	result := RewriteUserID(original, "my-account-seed")
 
 	if !userIDPattern.MatchString(result) {
 		t.Errorf("rewritten user_id does not match format A: %q", result)
@@ -90,7 +90,7 @@ func TestRewriteUserID_FormatA(t *testing.T) {
 
 func TestRewriteUserID_FormatB(t *testing.T) {
 	original := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid-123_session_sess-uuid-456"
-	result := RewriteUserID(original, "my-instance-seed")
+	result := RewriteUserID(original, "my-account-seed")
 
 	// Format B: user_{hex}_account_{uuid}_session_{uuid}
 	formatB := regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account_[\w-]+_session_[\w-]+$`)

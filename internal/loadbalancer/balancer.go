@@ -15,57 +15,57 @@ import (
 )
 
 var (
-	ErrNoHealthyInstances = errors.New("no healthy instances available")
-	ErrAllInstancesBusy   = errors.New("all instances at capacity")
+	ErrNoHealthyAccounts = errors.New("no healthy accounts available")
+	ErrAllAccountsBusy   = errors.New("all accounts at capacity")
 )
 
 const sessionTTL = 1 * time.Hour
 
 type SessionInfo struct {
-	InstanceName string
-	LastRequest  time.Time
+	AccountName string
+	LastRequest time.Time
 }
 
 type SelectResult struct {
-	Instance  config.InstanceConfig
+	Account   config.AccountConfig
 	RequestID string
 	Release   func()
 }
 
 type Balancer struct {
 	mu           sync.RWMutex
-	instances    []config.InstanceConfig
+	accounts     []config.AccountConfig
 	tracker      *ConcurrencyTracker
-	health       map[string]*AccountHealth // per-instance health tracking
+	health       map[string]*AccountHealth // per-account health tracking
 	sessions     sync.Map                  // sessionKey → *SessionInfo
-	lastUsed     sync.Map                  // instanceName → time.Time
+	lastUsed     sync.Map                  // accountName → time.Time
 	throttle     *PoolThrottle
 	usageFetcher *UsageFetcher
 }
 
-func NewBalancer(instances []config.InstanceConfig, tracker *ConcurrencyTracker) *Balancer {
-	enabled := filterEnabled(instances)
+func NewBalancer(accounts []config.AccountConfig, tracker *ConcurrencyTracker) *Balancer {
+	enabled := filterEnabled(accounts)
 	health := make(map[string]*AccountHealth, len(enabled))
-	for _, inst := range enabled {
-		health[inst.Name] = NewAccountHealth(inst.Name)
+	for _, acct := range enabled {
+		health[acct.Name] = NewAccountHealth(acct.Name)
 	}
 	queueCap := len(enabled) * 3
 	if queueCap < 10 {
 		queueCap = 10
 	}
 	return &Balancer{
-		instances: enabled,
-		tracker:   tracker,
-		health:    health,
-		throttle:  NewPoolThrottle(queueCap),
+		accounts: enabled,
+		tracker:  tracker,
+		health:   health,
+		throttle: NewPoolThrottle(queueCap),
 	}
 }
 
-func filterEnabled(instances []config.InstanceConfig) []config.InstanceConfig {
-	var result []config.InstanceConfig
-	for _, inst := range instances {
-		if inst.IsEnabled() {
-			result = append(result, inst)
+func filterEnabled(accounts []config.AccountConfig) []config.AccountConfig {
+	var result []config.AccountConfig
+	for _, acct := range accounts {
+		if acct.IsEnabled() {
+			result = append(result, acct)
 		}
 	}
 	return result
@@ -76,26 +76,26 @@ func (b *Balancer) SetUsageFetcher(f *UsageFetcher) {
 	b.usageFetcher = f
 }
 
-// instanceCandidate holds a candidate instance for selection.
-type instanceCandidate struct {
-	instance config.InstanceConfig
+// accountCandidate holds a candidate account for selection.
+type accountCandidate struct {
+	account  config.AccountConfig
 	loadRate int
 	lastUsed time.Time
 	score    float64
 }
 
-// SelectInstance implements 3-layer selection with pool-level backpressure:
+// SelectAccount implements 3-layer selection with pool-level backpressure:
 // L1 Pool: SRE throttling + utilization delay + wait queue
 // L2 Sticky: Session affinity (1h TTL) with budget-aware concurrency
 // L3 Score: Load-aware selection with budget state filtering
-func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, excludeInstances map[string]bool, isStream bool) (*SelectResult, error) {
+func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, excludeAccounts map[string]bool, isStream bool) (*SelectResult, error) {
 	// L1: Pool-level backpressure
 	b.throttle.RecordRequest()
 	if b.throttle.ShouldThrottle() {
 		observe.Global.RequestsThrottled.Add(1)
 		observe.Global.RequestsQueued.Add(1)
 		if !b.throttle.Enqueue(ctx, isStream) {
-			return nil, ErrAllInstancesBusy
+			return nil, ErrAllAccountsBusy
 		}
 		defer b.throttle.Dequeue()
 	}
@@ -115,12 +115,12 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 	}
 
 	b.mu.RLock()
-	instances := b.instances
+	accounts := b.accounts
 	health := b.health
 	b.mu.RUnlock()
 
-	if len(instances) == 0 {
-		return nil, ErrNoHealthyInstances
+	if len(accounts) == 0 {
+		return nil, ErrNoHealthyAccounts
 	}
 
 	requestID := uuid.New().String()
@@ -130,93 +130,93 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 		if info, ok := b.sessions.Load(sessionKey); ok {
 			si := info.(*SessionInfo)
 			if time.Since(si.LastRequest) < sessionTTL {
-				inst := b.findInstance(si.InstanceName)
-				if inst != nil && !excludeInstances[inst.Name] {
-					h := health[inst.Name]
+				acct := b.findAccount(si.AccountName)
+				if acct != nil && !excludeAccounts[acct.Name] {
+					h := health[acct.Name]
 					if h == nil || h.IsAvailable() {
 						// Use dynamic concurrency for sticky sessions
-						effectiveMax := inst.MaxConcurrency
+						effectiveMax := acct.MaxConcurrency
 						if h != nil {
-							effectiveMax = EffectiveMaxConcurrency(h.budget, inst.MaxConcurrency)
+							effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
 						}
-						rate := b.tracker.LoadRate(inst.Name, effectiveMax)
+						rate := b.tracker.LoadRate(acct.Name, effectiveMax)
 						if rate < 100 {
-							if release, ok := b.tracker.Acquire(inst.Name, requestID, effectiveMax); ok {
+							if release, ok := b.tracker.Acquire(acct.Name, requestID, effectiveMax); ok {
 								b.sessions.Store(sessionKey, &SessionInfo{
-									InstanceName: si.InstanceName,
-									LastRequest:  time.Now(),
+									AccountName: si.AccountName,
+									LastRequest: time.Now(),
 								})
-								return &SelectResult{Instance: *inst, RequestID: requestID, Release: release}, nil
+								return &SelectResult{Account: *acct, RequestID: requestID, Release: release}, nil
 							}
 						}
 					}
 				}
 			}
-			// Sticky session expired or instance unavailable
+			// Sticky session expired or account unavailable
 			b.sessions.Delete(sessionKey)
 		}
 	}
 
 	// Layer 3: Score-based selection with budget state filtering
-	candidates := make([]instanceCandidate, 0, len(instances))
-	for _, inst := range instances {
-		if excludeInstances[inst.Name] {
+	candidates := make([]accountCandidate, 0, len(accounts))
+	for _, acct := range accounts {
+		if excludeAccounts[acct.Name] {
 			continue
 		}
-		h := health[inst.Name]
+		h := health[acct.Name]
 		if h != nil && !h.IsAvailable() {
 			continue
 		}
 
-		// Check budget state — skip Blocked and StickyOnly instances
+		// Check budget state — skip Blocked and StickyOnly accounts
 		if h != nil && h.budget != nil {
 			state := h.budget.State()
 			if state == StateBlocked || state == StateStickyOnly {
-				observe.Logger(ctx).Debug("balancer: instance filtered",
-					"instance", inst.Name,
+				observe.Logger(ctx).Debug("balancer: account filtered",
+					"account", acct.Name,
 					"reason", state.String(),
 				)
 				continue
 			}
 		}
 
-		effectiveMax := inst.MaxConcurrency
+		effectiveMax := acct.MaxConcurrency
 		if h != nil {
-			effectiveMax = EffectiveMaxConcurrency(h.budget, inst.MaxConcurrency)
+			effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
 		}
-		rate := b.tracker.LoadRate(inst.Name, effectiveMax)
+		rate := b.tracker.LoadRate(acct.Name, effectiveMax)
 		if rate >= 100 {
 			continue
 		}
 		var lu time.Time
-		if v, ok := b.lastUsed.Load(inst.Name); ok {
+		if v, ok := b.lastUsed.Load(acct.Name); ok {
 			lu = v.(time.Time)
 		}
 		score := 0.0
 		if h != nil {
 			score = h.Score(rate)
 		}
-		candidates = append(candidates, instanceCandidate{
-			instance: inst, loadRate: rate, lastUsed: lu, score: score,
+		candidates = append(candidates, accountCandidate{
+			account: acct, loadRate: rate, lastUsed: lu, score: score,
 		})
 	}
 
 	if len(candidates) == 0 {
-		return nil, ErrAllInstancesBusy
+		return nil, ErrAllAccountsBusy
 	}
 
 	// Short-circuit: single candidate, no sorting needed
 	if len(candidates) == 1 {
 		c := candidates[0]
-		effectiveMax := c.instance.MaxConcurrency
-		if h := health[c.instance.Name]; h != nil {
-			effectiveMax = EffectiveMaxConcurrency(h.budget, c.instance.MaxConcurrency)
+		effectiveMax := c.account.MaxConcurrency
+		if h := health[c.account.Name]; h != nil {
+			effectiveMax = EffectiveMaxConcurrency(h.budget, c.account.MaxConcurrency)
 		}
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
-			b.lastUsed.Store(c.instance.Name, time.Now())
-			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
+		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
+			b.lastUsed.Store(c.account.Name, time.Now())
+			return &SelectResult{Account: c.account, RequestID: requestID, Release: release}, nil
 		}
-		return nil, ErrAllInstancesBusy
+		return nil, ErrAllAccountsBusy
 	}
 
 	// Two candidates: simple comparison instead of sort.Slice
@@ -237,30 +237,30 @@ func (b *Balancer) SelectInstance(ctx context.Context, sessionKey string, exclud
 
 	// Try to acquire slot
 	for _, c := range candidates {
-		effectiveMax := c.instance.MaxConcurrency
-		if h := health[c.instance.Name]; h != nil {
-			effectiveMax = EffectiveMaxConcurrency(h.budget, c.instance.MaxConcurrency)
+		effectiveMax := c.account.MaxConcurrency
+		if h := health[c.account.Name]; h != nil {
+			effectiveMax = EffectiveMaxConcurrency(h.budget, c.account.MaxConcurrency)
 		}
-		if release, ok := b.tracker.Acquire(c.instance.Name, requestID, effectiveMax); ok {
-			b.lastUsed.Store(c.instance.Name, time.Now())
-			observe.Logger(ctx).Debug("balancer: instance selected",
-				"instance", c.instance.Name,
+		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
+			b.lastUsed.Store(c.account.Name, time.Now())
+			observe.Logger(ctx).Debug("balancer: account selected",
+				"account", c.account.Name,
 				"score", c.score,
 				"candidates", len(candidates),
 			)
-			return &SelectResult{Instance: c.instance, RequestID: requestID, Release: release}, nil
+			return &SelectResult{Account: c.account, RequestID: requestID, Release: release}, nil
 		}
 	}
 
-	return nil, ErrAllInstancesBusy
+	return nil, ErrAllAccountsBusy
 }
 
-func (b *Balancer) findInstance(name string) *config.InstanceConfig {
+func (b *Balancer) findAccount(name string) *config.AccountConfig {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	for _, inst := range b.instances {
-		if inst.Name == name {
-			found := inst
+	for _, acct := range b.accounts {
+		if acct.Name == name {
+			found := acct
 			return &found
 		}
 	}
@@ -268,13 +268,13 @@ func (b *Balancer) findInstance(name string) *config.InstanceConfig {
 }
 
 // BindSession creates or updates a sticky session binding.
-func (b *Balancer) BindSession(sessionKey, instanceName string) {
+func (b *Balancer) BindSession(sessionKey, accountName string) {
 	if sessionKey == "" {
 		return
 	}
 	b.sessions.Store(sessionKey, &SessionInfo{
-		InstanceName: instanceName,
-		LastRequest:  time.Now(),
+		AccountName: accountName,
+		LastRequest: time.Now(),
 	})
 }
 
@@ -283,22 +283,22 @@ func (b *Balancer) ClearSession(sessionKey string) {
 	b.sessions.Delete(sessionKey)
 }
 
-// UpdateInstances atomically replaces the instance list (for hot-reload),
-// preserving health state for existing instances and cleaning up removed ones.
-func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
+// UpdateAccounts atomically replaces the account list (for hot-reload),
+// preserving health state for existing accounts and cleaning up removed ones.
+func (b *Balancer) UpdateAccounts(accounts []config.AccountConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.instances = filterEnabled(instances)
+	b.accounts = filterEnabled(accounts)
 
-	newHealth := make(map[string]*AccountHealth, len(b.instances))
+	newHealth := make(map[string]*AccountHealth, len(b.accounts))
 	var added, removed []string
-	for _, inst := range b.instances {
-		if existing, ok := b.health[inst.Name]; ok {
-			newHealth[inst.Name] = existing
+	for _, acct := range b.accounts {
+		if existing, ok := b.health[acct.Name]; ok {
+			newHealth[acct.Name] = existing
 		} else {
-			newHealth[inst.Name] = NewAccountHealth(inst.Name)
-			added = append(added, inst.Name)
+			newHealth[acct.Name] = NewAccountHealth(acct.Name)
+			added = append(added, acct.Name)
 		}
 	}
 	for name := range b.health {
@@ -308,14 +308,14 @@ func (b *Balancer) UpdateInstances(instances []config.InstanceConfig) {
 	}
 	b.health = newHealth
 
-	// Clean up tracker entries for removed instances
+	// Clean up tracker entries for removed accounts
 	for _, name := range removed {
-		b.tracker.RemoveInstance(name)
+		b.tracker.RemoveAccount(name)
 	}
 
 	if len(added) > 0 || len(removed) > 0 {
-		slog.Info("balancer: instances updated",
-			"total", len(b.instances),
+		slog.Info("balancer: accounts updated",
+			"total", len(b.accounts),
 			"added", added,
 			"removed", removed,
 		)
@@ -349,10 +349,10 @@ func (b *Balancer) cleanupSessions() {
 	})
 }
 
-// ReportResult reports a request outcome to the health tracker for the given instance.
-func (b *Balancer) ReportResult(ctx context.Context, instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
+// ReportResult reports a request outcome to the health tracker for the given account.
+func (b *Balancer) ReportResult(ctx context.Context, accountName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
 	b.mu.RLock()
-	h := b.health[instanceName]
+	h := b.health[accountName]
 	b.mu.RUnlock()
 	if h == nil {
 		return
@@ -367,18 +367,18 @@ func (b *Balancer) ReportResult(ctx context.Context, instanceName string, status
 		b.throttle.RecordAccept()
 		// Trigger usage fetch if budget data is stale
 		if b.usageFetcher != nil && !h.budget.HasRecentData(usageStaleThreshold) {
-			go b.usageFetcher.FetchIfNeeded(context.Background(), instanceName, h.budget)
+			go b.usageFetcher.FetchIfNeeded(context.Background(), accountName, h.budget)
 		}
 	} else {
 		h.RecordError(ctx, statusCode, retryAfter, responseHeaders)
 	}
 }
 
-// GetHealth returns the health tracker for a specific instance.
-func (b *Balancer) GetHealth(instanceName string) *AccountHealth {
+// GetHealth returns the health tracker for a specific account.
+func (b *Balancer) GetHealth(accountName string) *AccountHealth {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.health[instanceName]
+	return b.health[accountName]
 }
 
 // AllHealth returns a snapshot of all health trackers.
@@ -392,16 +392,16 @@ func (b *Balancer) AllHealth() map[string]*AccountHealth {
 	return result
 }
 
-// InstanceStates returns a snapshot of all instance states for observability.
-func (b *Balancer) InstanceStates() map[string]observe.InstanceState {
+// AccountStates returns a snapshot of all account states for observability.
+func (b *Balancer) AccountStates() map[string]observe.AccountState {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	states := make(map[string]observe.InstanceState, len(b.instances))
-	for _, inst := range b.instances {
-		name := inst.Name
-		state := observe.InstanceState{
+	states := make(map[string]observe.AccountState, len(b.accounts))
+	for _, acct := range b.accounts {
+		name := acct.Name
+		state := observe.AccountState{
 			Concurrency:    b.tracker.ActiveSlots(name),
-			MaxConcurrency: inst.MaxConcurrency,
+			MaxConcurrency: acct.MaxConcurrency,
 		}
 		if h, ok := b.health[name]; ok {
 			if h.IsDisabled() {
@@ -418,12 +418,12 @@ func (b *Balancer) InstanceStates() map[string]observe.InstanceState {
 	return states
 }
 
-// GetInstances returns current instance list (for admin API).
-func (b *Balancer) GetInstances() []config.InstanceConfig {
+// GetAccounts returns current account list (for admin API).
+func (b *Balancer) GetAccounts() []config.AccountConfig {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	result := make([]config.InstanceConfig, len(b.instances))
-	copy(result, b.instances)
+	result := make([]config.AccountConfig, len(b.accounts))
+	copy(result, b.accounts)
 	return result
 }
 

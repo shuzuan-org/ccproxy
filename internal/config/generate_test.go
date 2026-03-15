@@ -94,7 +94,7 @@ port = 3000
 func TestInsertAdminPassword_NoServerSection(t *testing.T) {
 	t.Parallel()
 
-	content := `[[instances]]
+	content := `[[accounts]]
 name = "test"
 `
 	result := insertAdminPassword(content, "newpass123")

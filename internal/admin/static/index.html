@@ -212,10 +212,10 @@
 <div class="container">
   <div class="card">
     <div class="card-header">
-      <h2>OAuth Instances</h2>
+      <h2>OAuth Accounts</h2>
       <div style="display:flex; gap:8px; align-items:center;">
-        <span class="badge" id="instance-count">—</span>
-        <button class="btn btn-accent" onclick="addInlineInstance()">+ Add Claude</button>
+        <span class="badge" id="account-count">—</span>
+        <button class="btn btn-accent" onclick="addInlineAccount()">+ Add Claude</button>
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -229,7 +229,7 @@
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody id="instances-body">
+        <tbody id="accounts-body">
           <tr class="empty-row"><td colspan="5">Loading…</td></tr>
         </tbody>
       </table>
@@ -240,7 +240,7 @@
 <!-- Login Modal -->
 <div class="modal-overlay" id="login-modal">
   <div class="modal">
-    <h3>OAuth Login — <span id="modal-instance"></span></h3>
+    <h3>OAuth Login — <span id="modal-account"></span></h3>
     <p>Open the authorization URL below, approve access, then paste the returned code or URL here.</p>
     <div class="modal-status" id="modal-status"></div>
     <div id="auth-url-box" style="display:none; margin-bottom:12px;">
@@ -284,29 +284,29 @@
 
   var PROXY_HINT = 'socks5://user:password@ip:port';
 
-  function renderInstances(data) {
-    document.getElementById('instance-count').textContent = data.length + ' instances';
-    const tbody = document.getElementById('instances-body');
+  function renderAccounts(data) {
+    document.getElementById('account-count').textContent = data.length + ' accounts';
+    const tbody = document.getElementById('accounts-body');
     if (!data.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No OAuth instances configured</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No OAuth accounts configured</td></tr>';
       return;
     }
     tbody.innerHTML = '';
-    data.forEach(function(inst) {
+    data.forEach(function(acct) {
       var tr = document.createElement('tr');
 
       // Name cell
       var tdName = document.createElement('td');
       var strong = document.createElement('strong');
-      strong.textContent = inst.name;
+      strong.textContent = acct.name;
       tdName.appendChild(strong);
       tr.appendChild(tdName);
 
       // Proxy cell (with dblclick to edit)
       var tdProxy = document.createElement('td');
       tdProxy.className = 'proxy-cell';
-      if (inst.proxy) {
-        tdProxy.textContent = inst.proxy;
+      if (acct.proxy) {
+        tdProxy.textContent = acct.proxy;
       } else {
         var placeholder = document.createElement('span');
         placeholder.className = 'proxy-placeholder';
@@ -315,17 +315,17 @@
       }
       tdProxy.addEventListener('dblclick', (function(name, td) {
         return function() { editProxy(name, td); };
-      })(inst.name, tdProxy));
+      })(acct.name, tdProxy));
       tr.appendChild(tdProxy);
 
       // Token status cell
       var tdStatus = document.createElement('td');
-      tdStatus.innerHTML = tokenChip(inst.token_status);
+      tdStatus.innerHTML = tokenChip(acct.token_status);
       tr.appendChild(tdStatus);
 
       // Expires at cell
       var tdExpiry = document.createElement('td');
-      tdExpiry.textContent = fmtExpiry(inst.token_expires_at);
+      tdExpiry.textContent = fmtExpiry(acct.token_expires_at);
       tr.appendChild(tdExpiry);
 
       // Actions cell — use DOM API to prevent XSS via onclick injection
@@ -338,16 +338,16 @@
       loginBtn.textContent = 'Login';
       loginBtn.addEventListener('click', (function(name) {
         return function() { startLogin(name); };
-      })(inst.name));
+      })(acct.name));
       actionsDiv.appendChild(loginBtn);
 
-      if (inst.token_status !== 'no token') {
+      if (acct.token_status !== 'no token') {
         var refreshBtn = document.createElement('button');
         refreshBtn.className = 'btn';
         refreshBtn.textContent = 'Refresh';
         refreshBtn.addEventListener('click', (function(name) {
           return function() { doRefresh(name); };
-        })(inst.name));
+        })(acct.name));
         actionsDiv.appendChild(refreshBtn);
       }
 
@@ -356,7 +356,7 @@
       removeBtn.textContent = 'Remove';
       removeBtn.addEventListener('click', (function(name) {
         return function() { doRemove(name); };
-      })(inst.name));
+      })(acct.name));
       actionsDiv.appendChild(removeBtn);
 
       tdActions.appendChild(actionsDiv);
@@ -377,8 +377,8 @@
     const el = document.getElementById('refresh-status');
     el.textContent = 'Refreshing…';
     try {
-      const data = await fetchJSON('/api/instances');
-      renderInstances(data);
+      const data = await fetchJSON('/api/accounts');
+      renderAccounts(data);
       el.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour12: false });
     } catch (err) {
       el.textContent = 'Error: ' + err.message;
@@ -387,7 +387,7 @@
 
   // --- OAuth Actions ---
 
-  async function startLogin(instanceName) {
+  async function startLogin(accountName) {
     const statusEl = document.getElementById('modal-status');
     const codeInput = document.getElementById('modal-code');
     const urlBox = document.getElementById('auth-url-box');
@@ -397,14 +397,14 @@
     statusEl.textContent = '';
     statusEl.className = 'modal-status';
     urlBox.style.display = 'none';
-    document.getElementById('modal-instance').textContent = instanceName;
+    document.getElementById('modal-account').textContent = accountName;
     document.getElementById('login-modal').classList.add('active');
 
     try {
       const resp = await fetchJSON('/api/oauth/login/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instance: instanceName }),
+        body: JSON.stringify({ account: accountName }),
       });
       currentSessionId = resp.session_id;
       urlInput.value = resp.authorization_url;
@@ -482,13 +482,13 @@
     currentSessionId = null;
   }
 
-  async function doRefresh(instanceName) {
-    if (!confirm('Force refresh token for ' + esc(instanceName) + '?')) return;
+  async function doRefresh(accountName) {
+    if (!confirm('Force refresh token for ' + esc(accountName) + '?')) return;
     try {
       await fetchJSON('/api/oauth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instance: instanceName }),
+        body: JSON.stringify({ account: accountName }),
       });
       refresh();
     } catch (err) {
@@ -508,7 +508,7 @@
     }
   }
 
-  function editProxy(instanceName, td) {
+  function editProxy(accountName, td) {
     // Prevent double activation
     if (td.querySelector('.inline-proxy-input')) return;
 
@@ -526,7 +526,7 @@
       // Allow clearing
       if (val === '') {
         saving = true;
-        await submitProxy(instanceName, '', td);
+        await submitProxy(accountName, '', td);
         return;
       }
       if (!isValidProxy(val)) {
@@ -534,7 +534,7 @@
         return;
       }
       saving = true;
-      await submitProxy(instanceName, val, td);
+      await submitProxy(accountName, val, td);
     }
 
     function cancel() {
@@ -556,12 +556,12 @@
     });
   }
 
-  async function submitProxy(instanceName, proxy, td) {
+  async function submitProxy(accountName, proxy, td) {
     try {
-      await fetchJSON('/api/instances/proxy', {
+      await fetchJSON('/api/accounts/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: instanceName, proxy: proxy }),
+        body: JSON.stringify({ name: accountName, proxy: proxy }),
       });
       refresh();
     } catch (err) {
@@ -570,11 +570,11 @@
     }
   }
 
-  // --- Add / Remove Instance ---
+  // --- Add / Remove Account ---
 
-  function addInlineInstance() {
-    const tbody = document.getElementById('instances-body');
-    // Remove "no instances" empty row if present
+  function addInlineAccount() {
+    const tbody = document.getElementById('accounts-body');
+    // Remove "no accounts" empty row if present
     const emptyRow = tbody.querySelector('.empty-row');
     if (emptyRow) emptyRow.remove();
     // Prevent multiple pending inline rows
@@ -585,7 +585,7 @@
     const tr = document.createElement('tr');
     tr.className = 'inline-add-row';
     tr.innerHTML =
-      '<td><input class="inline-name-input" type="text" placeholder="Instance name…" /></td>' +
+      '<td><input class="inline-name-input" type="text" placeholder="Account name…" /></td>' +
       '<td><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
       '<td><span class="chip chip-muted">—</span></td>' +
       '<td>—</td>' +
@@ -605,7 +605,7 @@
       saveBtn.disabled = true;
       saveBtn.textContent = 'Adding…';
       try {
-        await fetchJSON('/api/instances/add', {
+        await fetchJSON('/api/accounts/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: name }),
@@ -621,7 +621,7 @@
 
     function cancelInline() {
       tr.remove();
-      // Restore empty row if no instances remain
+      // Restore empty row if no accounts remain
       if (!tbody.children.length || (tbody.children.length === 0)) {
         refresh();
       }
@@ -635,13 +635,13 @@
     });
   }
 
-  async function doRemove(instanceName) {
-    if (!confirm('Remove instance "' + esc(instanceName) + '"? This will also delete its OAuth token.')) return;
+  async function doRemove(accountName) {
+    if (!confirm('Remove account "' + esc(accountName) + '"? This will also delete its OAuth token.')) return;
     try {
-      await fetchJSON('/api/instances/remove', {
+      await fetchJSON('/api/accounts/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: instanceName }),
+        body: JSON.stringify({ name: accountName }),
       });
       refresh();
     } catch (err) {

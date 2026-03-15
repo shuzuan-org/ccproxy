@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend structured logging across the entire ccproxy project so every request-path log line carries request context (request_id, api_key), add missing key events, and enhance periodic metrics with per-instance breakdown and runtime state snapshots.
+**Goal:** Extend structured logging across the entire ccproxy project so every request-path log line carries request context (request_id, api_key), add missing key events, and enhance periodic metrics with per-account breakdown and runtime state snapshots.
 
-**Architecture:** Replace direct `slog.XXX` calls with `observe.Logger(ctx).XXX` on all request-path code. Add `ctx context.Context` parameter to internal functions that lack it (health, budget, disguise). Enhance `observe.Metrics` with per-instance counters, rate calculation, and a `StateProvider` interface for runtime state snapshots.
+**Architecture:** Replace direct `slog.XXX` calls with `observe.Logger(ctx).XXX` on all request-path code. Add `ctx context.Context` parameter to internal functions that lack it (health, budget, disguise). Enhance `observe.Metrics` with per-account counters, rate calculation, and a `StateProvider` interface for runtime state snapshots.
 
 **Tech Stack:** Go stdlib (`log/slog`, `sync`, `sync/atomic`), existing `internal/observe` package
 
@@ -18,7 +18,7 @@
 
 | File | Changes |
 |------|---------|
-| `internal/observe/metrics.go` | Add InstanceMetrics, StateProvider, enhanced StartPeriodicLog |
+| `internal/observe/metrics.go` | Add AccountMetrics, StateProvider, enhanced StartPeriodicLog |
 | `internal/observe/metrics_test.go` | Tests for above |
 | `internal/loadbalancer/health.go` | Add ctx to RecordSuccess/RecordError/RecordTimeout, wasCoolingDown recovery log |
 | `internal/loadbalancer/health_test.go` | Update for ctx |
@@ -26,7 +26,7 @@
 | `internal/loadbalancer/budget_test.go` | Update for ctx |
 | `internal/loadbalancer/balancer.go` | Add ctx to ReportResult, implement StateProvider, replace slog |
 | `internal/loadbalancer/balancer_test.go` | Update for ctx |
-| `internal/loadbalancer/retry.go` | Replace slog with observe.Logger(ctx), track instances_tried |
+| `internal/loadbalancer/retry.go` | Replace slog with observe.Logger(ctx), track accounts_tried |
 | `internal/loadbalancer/retry_test.go` | Update if needed |
 | `internal/loadbalancer/throttle.go` | Replace slog where ctx available |
 | `internal/loadbalancer/usage.go` | Replace slog with observe.Logger(ctx) |
@@ -40,36 +40,36 @@
 
 ## Chunk 1: observe Package Enhancements
 
-### Task 1: Add InstanceMetrics to observe package
+### Task 1: Add AccountMetrics to observe package
 
 **Files:**
 - Modify: `internal/observe/metrics.go`
 - Modify: `internal/observe/metrics_test.go`
 
-- [ ] **Step 1: Write failing test for InstanceMetrics**
+- [ ] **Step 1: Write failing test for AccountMetrics**
 
 In `internal/observe/metrics_test.go`, add:
 
 ```go
-func TestInstanceMetrics(t *testing.T) {
+func TestAccountMetrics(t *testing.T) {
 	t.Parallel()
 	m := &Metrics{}
 
-	im1 := m.Instance("acct-1")
+	im1 := m.Account("acct-1")
 	if im1 == nil {
-		t.Fatal("Instance returned nil")
+		t.Fatal("Account returned nil")
 	}
 
 	// Same pointer on repeated access
-	im2 := m.Instance("acct-1")
+	im2 := m.Account("acct-1")
 	if im1 != im2 {
-		t.Fatal("Instance returned different pointer for same name")
+		t.Fatal("Account returned different pointer for same name")
 	}
 
-	// Different instance returns different pointer
-	im3 := m.Instance("acct-2")
+	// Different account returns different pointer
+	im3 := m.Account("acct-2")
 	if im1 == im3 {
-		t.Fatal("Different instances returned same pointer")
+		t.Fatal("Different accounts returned same pointer")
 	}
 
 	im1.RequestsTotal.Add(5)
@@ -86,16 +86,16 @@ func TestInstanceMetrics(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/observe/... -run TestInstanceMetrics -v`
-Expected: FAIL (Instance method not defined)
+Run: `go test ./internal/observe/... -run TestAccountMetrics -v`
+Expected: FAIL (Account method not defined)
 
-- [ ] **Step 3: Implement InstanceMetrics**
+- [ ] **Step 3: Implement AccountMetrics**
 
-In `internal/observe/metrics.go`, add the `instances sync.Map` field to `Metrics` struct, and add:
+In `internal/observe/metrics.go`, add the `accounts sync.Map` field to `Metrics` struct, and add:
 
 ```go
-// InstanceMetrics tracks per-instance counters.
-type InstanceMetrics struct {
+// AccountMetrics tracks per-account counters.
+type AccountMetrics struct {
 	RequestsTotal   atomic.Int64
 	RequestsSuccess atomic.Int64
 	RequestsError   atomic.Int64
@@ -103,14 +103,14 @@ type InstanceMetrics struct {
 	Errors529       atomic.Int64
 }
 
-// Instance returns the per-instance metrics for the given name, lazily initialized.
-func (m *Metrics) Instance(name string) *InstanceMetrics {
-	if v, ok := m.instances.Load(name); ok {
-		return v.(*InstanceMetrics)
+// Account returns the per-account metrics for the given name, lazily initialized.
+func (m *Metrics) Account(name string) *AccountMetrics {
+	if v, ok := m.accounts.Load(name); ok {
+		return v.(*AccountMetrics)
 	}
-	im := &InstanceMetrics{}
-	actual, _ := m.instances.LoadOrStore(name, im)
-	return actual.(*InstanceMetrics)
+	im := &AccountMetrics{}
+	actual, _ := m.accounts.LoadOrStore(name, im)
+	return actual.(*AccountMetrics)
 }
 ```
 
@@ -118,20 +118,20 @@ Add `"sync"` to imports. Add the field:
 ```go
 type Metrics struct {
 	// ... existing fields ...
-	instances sync.Map // instanceName → *InstanceMetrics
+	accounts sync.Map // accountName → *AccountMetrics
 }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/observe/... -run TestInstanceMetrics -v -race`
+Run: `go test ./internal/observe/... -run TestAccountMetrics -v -race`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add internal/observe/metrics.go internal/observe/metrics_test.go
-git commit -m "feat(observe): add per-instance metrics counters"
+git commit -m "feat(observe): add per-account metrics counters"
 ```
 
 ### Task 2: Add StateProvider interface and enhanced periodic logging
@@ -155,11 +155,11 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	m := &Metrics{}
 	m.RequestsTotal.Store(100)
 	m.RequestsSuccess.Store(95)
-	m.Instance("acct-1").RequestsTotal.Store(60)
-	m.Instance("acct-2").RequestsTotal.Store(40)
+	m.Account("acct-1").RequestsTotal.Store(60)
+	m.Account("acct-2").RequestsTotal.Store(40)
 
 	provider := &mockStateProvider{
-		states: map[string]InstanceState{
+		states: map[string]AccountState{
 			"acct-1": {Health: "healthy", Concurrency: 2, MaxConcurrency: 5, BudgetState: "normal"},
 			"acct-2": {Health: "cooldown", Concurrency: 0, MaxConcurrency: 5, BudgetState: "sticky_only"},
 		},
@@ -178,16 +178,16 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	if !strings.Contains(output, "requests_per_min") {
 		t.Errorf("missing 'requests_per_min' in output:\n%s", output)
 	}
-	if !strings.Contains(output, "metrics instance") {
-		t.Errorf("missing 'metrics instance' in output:\n%s", output)
+	if !strings.Contains(output, "metrics account") {
+		t.Errorf("missing 'metrics account' in output:\n%s", output)
 	}
 }
 
 type mockStateProvider struct {
-	states map[string]InstanceState
+	states map[string]AccountState
 }
 
-func (m *mockStateProvider) InstanceStates() map[string]InstanceState {
+func (m *mockStateProvider) AccountStates() map[string]AccountState {
 	return m.states
 }
 ```
@@ -207,11 +207,11 @@ Add types:
 ```go
 // StateProvider supplies runtime state for periodic metrics snapshots.
 type StateProvider interface {
-	InstanceStates() map[string]InstanceState
+	AccountStates() map[string]AccountState
 }
 
-// InstanceState represents the runtime state of a single instance.
-type InstanceState struct {
+// AccountState represents the runtime state of a single account.
+type AccountState struct {
 	Health         string
 	Concurrency    int
 	MaxConcurrency int
@@ -222,7 +222,7 @@ type InstanceState struct {
 Update `StartPeriodicLog` signature and body:
 ```go
 // StartPeriodicLog starts a goroutine that logs a metrics snapshot every interval.
-// If state is non-nil, also logs per-instance state. If logger is nil, uses slog.Default().
+// If state is non-nil, also logs per-account state. If logger is nil, uses slog.Default().
 // It stops when ctx is cancelled.
 func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, state StateProvider, logger *slog.Logger) {
 	if logger == nil {
@@ -254,15 +254,15 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 					"requests_queued", snap["requests_queued"],
 					"retries_total", snap["retries_total"],
 					"failovers_total", snap["failovers_total"],
-					"instances_429", snap["instances_429"],
-					"instances_529", snap["instances_529"],
+					"accounts_429", snap["accounts_429"],
+					"accounts_529", snap["accounts_529"],
 				)
 
 				if state != nil {
-					for name, is := range state.InstanceStates() {
-						im := m.Instance(name)
-						logger.Info("metrics instance",
-							"instance", name,
+					for name, is := range state.AccountStates() {
+						im := m.Account(name)
+						logger.Info("metrics account",
+							"account", name,
 							"requests", im.RequestsTotal.Load(),
 							"success", im.RequestsSuccess.Load(),
 							"errors", im.RequestsError.Load(),
@@ -330,13 +330,13 @@ func (h *AccountHealth) RecordTimeout(ctx context.Context)
 ```
 
 Replace all `slog.Warn(...)` / `slog.Error(...)` calls in these methods with `observe.Logger(ctx).Warn(...)` / `observe.Logger(ctx).Error(...)`. There are 7 slog calls total:
-- health.go:101 `slog.Warn("instance rate limited (true 429)", ...)` → `observe.Logger(ctx).Warn(...)`
-- health.go:107 `slog.Warn("instance rate limited (no reset headers)", ...)` → same
-- health.go:115 `slog.Warn("instance overloaded", ...)` → same
-- health.go:124 `slog.Warn("instance auth error, cooling down", ...)` → same
-- health.go:135 `slog.Error("instance disabled: too many consecutive 401s", ...)` → same
-- health.go:142 `slog.Error("instance forbidden, disabling", ...)` → same
-- health.go:170 `slog.Warn("instance cooldown: timeout threshold reached", ...)` → same
+- health.go:101 `slog.Warn("account rate limited (true 429)", ...)` → `observe.Logger(ctx).Warn(...)`
+- health.go:107 `slog.Warn("account rate limited (no reset headers)", ...)` → same
+- health.go:115 `slog.Warn("account overloaded", ...)` → same
+- health.go:124 `slog.Warn("account auth error, cooling down", ...)` → same
+- health.go:135 `slog.Error("account disabled: too many consecutive 401s", ...)` → same
+- health.go:142 `slog.Error("account forbidden, disabling", ...)` → same
+- health.go:170 `slog.Warn("account cooldown: timeout threshold reached", ...)` → same
 
 Add import for `"github.com/binn/ccproxy/internal/observe"`.
 
@@ -359,14 +359,14 @@ h.lastCooldownDuration.Store(int64(cooldownDuration))
 In `IsAvailable()` (health.go:~185), after the existing check `time.Now().After(h.cooldownUntil)`, add recovery log using CAS to avoid duplicate logging:
 ```go
 if h.wasCoolingDown.CompareAndSwap(true, false) {
-	slog.Info("instance recovered from cooldown",
-		"instance", h.Name,
+	slog.Info("account recovered from cooldown",
+		"account", h.Name,
 		"cooldown_duration", time.Duration(h.lastCooldownDuration.Load()),
 	)
 }
 ```
 
-This keeps `IsAvailable()` using RLock (no write to mutex-guarded state), avoiding performance impact on the hot `SelectInstance` path.
+This keeps `IsAvailable()` using RLock (no write to mutex-guarded state), avoiding performance impact on the hot `SelectAccount` path.
 
 - [ ] **Step 3: Update budget.go — add ctx and observe.Logger**
 
@@ -393,7 +393,7 @@ Add import for `"github.com/binn/ccproxy/internal/observe"`.
 
 Change signature:
 ```go
-func (b *Balancer) ReportResult(ctx context.Context, instanceName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header)
+func (b *Balancer) ReportResult(ctx context.Context, accountName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header)
 ```
 
 Update calls inside ReportResult:
@@ -401,25 +401,25 @@ Update calls inside ReportResult:
 - `h.budget.UpdateFromHeaders(responseHeaders)` → `h.budget.UpdateFromHeaders(ctx, responseHeaders)` (balancer.go:364)
 - `h.RecordError(statusCode, retryAfter, responseHeaders)` → `h.RecordError(ctx, statusCode, retryAfter, responseHeaders)` (balancer.go:373)
 
-Replace slog calls in `SelectInstance()` (already has ctx):
+Replace slog calls in `SelectAccount()` (already has ctx):
 - balancer.go:107 `slog.Debug("backpressure: utilization delay", ...)` → `observe.Logger(ctx).Debug(...)`
-- balancer.go:175 `slog.Debug("balancer: instance filtered", ...)` → `observe.Logger(ctx).Debug(...)`
-- balancer.go:246 `slog.Debug("balancer: instance selected", ...)` → `observe.Logger(ctx).Debug(...)`
+- balancer.go:175 `slog.Debug("balancer: account filtered", ...)` → `observe.Logger(ctx).Debug(...)`
+- balancer.go:246 `slog.Debug("balancer: account selected", ...)` → `observe.Logger(ctx).Debug(...)`
 
-Keep `slog.Info("balancer: instances updated", ...)` in `UpdateInstances()` — non-request path.
+Keep `slog.Info("balancer: accounts updated", ...)` in `UpdateAccounts()` — non-request path.
 
-- [ ] **Step 5: Add InstanceStates method to Balancer (StateProvider)**
+- [ ] **Step 5: Add AccountStates method to Balancer (StateProvider)**
 
 ```go
-func (b *Balancer) InstanceStates() map[string]observe.InstanceState {
+func (b *Balancer) AccountStates() map[string]observe.AccountState {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	states := make(map[string]observe.InstanceState, len(b.instances))
-	for _, inst := range b.instances {
-		name := inst.Name
-		state := observe.InstanceState{
+	states := make(map[string]observe.AccountState, len(b.accounts))
+	for _, acct:= range b.accounts {
+		name := acct.Name
+		state := observe.AccountState{
 			Concurrency:    b.tracker.ActiveSlots(name),
-			MaxConcurrency: inst.MaxConcurrency,
+			MaxConcurrency: acct.MaxConcurrency,
 		}
 		if h, ok := b.health[name]; ok {
 			if h.IsDisabled() {
@@ -443,30 +443,30 @@ Add `"github.com/binn/ccproxy/internal/observe"` to imports if not already prese
 
 Replace all `slog.XXX(...)` calls with `observe.Logger(ctx).XXX(...)`. All calls already have ctx available. Approximately 8-10 calls:
 - retry.go:90 `slog.Warn("retry elapsed time exceeded", ...)` → `observe.Logger(ctx).Warn(...)`
-- retry.go:101 `slog.Warn("no instance available", ...)` → `observe.Logger(ctx).Warn(...)`
-- retry.go:112 `slog.Debug("selected instance", ...)` → `observe.Logger(ctx).Debug(...)`
+- retry.go:101 `slog.Warn("no account available", ...)` → `observe.Logger(ctx).Warn(...)`
+- retry.go:112 `slog.Debug("selected account", ...)` → `observe.Logger(ctx).Debug(...)`
 - retry.go:173 `slog.Warn("failover: rate limited", ...)` → `observe.Logger(ctx).Warn(...)`
-- retry.go:185 `slog.Warn("consecutive 529s across instances, ...")` → `observe.Logger(ctx).Warn(...)`
+- retry.go:185 `slog.Warn("consecutive 529s across accounts, ...")` → `observe.Logger(ctx).Warn(...)`
 - retry.go:201 `slog.Warn("failover immediate", ...)` → `observe.Logger(ctx).Warn(...)`
-- retry.go:223 `slog.Warn("retry on same instance", ...)` → `observe.Logger(ctx).Warn(...)`
+- retry.go:223 `slog.Warn("retry on same account", ...)` → `observe.Logger(ctx).Warn(...)`
 - retry.go:266 `slog.Error("max account switches exceeded", ...)` → `observe.Logger(ctx).Error(...)`
 
-Update all `balancer.ReportResult(instanceName, ...)` calls to `balancer.ReportResult(ctx, instanceName, ...)`. There are 4 calls:
+Update all `balancer.ReportResult(accountName, ...)` calls to `balancer.ReportResult(ctx, accountName, ...)`. There are 4 calls:
 - retry.go:137
 - retry.go:182
 - retry.go:207
 - retry.go:243
 
-- [ ] **Step 7: Add InstancesTried tracking to retry.go**
+- [ ] **Step 7: Add AccountsTried tracking to retry.go**
 
 Add fields to `RetryResult`:
 ```go
 type RetryResult struct {
 	Response       *http.Response
 	StatusCode     int
-	InstanceName   string
+	AccountName   string
 	Body           []byte
-	InstancesTried []string
+	AccountsTried []string
 	Retries        int
 	Failovers      int
 }
@@ -474,25 +474,25 @@ type RetryResult struct {
 
 In `ExecuteWithRetry()`, declare tracking variables:
 ```go
-var instancesTried []string
+var accountsTried []string
 retries := 0
 failovers := 0
 ```
 
-Append instance name each time one is selected:
+Append account name each time one is selected:
 ```go
-instancesTried = append(instancesTried, instanceName)
+accountsTried = append(accountsTried, accountName)
 ```
 
-Increment `retries` on each same-instance retry (where `sameInstanceRetries++`), and `failovers` on each instance switch (where `switchCount++`).
+Increment `retries` on each same-account retry (where `sameAccountRetries++`), and `failovers` on each account switch (where `switchCount++`).
 
 Include in return values:
 ```go
 return &RetryResult{
 	Response:       resp,
 	StatusCode:     statusCode,
-	InstanceName:   instanceName,
-	InstancesTried: instancesTried,
+	AccountName:   accountName,
+	AccountsTried: accountsTried,
 	Retries:        retries,
 	Failovers:      failovers,
 }, nil
@@ -522,7 +522,7 @@ git commit -m "feat(observe): context propagation across loadbalancer package
 Add ctx parameter to AccountHealth.RecordSuccess/RecordError/RecordTimeout,
 BudgetController.UpdateFromHeaders/Record429/RecordSuccess, and
 Balancer.ReportResult. Replace all request-path slog calls with
-observe.Logger(ctx). Add instances_tried/retries/failovers tracking
+observe.Logger(ctx). Add accounts_tried/retries/failovers tracking
 to RetryResult. Add wasCoolingDown recovery logging. Implement
 StateProvider interface on Balancer."
 ```
@@ -598,7 +598,7 @@ git commit -m "feat(observe): context logger in disguise engine"
 
 ### Task 6: Update proxy/handler.go — doRequest() + request summary log
 
-**Depends on:** Task 3 (RetryResult.Retries/Failovers/InstancesTried fields)
+**Depends on:** Task 3 (RetryResult.Retries/Failovers/AccountsTried fields)
 
 **Files:**
 - Modify: `internal/proxy/handler.go`
@@ -627,11 +627,11 @@ Also replace the 2 slog calls in the `requestFn` closure (handler.go:167, 175):
 
 In handler.go:232, update:
 ```go
-h.balancer.ReportResult(result.InstanceName, result.StatusCode, ...)
+h.balancer.ReportResult(result.AccountName, result.StatusCode, ...)
 ```
 to:
 ```go
-h.balancer.ReportResult(r.Context(), result.InstanceName, result.StatusCode, ...)
+h.balancer.ReportResult(r.Context(), result.AccountName, result.StatusCode, ...)
 ```
 
 **Note:** This `ReportResult` call in handler.go:232 is duplicating the one already in retry.go:137 on the success path. This is pre-existing technical debt — leave it for now, flag for future cleanup.
@@ -650,11 +650,11 @@ summaryAttrs := []any{
 
 if result != nil {
 	summaryAttrs = append(summaryAttrs,
-		"instance", result.InstanceName,
+		"account", result.AccountName,
 		"status", result.StatusCode,
 		"retries", result.Retries,
 		"failovers", result.Failovers,
-		"instances_tried", result.InstancesTried,
+		"accounts_tried", result.AccountsTried,
 	)
 }
 
@@ -672,12 +672,12 @@ if err != nil {
 
 Place this right after the metrics recording (`observe.Global.RequestsError.Add(1)` or `observe.Global.RequestsSuccess.Add(1)`) and before the response writing. The existing "all retries exhausted" and "upstream success" log lines can remain or be removed — the summary replaces their purpose. Recommend keeping them for now to avoid changing too much at once.
 
-- [ ] **Step 4: Add per-instance metrics recording**
+- [ ] **Step 4: Add per-account metrics recording**
 
-After request completion (both success and failure), record per-instance metrics:
+After request completion (both success and failure), record per-account metrics:
 ```go
 if result != nil {
-	im := observe.Global.Instance(result.InstanceName)
+	im := observe.Global.Account(result.AccountName)
 	im.RequestsTotal.Add(1)
 	if result.StatusCode >= 200 && result.StatusCode < 300 {
 		im.RequestsSuccess.Add(1)
@@ -735,7 +735,7 @@ In `StartAutoRefresh()`, in the token check loop (manager.go:~186-197), after lo
 ```go
 if remaining > 0 && remaining < 2*time.Minute {
 	slog.Warn("oauth: token expiring soon",
-		"instance", instanceName,
+		"account", accountName,
 		"expires_in", remaining.Round(time.Second),
 	)
 }

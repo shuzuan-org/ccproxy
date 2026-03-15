@@ -10,7 +10,7 @@ func TestSessionMaskStore_GetCreatesNew(t *testing.T) {
 	t.Parallel()
 	store := NewSessionMaskStore()
 
-	uuid := store.Get("instance-1")
+	uuid := store.Get("account-1")
 	if uuid == "" {
 		t.Error("expected non-empty UUID")
 	}
@@ -20,23 +20,23 @@ func TestSessionMaskStore_GetReturnsSame(t *testing.T) {
 	t.Parallel()
 	store := NewSessionMaskStore()
 
-	uuid1 := store.Get("instance-1")
-	uuid2 := store.Get("instance-1")
+	uuid1 := store.Get("account-1")
+	uuid2 := store.Get("account-1")
 
 	if uuid1 != uuid2 {
 		t.Errorf("expected same UUID within TTL, got %q vs %q", uuid1, uuid2)
 	}
 }
 
-func TestSessionMaskStore_DifferentInstances(t *testing.T) {
+func TestSessionMaskStore_DifferentAccounts(t *testing.T) {
 	t.Parallel()
 	store := NewSessionMaskStore()
 
-	uuid1 := store.Get("instance-1")
-	uuid2 := store.Get("instance-2")
+	uuid1 := store.Get("account-1")
+	uuid2 := store.Get("account-2")
 
 	if uuid1 == uuid2 {
-		t.Error("expected different UUIDs for different instances")
+		t.Error("expected different UUIDs for different accounts")
 	}
 }
 
@@ -47,9 +47,9 @@ func TestSessionMaskStore_Expiry(t *testing.T) {
 		ttl:      50 * time.Millisecond,
 	}
 
-	uuid1 := store.Get("instance-1")
+	uuid1 := store.Get("account-1")
 	time.Sleep(80 * time.Millisecond)
-	uuid2 := store.Get("instance-1")
+	uuid2 := store.Get("account-1")
 
 	if uuid1 == uuid2 {
 		t.Error("expected different UUID after expiry")
@@ -63,18 +63,18 @@ func TestSessionMaskStore_TTLRefresh(t *testing.T) {
 		ttl:      100 * time.Millisecond,
 	}
 
-	uuid1 := store.Get("instance-1")
+	uuid1 := store.Get("account-1")
 
 	// Access at 60ms (within TTL) — should refresh
 	time.Sleep(60 * time.Millisecond)
-	uuid2 := store.Get("instance-1")
+	uuid2 := store.Get("account-1")
 	if uuid1 != uuid2 {
 		t.Error("expected same UUID after refresh within TTL")
 	}
 
 	// Access at another 60ms (120ms total, but TTL was refreshed at 60ms)
 	time.Sleep(60 * time.Millisecond)
-	uuid3 := store.Get("instance-1")
+	uuid3 := store.Get("account-1")
 	if uuid1 != uuid3 {
 		t.Error("expected same UUID: TTL was refreshed at 60ms, so still valid at 120ms")
 	}
@@ -90,7 +90,7 @@ func TestSessionMaskStore_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			results[idx] = store.Get("instance-1")
+			results[idx] = store.Get("account-1")
 		}(i)
 	}
 	wg.Wait()

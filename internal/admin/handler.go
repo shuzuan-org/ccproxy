@@ -24,11 +24,11 @@ type Handler struct {
 	oauthMgr *oauth.Manager
 	sessions *oauth.SessionStore
 	cfg      *config.Config
-	registry *config.InstanceRegistry
+	registry *config.AccountRegistry
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.InstanceRegistry) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.AccountRegistry) *Handler {
 	return &Handler{
 		balancer: balancer,
 		oauthMgr: oauthMgr,
@@ -67,8 +67,8 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// InstanceState holds the runtime state of a single backend instance.
-type InstanceState struct {
+// AccountState holds the runtime state of a single backend account.
+type AccountState struct {
 	Name           string  `json:"name"`
 	AuthMode       string  `json:"auth_mode"`
 	LoadRate       int     `json:"load_rate"`
@@ -95,21 +95,21 @@ func tokenStatus(token *oauth.OAuthToken) string {
 	return "valid"
 }
 
-// HandleInstances returns instance status with token info for OAuth instances.
-// GET /api/instances
-func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
+// HandleAccounts returns account status with token info for OAuth accounts.
+// GET /api/accounts
+func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	tracker := h.balancer.GetTracker()
 	maxConcurrency := h.cfg.Server.MaxConcurrency
 
 	entries := h.registry.List()
-	states := make([]InstanceState, 0, len(entries))
+	states := make([]AccountState, 0, len(entries))
 	for _, entry := range entries {
 		var loadRate, activeSlots int
 		if entry.Enabled {
 			activeSlots, _, loadRate = tracker.LoadInfo(entry.Name, maxConcurrency)
 		}
 
-		state := InstanceState{
+		state := AccountState{
 			Name:           entry.Name,
 			AuthMode:       "oauth",
 			LoadRate:       loadRate,
@@ -134,29 +134,29 @@ func (h *Handler) HandleInstances(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, states)
 }
 
-// HandleOAuthLoginStart starts a PKCE OAuth flow for an instance.
+// HandleOAuthLoginStart starts a PKCE OAuth flow for an account.
 // POST /api/oauth/login/start
 func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Instance string `json:"instance"`
+		Account string `json:"account"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if !h.isOAuthInstance(req.Instance) {
-		writeError(w, http.StatusBadRequest, "instance not found or not oauth")
+	if !h.isOAuthAccount(req.Account) {
+		writeError(w, http.StatusBadRequest, "account not found or not oauth")
 		return
 	}
 
-	sessionID, authURL, err := h.sessions.Create(req.Instance)
+	sessionID, authURL, err := h.sessions.Create(req.Account)
 	if err != nil {
-		slog.Error("oauth: failed to create PKCE session", "instance", req.Instance, "error", err.Error())
+		slog.Error("oauth: failed to create PKCE session", "account", req.Account, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
-	slog.Info("oauth: login started", "instance", req.Instance, "session_id", sessionID)
+	slog.Info("oauth: login started", "account", req.Account, "session_id", sessionID)
 	writeJSON(w, map[string]string{
 		"session_id":        sessionID,
 		"authorization_url": authURL,
@@ -195,12 +195,12 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Exchange code for token (use actualCode without the appended state)
-	slog.Info("oauth: completing login", "instance", session.InstanceName, "session_id", req.SessionID)
-	proxyURL := h.registry.GetProxy(session.InstanceName)
-	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.InstanceName, actualCode, session.Verifier, proxyURL)
+	slog.Info("oauth: completing login", "account", session.AccountName, "session_id", req.SessionID)
+	proxyURL := h.registry.GetProxy(session.AccountName)
+	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.AccountName, actualCode, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
-			"instance", session.InstanceName,
+			"account", session.AccountName,
 			"error", err.Error(),
 		)
 		h.sessions.Delete(req.SessionID)
@@ -211,7 +211,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	h.sessions.Delete(req.SessionID)
 
 	slog.Info("oauth: login complete",
-		"instance", session.InstanceName,
+		"account", session.AccountName,
 		"expires_at", token.ExpiresAt.Format(time.RFC3339),
 	)
 	writeJSON(w, map[string]any{
@@ -220,31 +220,31 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// HandleOAuthRefresh forces a token refresh for an instance.
+// HandleOAuthRefresh forces a token refresh for an account.
 // POST /api/oauth/refresh
 func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Instance string `json:"instance"`
+		Account string `json:"account"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if !h.isOAuthInstance(req.Instance) {
-		writeError(w, http.StatusBadRequest, "instance not found or not oauth")
+	if !h.isOAuthAccount(req.Account) {
+		writeError(w, http.StatusBadRequest, "account not found or not oauth")
 		return
 	}
 
-	slog.Info("oauth: manual refresh requested", "instance", req.Instance)
-	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Instance)
+	slog.Info("oauth: manual refresh requested", "account", req.Account)
+	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Account)
 	if err != nil {
-		slog.Error("oauth: manual refresh failed", "instance", req.Instance, "error", err.Error())
+		slog.Error("oauth: manual refresh failed", "account", req.Account, "error", err.Error())
 		writeError(w, http.StatusBadGateway, "refresh failed")
 		return
 	}
 
 	slog.Info("oauth: manual refresh success",
-		"instance", req.Instance,
+		"account", req.Account,
 		"expires_at", newToken.ExpiresAt.Format(time.RFC3339),
 	)
 	writeJSON(w, map[string]any{
@@ -253,23 +253,23 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleOAuthLogout deletes the token for an instance.
+// HandleOAuthLogout deletes the token for an account.
 // POST /api/oauth/logout
 func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Instance string `json:"instance"`
+		Account string `json:"account"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if err := h.oauthMgr.Logout(req.Instance); err != nil {
-		slog.Error("oauth: logout failed to delete token", "instance", req.Instance, "error", err.Error())
+	if err := h.oauthMgr.Logout(req.Account); err != nil {
+		slog.Error("oauth: logout failed to delete token", "account", req.Account, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete token")
 		return
 	}
 
-	slog.Info("oauth: logout success", "instance", req.Instance)
+	slog.Info("oauth: logout success", "account", req.Account)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -289,14 +289,14 @@ func (h *Handler) HandleDashboard() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-// isOAuthInstance checks if the given name is a configured instance.
-func (h *Handler) isOAuthInstance(name string) bool {
+// isOAuthAccount checks if the given name is a configured account.
+func (h *Handler) isOAuthAccount(name string) bool {
 	return h.registry.Has(name)
 }
 
-// HandleAddInstance adds a new instance to the registry.
-// POST /api/instances/add
-func (h *Handler) HandleAddInstance(w http.ResponseWriter, r *http.Request) {
+// HandleAddAccount adds a new account to the registry.
+// POST /api/accounts/add
+func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -305,21 +305,21 @@ func (h *Handler) HandleAddInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.registry.Add(req.Name); err != nil {
-		slog.Warn("add instance failed", "name", req.Name, "error", err.Error())
+		slog.Warn("add account failed", "name", req.Name, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// Ensure the oauth manager knows about the new instance.
-	h.oauthMgr.UpdateInstances(h.registry.Names())
+	// Ensure the oauth manager knows about the new account.
+	h.oauthMgr.UpdateAccounts(h.registry.Names())
 
-	slog.Info("instance added", "name", req.Name)
+	slog.Info("account added", "name", req.Name)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// HandleRemoveInstance removes an instance from the registry and cleans up its OAuth token.
-// POST /api/instances/remove
-func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
+// HandleRemoveAccount removes an account from the registry and cleans up its OAuth token.
+// POST /api/accounts/remove
+func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -329,24 +329,24 @@ func (h *Handler) HandleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Clean up OAuth token before removing.
 	if err := h.oauthMgr.Logout(req.Name); err != nil {
-		slog.Warn("failed to delete oauth token on instance removal", "name", req.Name, "error", err.Error())
+		slog.Warn("failed to delete oauth token on account removal", "name", req.Name, "error", err.Error())
 	}
 
 	if err := h.registry.Remove(req.Name); err != nil {
-		slog.Warn("remove instance failed", "name", req.Name, "error", err.Error())
+		slog.Warn("remove account failed", "name", req.Name, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// Update oauth manager instance list.
-	h.oauthMgr.UpdateInstances(h.registry.Names())
+	// Update oauth manager account list.
+	h.oauthMgr.UpdateAccounts(h.registry.Names())
 
-	slog.Info("instance removed", "name", req.Name)
+	slog.Info("account removed", "name", req.Name)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// HandleUpdateProxy updates the proxy URL for an instance.
-// POST /api/instances/proxy
+// HandleUpdateProxy updates the proxy URL for an account.
+// POST /api/accounts/proxy
 func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name  string `json:"name"`
@@ -361,6 +361,6 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("instance proxy updated", "name", req.Name, "proxy", req.Proxy)
+	slog.Info("account proxy updated", "name", req.Name, "proxy", req.Proxy)
 	writeJSON(w, map[string]bool{"ok": true})
 }

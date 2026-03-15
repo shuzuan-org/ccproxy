@@ -32,7 +32,7 @@ func TestClaudeCLIv2Spec_FreshPerCall(t *testing.T) {
 	spec1 := claudeCLIv2Spec()
 	spec2 := claudeCLIv2Spec()
 	if spec1 == spec2 {
-		t.Fatal("expected distinct spec instances per call")
+		t.Fatal("expected distinct spec objects per call")
 	}
 }
 

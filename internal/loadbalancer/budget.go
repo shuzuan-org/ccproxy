@@ -12,7 +12,7 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 )
 
-// SchedulingState represents three-level scheduling status for an instance.
+// SchedulingState represents three-level scheduling status for an account.
 type SchedulingState int
 
 const (
@@ -50,9 +50,9 @@ type BudgetWindow struct {
 	LastUpdated time.Time
 }
 
-// BudgetController tracks dual-window (5h/7d) rate-limit budget for one instance.
+// BudgetController tracks dual-window (5h/7d) rate-limit budget for one account.
 type BudgetController struct {
-	name           string // instance name for logging
+	name           string // account name for logging
 	mu             sync.RWMutex
 	window5h       BudgetWindow
 	window7d       BudgetWindow
@@ -63,7 +63,7 @@ type BudgetController struct {
 	lastState      SchedulingState // cached for state-change detection
 }
 
-// NewBudgetController creates a new budget controller for the named instance.
+// NewBudgetController creates a new budget controller for the named account.
 func NewBudgetController(name string) *BudgetController {
 	return &BudgetController{name: name}
 }
@@ -114,7 +114,7 @@ func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.
 	}
 
 	observe.Logger(ctx).Debug("budget: headers updated",
-		"instance", bc.name,
+		"account", bc.name,
 		"util_5h", bc.window5h.Utilization,
 		"util_7d", bc.window7d.Utilization,
 		"state", bc.stateLocked().String(),
@@ -174,7 +174,7 @@ func (bc *BudgetController) checkStateChange(ctx context.Context) {
 	current := bc.stateLocked()
 	if current != bc.lastState {
 		observe.Logger(ctx).Info("budget: state changed",
-			"instance", bc.name,
+			"account", bc.name,
 			"from", bc.lastState.String(),
 			"to", current.String(),
 		)
@@ -204,7 +204,7 @@ func (bc *BudgetController) Record429(ctx context.Context, hasResetHeaders bool)
 		bc.penaltyShift = penaltyMax
 	}
 	observe.Logger(ctx).Warn("budget: 429 recorded",
-		"instance", bc.name,
+		"account", bc.name,
 		"true_429", hasResetHeaders,
 		"consecutive", bc.consecutive429,
 		"penalty", bc.penaltyShift,
@@ -226,7 +226,7 @@ func (bc *BudgetController) RecordSuccess(ctx context.Context) {
 		}
 		bc.lastPenaltyAt = time.Now() // reset timer for next step
 		observe.Logger(ctx).Info("budget: penalty recovered",
-			"instance", bc.name,
+			"account", bc.name,
 			"penalty", bc.penaltyShift,
 		)
 		bc.checkStateChange(ctx)
@@ -317,7 +317,7 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-// EffectiveMaxConcurrency computes the dynamic max concurrency for an instance.
+// EffectiveMaxConcurrency computes the dynamic max concurrency for an account.
 // If budget is nil or has no data, returns the hardLimit as-is.
 func EffectiveMaxConcurrency(budget *BudgetController, hardLimit int) int {
 	if budget == nil {

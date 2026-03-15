@@ -5,9 +5,9 @@ A single-binary Claude API proxy that pools Anthropic OAuth subscription account
 ## Features
 
 - Full 8-layer Claude CLI impersonation: TLS fingerprint, HTTP headers, anthropic-beta tokens, system prompt injection, metadata.user_id generation, model ID mapping, thinking block cleanup, and body sanitization
-- Multi-instance load balancing with session affinity, adaptive backpressure, and load-aware scheduling
+- Multi-account load balancing with session affinity, adaptive backpressure, and load-aware scheduling
 - OAuth PKCE flow with encrypted token storage and auto-refresh
-- Web-based admin dashboard for instance management and OAuth login
+- Web-based admin dashboard for account management and OAuth login
 - TOML configuration with auto-generation of missing credentials
 - Observability: request tracing, metrics, and periodic logging
 - Single binary, no external dependencies
@@ -29,7 +29,7 @@ make build
 
 On first start, ccproxy auto-generates a `config.toml` (if missing), an API key, and an admin password, then prints them to the console.
 
-**Add instances:** Open `http://<host>:<port>/admin/` and use the "Add Claude" button. Authenticate each instance via the OAuth login flow in the dashboard.
+**Add accounts:** Open `http://<host>:<port>/admin/` and use the "Add Claude" button. Authenticate each account via the OAuth login flow in the dashboard.
 
 The proxy listens on `http://0.0.0.0:3000` by default. Point your Claude-compatible client to this address with the generated API key as the Bearer token.
 
@@ -47,7 +47,7 @@ Configuration is read from `config.toml` (override with `-c <path>`). Changes re
 | `rate_limit` | `60` | Max requests per minute per IP for admin routes |
 | `base_url` | `https://api.anthropic.com` | Upstream Anthropic API base URL |
 | `request_timeout` | `300` | Per-request timeout in seconds |
-| `max_concurrency` | `5` | Per-instance concurrency limit |
+| `max_concurrency` | `5` | Per-account concurrency limit |
 | `log_level` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `log_format` | `text` | Log format (`text` or `json`) |
 
@@ -63,9 +63,9 @@ Credentials that downstream clients send as `Authorization: Bearer <key>`.
 
 If no enabled key is configured, one is auto-generated on startup.
 
-### Instances
+### Accounts
 
-Instances are **not** defined in the TOML config file. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/instances.json`.
+Accounts are **not** defined in the TOML config file. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/accounts.json`.
 
 ### Example
 
@@ -100,7 +100,7 @@ ccproxy (single binary)
 ├── HTTP Server (net/http ServeMux)
 │   ├── /v1/messages         Proxy handler (SSE streaming)
 │   ├── /admin/              Embedded HTML dashboard
-│   ├── /api/*               Instance management and OAuth API
+│   ├── /api/*               Account management and OAuth API
 │   └── /health              Health check
 ├── Core Services
 │   ├── Auth Guard           Bearer token validation (constant-time compare)
@@ -108,13 +108,13 @@ ccproxy (single binary)
 │   ├── Proxy Handler        Request forwarding and SSE streaming
 │   ├── Disguise Engine      8-layer Claude CLI impersonation
 │   ├── Load Balancer        L1 Pool throttle → L2 Sticky session → L3 Score selection
-│   ├── Concurrency Tracker  Per-instance slot management (in-memory)
+│   ├── Concurrency Tracker  Per-account slot management (in-memory)
 │   ├── Budget Controller    Adaptive backpressure with dual-window (5h/7d) tracking
 │   ├── OAuth Manager        PKCE flow, AES-256-GCM token storage, auto-refresh
 │   └── Observability        Request tracing, metrics, periodic logging
 └── Storage Layer
     ├── JSON File            Encrypted OAuth tokens (data/oauth_tokens.json)
-    ├── JSON File            Dynamic instance registry (data/instances.json)
+    ├── JSON File            Dynamic account registry (data/accounts.json)
     └── TOML File            Configuration (read at startup)
 ```
 
@@ -138,12 +138,12 @@ Available API endpoints:
 | Endpoint | Description |
 |----------|-------------|
 | `GET /admin/` | Dashboard HTML |
-| `GET /api/instances` | Instance list with health and load |
-| `POST /api/instances/add` | Add a new instance |
-| `POST /api/instances/remove` | Remove an instance |
-| `POST /api/instances/proxy` | Update instance proxy setting |
+| `GET /api/accounts` | Account list with health and load |
+| `POST /api/accounts/add` | Add a new account |
+| `POST /api/accounts/remove` | Remove an account |
+| `POST /api/accounts/proxy` | Update account proxy setting |
 | `GET /api/sessions` | Active session list |
 | `POST /api/oauth/login/start` | Start OAuth PKCE login flow |
 | `POST /api/oauth/login/complete` | Complete OAuth login with auth code |
-| `POST /api/oauth/refresh` | Force-refresh an instance's token |
-| `POST /api/oauth/logout` | Revoke and delete an instance's token |
+| `POST /api/oauth/refresh` | Force-refresh an account's token |
+| `POST /api/oauth/logout` | Revoke and delete an account's token |

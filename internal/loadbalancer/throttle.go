@@ -12,7 +12,7 @@ import (
 )
 
 // PoolThrottle implements SRE-style adaptive throttling with a wait queue
-// at the pool level to provide backpressure across all instances.
+// at the pool level to provide backpressure across all accounts.
 type PoolThrottle struct {
 	mu       sync.Mutex
 	requests []time.Time // 2-min sliding window of all requests

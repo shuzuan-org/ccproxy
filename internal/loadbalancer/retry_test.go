@@ -67,8 +67,8 @@ func TestRetryDelay(t *testing.T) {
 
 // helpers for retry tests
 
-func makeRetryInstance(name string) config.InstanceConfig {
-	return config.InstanceConfig{
+func makeRetryAccount(name string) config.AccountConfig {
+	return config.AccountConfig{
 		Name:           name,
 		MaxConcurrency: 5,
 		BaseURL:        "https://api.anthropic.com",
@@ -78,11 +78,11 @@ func makeRetryInstance(name string) config.InstanceConfig {
 }
 
 func newRetryBalancer(names ...string) *Balancer {
-	instances := make([]config.InstanceConfig, len(names))
+	accounts := make([]config.AccountConfig, len(names))
 	for i, n := range names {
-		instances[i] = makeRetryInstance(n)
+		accounts[i] = makeRetryAccount(n)
 	}
-	return NewBalancer(instances, NewConcurrencyTracker())
+	return NewBalancer(accounts, NewConcurrencyTracker())
 }
 
 func okResponse() *http.Response {
@@ -96,7 +96,7 @@ func TestExecuteWithRetry_SuccessFirstTry(t *testing.T) {
 	b := newRetryBalancer("inst1")
 
 	calls := 0
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		calls++
 		return okResponse(), 200, nil
 	}
@@ -118,7 +118,7 @@ func TestExecuteWithRetry_503ThenSuccess(t *testing.T) {
 	b := newRetryBalancer("inst1")
 
 	calls := 0
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		calls++
 		if calls < 2 {
 			return &http.Response{StatusCode: 503, Header: http.Header{}}, 503, nil
@@ -143,7 +143,7 @@ func TestExecuteWithRetry_400NoRetry(t *testing.T) {
 	b := newRetryBalancer("inst1")
 
 	calls := 0
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		calls++
 		return &http.Response{StatusCode: 400, Header: http.Header{}}, 400, nil
 	}
@@ -160,14 +160,14 @@ func TestExecuteWithRetry_400NoRetry(t *testing.T) {
 	}
 }
 
-// Test 10: 429 → failovers to different instance
+// Test 10: 429 → failovers to different account
 func TestExecuteWithRetry_429Failover(t *testing.T) {
 	b := newRetryBalancer("inst1", "inst2")
 
-	callsByInstance := make(map[string]int)
+	callsByAccount := make(map[string]int)
 	failCount := 0
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
-		callsByInstance[inst.Name]++
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
+		callsByAccount[acct.Name]++
 		// First call always returns 429, second call succeeds
 		failCount++
 		if failCount == 1 {
@@ -183,9 +183,9 @@ func TestExecuteWithRetry_429Failover(t *testing.T) {
 	if result.StatusCode != 200 {
 		t.Errorf("expected 200 after failover, got %d", result.StatusCode)
 	}
-	// Both instances should have been tried (one failed, one succeeded)
+	// Both accounts should have been tried (one failed, one succeeded)
 	totalCalls := 0
-	for _, c := range callsByInstance {
+	for _, c := range callsByAccount {
 		totalCalls += c
 	}
 	if totalCalls < 2 {
@@ -193,22 +193,22 @@ func TestExecuteWithRetry_429Failover(t *testing.T) {
 	}
 }
 
-// Test 11: All instances fail → returns error
+// Test 11: All accounts fail → returns error
 func TestExecuteWithRetry_AllFail(t *testing.T) {
-	// Use instances with capacity=1 and always 429 → all get excluded quickly
-	instances := []config.InstanceConfig{
-		makeRetryInstance("inst1"),
-		makeRetryInstance("inst2"),
+	// Use accounts with capacity=1 and always 429 → all get excluded quickly
+	accounts := []config.AccountConfig{
+		makeRetryAccount("inst1"),
+		makeRetryAccount("inst2"),
 	}
-	b := NewBalancer(instances, NewConcurrencyTracker())
+	b := NewBalancer(accounts, NewConcurrencyTracker())
 
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		return &http.Response{StatusCode: 429, Header: http.Header{}}, 429, nil
 	}
 
 	_, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
 	if err == nil {
-		t.Fatal("expected error when all instances fail")
+		t.Fatal("expected error when all accounts fail")
 	}
 }
 
@@ -218,7 +218,7 @@ func TestExecuteWithRetry_ContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		cancel() // cancel context during request
 		return &http.Response{StatusCode: 503, Header: http.Header{}}, 503, nil
 	}
@@ -233,10 +233,10 @@ func TestExecuteWithRetry_ContextCancelled(t *testing.T) {
 func TestExecuteWithRetry_NetworkError(t *testing.T) {
 	b := newRetryBalancer("inst1", "inst2")
 
-	callsByInstance := make(map[string]int)
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
-		callsByInstance[inst.Name]++
-		if inst.Name == "inst1" {
+	callsByAccount := make(map[string]int)
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
+		callsByAccount[acct.Name]++
+		if acct.Name == "inst1" {
 			// Network error → statusCode=0, action=FailoverImmediate (default)
 			return nil, 0, errors.New("connection refused")
 		}
@@ -280,13 +280,13 @@ func TestExecuteWithRetry_401TriggersRefresh(t *testing.T) {
 
 	refreshCalled := false
 	callbacks := RetryCallbacks{
-		OnTokenRefreshNeeded: func(ctx context.Context, instanceName string) {
+		OnTokenRefreshNeeded: func(ctx context.Context, accountName string) {
 			refreshCalled = true
 		},
 	}
 
 	callCount := 0
-	fn := func(inst config.InstanceConfig, reqID string) (*http.Response, int, error) {
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
 		callCount++
 		if callCount == 1 {
 			return &http.Response{StatusCode: 401, Header: http.Header{}}, 401, nil

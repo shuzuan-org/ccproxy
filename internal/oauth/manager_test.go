@@ -103,8 +103,8 @@ func TestManager_GetValidToken_NoToken_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no token stored")
 	}
-	if !strings.Contains(err.Error(), "no token for instance") {
-		t.Errorf("expected instance hint in error, got: %v", err)
+	if !strings.Contains(err.Error(), "no token for account") {
+		t.Errorf("expected account hint in error, got: %v", err)
 	}
 }
 

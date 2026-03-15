@@ -29,8 +29,8 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	if !ok {
 		t.Fatal("session not found after Create")
 	}
-	if session.InstanceName != "alice-oauth" {
-		t.Errorf("instance = %q, want alice-oauth", session.InstanceName)
+	if session.AccountName != "alice-oauth" {
+		t.Errorf("account = %q, want alice-oauth", session.AccountName)
 	}
 	if session.Verifier == "" {
 		t.Error("empty verifier")

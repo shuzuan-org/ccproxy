@@ -45,7 +45,7 @@ func BetaHeader(model string, hasTools bool) string {
 
 // SupplementBetaHeader preserves the client's existing beta tokens and ensures
 // that the oauth-2025-04-20 token is present. Used for real Claude Code clients
-// going through OAuth instances (no full disguise, just supplement missing beta).
+// going through OAuth accounts (no full disguise, just supplement missing beta).
 func SupplementBetaHeader(clientBeta string) string {
 	if clientBeta == "" {
 		return BetaOAuth

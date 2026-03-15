@@ -55,16 +55,16 @@ func contextWithAuthInfo(ctx context.Context, info auth.AuthInfo) context.Contex
 	return captured
 }
 
-// buildBalancer creates a minimal Balancer with one instance.
-func buildBalancer(inst config.InstanceConfig) *loadbalancer.Balancer {
+// buildBalancer creates a minimal Balancer with one account.
+func buildBalancer(acct config.AccountConfig) *loadbalancer.Balancer {
 	tracker := loadbalancer.NewConcurrencyTracker()
-	return loadbalancer.NewBalancer([]config.InstanceConfig{inst}, tracker)
+	return loadbalancer.NewBalancer([]config.AccountConfig{acct}, tracker)
 }
 
-// buildOAuthInstance returns an OAuth InstanceConfig pointing at the given URL.
-func buildOAuthInstance(baseURL string) config.InstanceConfig {
+// buildOAuthAccount returns an OAuth AccountConfig pointing at the given URL.
+func buildOAuthAccount(baseURL string) config.AccountConfig {
 	enabled := true
-	return config.InstanceConfig{
+	return config.AccountConfig{
 		Name:           "test-oauth",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
@@ -129,10 +129,10 @@ func TestHandler_NonStreaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildOAuthInstance(upstream.URL)
-	balancer := buildBalancer(inst)
+	acct := buildOAuthAccount(upstream.URL)
+	balancer := buildBalancer(acct)
 	oauthMgr := buildOAuthManager(t, "fake-token")
-	h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -180,10 +180,10 @@ func TestHandler_Streaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildOAuthInstance(upstream.URL)
-	balancer := buildBalancer(inst)
+	acct := buildOAuthAccount(upstream.URL)
+	balancer := buildBalancer(acct)
 	oauthMgr := buildOAuthManager(t, "fake-token")
-	h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", true)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -204,7 +204,7 @@ func TestHandler_Streaming(t *testing.T) {
 	}
 }
 
-// TestHandler_DisguiseAppliedForOAuth verifies disguise is applied for OAuth instances
+// TestHandler_DisguiseAppliedForOAuth verifies disguise is applied for OAuth accounts
 // when the client is not a real Claude Code client.
 func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 	var capturedUA string
@@ -219,10 +219,10 @@ func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildOAuthInstance(upstream.URL)
-	balancer := buildBalancer(inst)
+	acct := buildOAuthAccount(upstream.URL)
+	balancer := buildBalancer(acct)
 	oauthMgr := buildOAuthManager(t, "fake-oauth-access-token")
-	h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 	body := standardRequestBody("claude-sonnet-4-5", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -252,7 +252,7 @@ func TestHandler_DisguiseAppliedForOAuth(t *testing.T) {
 	}
 }
 
-// TestHandler_AuthHeaderOAuth verifies that Authorization: Bearer is set for OAuth instances.
+// TestHandler_AuthHeaderOAuth verifies that Authorization: Bearer is set for OAuth accounts.
 func TestHandler_AuthHeaderOAuth(t *testing.T) {
 	var capturedAuth string
 	var capturedAPIKey string
@@ -266,10 +266,10 @@ func TestHandler_AuthHeaderOAuth(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildOAuthInstance(upstream.URL)
-	balancer := buildBalancer(inst)
+	acct := buildOAuthAccount(upstream.URL)
+	balancer := buildBalancer(acct)
 	oauthMgr := buildOAuthManager(t, "my-oauth-token-xyz")
-	h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 	body := standardRequestBody("claude-sonnet-4-5", false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -294,11 +294,11 @@ func TestHandler_AuthHeaderOAuth(t *testing.T) {
 //
 // Note on retry semantics: ExecuteWithRetry classifies errors as follows:
 //   - 400 and other 4xx (non-special): ReturnToClient — forwarded directly to handler
-//   - 401/403/429/529:                 FailoverImmediate — instance blacklisted, try next
+//   - 401/403/429/529:                 FailoverImmediate — account blacklisted, try next
 //   - 500-504:                         RetryThenFailover — retry same, then blacklist
 //
-// With a single instance, FailoverImmediate and RetryThenFailover errors exhaust
-// the instance pool and result in a 503 from the handler. This is the expected
+// With a single account, FailoverImmediate and RetryThenFailover errors exhaust
+// the account pool and result in a 503 from the handler. This is the expected
 // production behavior. The handler's MapUpstreamError logic is exercised for
 // ReturnToClient responses (400 range) that are forwarded directly.
 func TestHandler_UpstreamError(t *testing.T) {
@@ -310,10 +310,10 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		inst := buildOAuthInstance(upstream.URL)
-		balancer := buildBalancer(inst)
+		acct := buildOAuthAccount(upstream.URL)
+		balancer := buildBalancer(acct)
 		oauthMgr := buildOAuthManager(t, "fake-token")
-		h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+		h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -339,19 +339,19 @@ func TestHandler_UpstreamError(t *testing.T) {
 		}
 	})
 
-	// For failover errors (429/401/403/529), a single-instance balancer exhausts
-	// all instances and the handler returns 503.
-	t.Run("rate_limit_single_instance_503", func(t *testing.T) {
+	// For failover errors (429/401/403/529), a single-account balancer exhausts
+	// all accounts and the handler returns 503.
+	t.Run("rate_limit_single_account_503", func(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(429)
 			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
 		}))
 		defer upstream.Close()
 
-		inst := buildOAuthInstance(upstream.URL)
-		balancer := buildBalancer(inst)
+		acct := buildOAuthAccount(upstream.URL)
+		balancer := buildBalancer(acct)
 		oauthMgr := buildOAuthManager(t, "fake-token")
-		h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+		h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 		body := standardRequestBody("claude-3-5-sonnet-20241022", false)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
@@ -361,7 +361,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
 
-		// With one instance exhausted, handler returns 503.
+		// With one account exhausted, handler returns 503.
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Errorf("expected 503, got %d: %s", rr.Code, rr.Body.String())
 		}
@@ -396,10 +396,10 @@ func TestHandler_UpstreamError(t *testing.T) {
 	})
 }
 
-// TestHandler_NoHealthyInstances verifies 503 when balancer has no instances.
-func TestHandler_NoHealthyInstances(t *testing.T) {
+// TestHandler_NoHealthyAccounts verifies 503 when balancer has no accounts.
+func TestHandler_NoHealthyAccounts(t *testing.T) {
 	tracker := loadbalancer.NewConcurrencyTracker()
-	balancer := loadbalancer.NewBalancer([]config.InstanceConfig{}, tracker)
+	balancer := loadbalancer.NewBalancer([]config.AccountConfig{}, tracker)
 	h := NewHandler("https://api.anthropic.com", 300, balancer, disguise.NewEngine(t.TempDir()), nil)
 
 	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
@@ -415,7 +415,7 @@ func TestHandler_NoHealthyInstances(t *testing.T) {
 	}
 }
 
-// TestHandler_SessionKeyComposed verifies that sticky session binds to correct instance
+// TestHandler_SessionKeyComposed verifies that sticky session binds to correct account
 // when session ID is present in request metadata.user_id.
 func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 	callCount := 0
@@ -427,10 +427,10 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inst := buildOAuthInstance(upstream.URL)
-	balancer := buildBalancer(inst)
+	acct := buildOAuthAccount(upstream.URL)
+	balancer := buildBalancer(acct)
 	oauthMgr := buildOAuthManager(t, "fake-token")
-	h := NewHandler(inst.BaseURL, inst.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
 
 	// Use a request body that includes metadata.user_id with a session ID.
 	sessionUUID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"

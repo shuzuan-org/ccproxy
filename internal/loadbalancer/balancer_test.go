@@ -12,8 +12,8 @@ import (
 
 // helpers
 
-func makeInstance(name string, maxConc int) config.InstanceConfig {
-	return config.InstanceConfig{
+func makeAccount(name string, maxConc int) config.AccountConfig {
+	return config.AccountConfig{
 		Name:           name,
 		MaxConcurrency: maxConc,
 		BaseURL:        "https://api.anthropic.com",
@@ -22,130 +22,130 @@ func makeInstance(name string, maxConc int) config.InstanceConfig {
 	}
 }
 
-func makeDisabledInstance(name string) config.InstanceConfig {
-	inst := makeInstance(name, 5)
-	inst.Enabled = false
-	return inst
+func makeDisabledAccount(name string) config.AccountConfig {
+	acct := makeAccount(name, 5)
+	acct.Enabled = false
+	return acct
 }
 
-func newTestBalancer(instances []config.InstanceConfig) *Balancer {
+func newTestBalancer(accounts []config.AccountConfig) *Balancer {
 	tracker := NewConcurrencyTracker()
-	return NewBalancer(instances, tracker)
+	return NewBalancer(accounts, tracker)
 }
 
 var testCtx = context.Background()
 
-// Test 1: Single instance → always selected
-func TestBalancer_SingleInstance(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
+// Test 1: Single account → always selected
+func TestBalancer_SingleAccount(t *testing.T) {
+	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "inst1" {
-		t.Errorf("expected inst1, got %s", result.Instance.Name)
+	if result.Account.Name != "acct1" {
+		t.Errorf("expected inst1, got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
-// Test 2: Instance with errors gets lower score → healthy instance preferred
+// Test 2: Account with errors gets lower score → healthy account preferred
 func TestBalancer_ScoreBasedOrder(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("unhealthy", 5),
-		makeInstance("healthy", 5),
+	accounts := []config.AccountConfig{
+		makeAccount("unhealthy", 5),
+		makeAccount("healthy", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Record errors on "unhealthy" to give it a worse score
 	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
 	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
-	// Clear cooldown so instance is available but has high error rate
+	// Clear cooldown so account is available but has high error rate
 	h := b.GetHealth("unhealthy")
 	h.mu.Lock()
 	h.cooldownUntil = time.Time{}
 	h.mu.Unlock()
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "healthy" {
-		t.Errorf("expected healthy (lower score), got %s", result.Instance.Name)
+	if result.Account.Name != "healthy" {
+		t.Errorf("expected healthy (lower score), got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
 // Test 3: Same priority → weighted by load rate (lower load first)
 func TestBalancer_LoadRateOrder(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 4),
-		makeInstance("inst-b", 4),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 4),
+		makeAccount("acct-b", 4),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
-	// Fill inst-a with 2 slots (50% load)
-	r1, _ := b.tracker.Acquire("inst-a", "req1", 4)
-	r2, _ := b.tracker.Acquire("inst-a", "req2", 4)
+	// Fill acct-a with 2 slots (50% load)
+	r1, _ := b.tracker.Acquire("acct-a", "req1", 4)
+	r2, _ := b.tracker.Acquire("acct-a", "req2", 4)
 	defer r1()
 	defer r2()
 
-	// inst-b is at 0% load → should be selected
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	// acct-b is at 0% load → should be selected
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "inst-b" {
-		t.Errorf("expected inst-b (lower load), got %s", result.Instance.Name)
+	if result.Account.Name != "acct-b" {
+		t.Errorf("expected acct-b (lower load), got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
-// Test 4: Session sticky: same sessionKey → same instance within TTL
+// Test 4: Session sticky: same sessionKey → same account within TTL
 func TestBalancer_StickySession(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 5),
-		makeInstance("inst-b", 5),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 5),
+		makeAccount("acct-b", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// First selection
-	r1, err := b.SelectInstance(testCtx, "session-1", map[string]bool{}, false)
+	r1, err := b.SelectAccount(testCtx, "session-1", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	firstInstance := r1.Instance.Name
+	firstAccount := r1.Account.Name
 	r1.Release()
 
 	// Bind session
-	b.BindSession("session-1", firstInstance)
+	b.BindSession("session-1", firstAccount)
 
-	// Second selection with same session key → same instance
-	r2, err := b.SelectInstance(testCtx, "session-1", map[string]bool{}, false)
+	// Second selection with same session key → same account
+	r2, err := b.SelectAccount(testCtx, "session-1", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error on second select: %v", err)
 	}
-	if r2.Instance.Name != firstInstance {
-		t.Errorf("expected sticky instance %s, got %s", firstInstance, r2.Instance.Name)
+	if r2.Account.Name != firstAccount {
+		t.Errorf("expected sticky account %s, got %s", firstAccount, r2.Account.Name)
 	}
 	r2.Release()
 }
 
 // Test 5: Session expired → new selection (may differ)
 func TestBalancer_SessionExpired(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 5),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Manually insert an expired session
 	b.sessions.Store("old-session", &SessionInfo{
-		InstanceName: "inst-a",
+		AccountName: "acct-a",
 		LastRequest:  time.Now().Add(-(sessionTTL + time.Second)),
 	})
 
 	// Should still work (expired session cleared, fallback to layer 2)
-	result, err := b.SelectInstance(testCtx, "old-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "old-session", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,126 +157,126 @@ func TestBalancer_SessionExpired(t *testing.T) {
 	}
 }
 
-// Test 6: Sticky instance at capacity → falls through to Layer 2
+// Test 6: Sticky account at capacity → falls through to Layer 2
 func TestBalancer_StickyAtCapacity(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1), // capacity=1
-		makeInstance("inst-b", 5),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 1), // capacity=1
+		makeAccount("acct-b", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
-	// Bind session to inst-a
-	b.BindSession("session-x", "inst-a")
+	// Bind session to acct-a
+	b.BindSession("session-x", "acct-a")
 
-	// Fill inst-a to capacity
-	r1, ok := b.tracker.Acquire("inst-a", "blocker", 1)
+	// Fill acct-a to capacity
+	r1, ok := b.tracker.Acquire("acct-a", "blocker", 1)
 	if !ok {
 		t.Fatal("blocker acquire should succeed")
 	}
 	defer r1()
 
-	// Session points to inst-a but it's full → should fall through to inst-b
-	result, err := b.SelectInstance(testCtx, "session-x", map[string]bool{}, false)
+	// Session points to acct-a but it's full → should fall through to acct-b
+	result, err := b.SelectAccount(testCtx, "session-x", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "inst-b" {
-		t.Errorf("expected fallback to inst-b, got %s", result.Instance.Name)
+	if result.Account.Name != "acct-b" {
+		t.Errorf("expected fallback to acct-b, got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
-// Test 7: Exclude failed instances
-func TestBalancer_ExcludeInstances(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 5),
-		makeInstance("inst-b", 5),
+// Test 7: Exclude failed accounts
+func TestBalancer_ExcludeAccounts(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 5),
+		makeAccount("acct-b", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{"inst-a": true}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{"acct-a": true}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name == "inst-a" {
-		t.Error("inst-a should be excluded")
+	if result.Account.Name == "acct-a" {
+		t.Error("acct-a should be excluded")
 	}
 	result.Release()
 }
 
-// Test 8: All instances at capacity → returns ErrAllInstancesBusy
+// Test 8: All accounts at capacity → returns ErrAllAccountsBusy
 func TestBalancer_AllBusy(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 1),
-		makeInstance("inst-b", 1),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 1),
+		makeAccount("acct-b", 1),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Fill both to capacity
-	r1, _ := b.tracker.Acquire("inst-a", "block-a", 1)
-	r2, _ := b.tracker.Acquire("inst-b", "block-b", 1)
+	r1, _ := b.tracker.Acquire("acct-a", "block-a", 1)
+	r2, _ := b.tracker.Acquire("acct-b", "block-b", 1)
 	defer r1()
 	defer r2()
 
-	_, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
-	if err != ErrAllInstancesBusy {
-		t.Errorf("expected ErrAllInstancesBusy, got %v", err)
+	_, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	if err != ErrAllAccountsBusy {
+		t.Errorf("expected ErrAllAccountsBusy, got %v", err)
 	}
 }
 
-// Test 9: BindSession + SelectInstance → returns sticky instance
+// Test 9: BindSession + SelectAccount → returns sticky account
 func TestBalancer_BindThenSelect(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 5),
-		makeInstance("inst-b", 5), // lower priority
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 5),
+		makeAccount("acct-b", 5), // lower priority
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
-	// Bind to higher-priority-value instance (inst-b)
-	b.BindSession("my-session", "inst-b")
+	// Bind to higher-priority-value account (acct-b)
+	b.BindSession("my-session", "acct-b")
 
-	result, err := b.SelectInstance(testCtx, "my-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "my-session", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Sticky should override normal priority ordering
-	if result.Instance.Name != "inst-b" {
-		t.Errorf("expected sticky inst-b, got %s", result.Instance.Name)
+	if result.Account.Name != "acct-b" {
+		t.Errorf("expected sticky acct-b, got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
-// Test 10: UpdateInstances replaces list
-func TestBalancer_UpdateInstances(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst-a", 5)})
+// Test 10: UpdateAccounts replaces list
+func TestBalancer_UpdateAccounts(t *testing.T) {
+	b := newTestBalancer([]config.AccountConfig{makeAccount("acct-a", 5)})
 
-	newInstances := []config.InstanceConfig{
-		makeInstance("inst-x", 5),
-		makeInstance("inst-y", 5),
+	newAccounts := []config.AccountConfig{
+		makeAccount("acct-x", 5),
+		makeAccount("acct-y", 5),
 	}
-	b.UpdateInstances(newInstances)
+	b.UpdateAccounts(newAccounts)
 
-	got := b.GetInstances()
+	got := b.GetAccounts()
 	if len(got) != 2 {
-		t.Fatalf("expected 2 instances after update, got %d", len(got))
+		t.Fatalf("expected 2 accounts after update, got %d", len(got))
 	}
 
-	// Disabled instances should be filtered out
-	withDisabled := append(newInstances, makeDisabledInstance("inst-disabled"))
-	b.UpdateInstances(withDisabled)
-	got = b.GetInstances()
+	// Disabled accounts should be filtered out
+	withDisabledAcct := append(newAccounts, makeDisabledAccount("acct-disabled"))
+	b.UpdateAccounts(withDisabledAcct)
+	got = b.GetAccounts()
 	if len(got) != 2 {
-		t.Errorf("expected 2 enabled instances, got %d", len(got))
+		t.Errorf("expected 2 enabled accounts, got %d", len(got))
 	}
 }
 
-// Test 11: Concurrent SelectInstance (race test)
+// Test 11: Concurrent SelectAccount (race test)
 func TestBalancer_ConcurrentSelect(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 10),
-		makeInstance("inst-b", 10),
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 10),
+		makeAccount("acct-b", 10),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	var wg sync.WaitGroup
 	goroutines := 30
@@ -285,7 +285,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+			result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 			if err != nil {
 				return // acceptable if all slots are briefly full
 			}
@@ -295,42 +295,42 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 		}()
 	}
 
-	// Concurrent UpdateInstances to trigger race detector
+	// Concurrent UpdateAccounts to trigger race detector
 	for i := 0; i < 5; i++ {
 		go func() {
 			defer wg.Done()
-			b.UpdateInstances(instances)
+			b.UpdateAccounts(accounts)
 		}()
 	}
 
 	wg.Wait()
 }
 
-// Test: No healthy instances → ErrNoHealthyInstances
-func TestBalancer_NoInstances(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{})
-	_, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
-	if err != ErrNoHealthyInstances {
-		t.Errorf("expected ErrNoHealthyInstances, got %v", err)
+// Test: No healthy accounts → ErrNoHealthyAccounts
+func TestBalancer_NoAccounts(t *testing.T) {
+	b := newTestBalancer([]config.AccountConfig{})
+	_, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	if err != ErrNoHealthyAccounts {
+		t.Errorf("expected ErrNoHealthyAccounts, got %v", err)
 	}
 }
 
-// Test: filterEnabled removes disabled instances
+// Test: filterEnabled removes disabled accounts
 func TestBalancer_FilterEnabled(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("enabled", 5),
-		makeDisabledInstance("disabled"),
+	accounts := []config.AccountConfig{
+		makeAccount("enabled", 5),
+		makeDisabledAccount("disabled"),
 	}
-	b := newTestBalancer(instances)
-	got := b.GetInstances()
+	b := newTestBalancer(accounts)
+	got := b.GetAccounts()
 	if len(got) != 1 || got[0].Name != "enabled" {
-		t.Errorf("expected only enabled instance, got %v", got)
+		t.Errorf("expected only enabled account, got %v", got)
 	}
 }
 
 // Test: StartCleanup runs without panic
 func TestBalancer_StartCleanup(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
+	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 	ctx, cancel := context.WithCancel(context.Background())
 	b.StartCleanup(ctx)
 	time.Sleep(10 * time.Millisecond)
@@ -339,12 +339,12 @@ func TestBalancer_StartCleanup(t *testing.T) {
 
 // Test: ActiveSessions count
 func TestBalancer_ActiveSessions(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
+	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 	if b.ActiveSessions() != 0 {
 		t.Error("expected 0 sessions initially")
 	}
-	b.BindSession("s1", "inst1")
-	b.BindSession("s2", "inst1")
+	b.BindSession("s1", "acct1")
+	b.BindSession("s2", "acct1")
 	if b.ActiveSessions() != 2 {
 		t.Errorf("expected 2 sessions, got %d", b.ActiveSessions())
 	}
@@ -354,54 +354,54 @@ func TestBalancer_ActiveSessions(t *testing.T) {
 	}
 }
 
-// Test: Cooldown instance is skipped during selection
-func TestSelectInstance_CooldownSkipped(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("cool", 5),
-		makeInstance("warm", 5),
+// Test: Cooldown account is skipped during selection
+func TestSelectAccount_CooldownSkipped(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("cool", 5),
+		makeAccount("warm", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Put "cool" in cooldown
 	b.ReportResult(testCtx,"cool", 429, 1000, 30*time.Second, nil)
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "warm" {
-		t.Errorf("expected warm (cool is in cooldown), got %s", result.Instance.Name)
+	if result.Account.Name != "warm" {
+		t.Errorf("expected warm (cool is in cooldown), got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
-// Test: Disabled instance is skipped
-func TestSelectInstance_DisabledSkipped(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("forbidden", 5),
-		makeInstance("ok", 5),
+// Test: Disabled account is skipped
+func TestSelectAccount_DisabledSkipped(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("forbidden", 5),
+		makeAccount("ok", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Disable "forbidden" with a 403
 	b.ReportResult(testCtx,"forbidden", 403, 1000, 0, nil)
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "ok" {
-		t.Errorf("expected ok (forbidden is disabled), got %s", result.Instance.Name)
+	if result.Account.Name != "ok" {
+		t.Errorf("expected ok (forbidden is disabled), got %s", result.Account.Name)
 	}
 	result.Release()
 }
 
 // Test: ReportResult updates health state
 func TestReportResult_UpdatesHealth(t *testing.T) {
-	b := newTestBalancer([]config.InstanceConfig{makeInstance("inst1", 5)})
+	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 
-	b.ReportResult(testCtx,"inst1", 200, 1000, 0, nil)
-	h := b.GetHealth("inst1")
+	b.ReportResult(testCtx,"acct1", 200, 1000, 0, nil)
+	h := b.GetHealth("acct1")
 	if h == nil {
 		t.Fatal("expected health tracker for inst1")
 	}
@@ -410,60 +410,60 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 	}
 
 	// Report error and check error rate increases
-	b.ReportResult(testCtx,"inst1", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"acct1", 500, 1000, 0, nil)
 	if h.ErrorRate() == 0 {
 		t.Error("expected error rate to increase after error")
 	}
 }
 
-// Test: UpdateInstances cleans up health for removed instances
-func TestBalancer_UpdateInstances_CleansHealth(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("inst-a", 5),
-		makeInstance("inst-b", 5),
+// Test: UpdateAccounts cleans up health for removed accounts
+func TestBalancer_UpdateAccounts_CleansHealth(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("acct-a", 5),
+		makeAccount("acct-b", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
 	// Verify both have health
-	if b.GetHealth("inst-a") == nil {
-		t.Fatal("expected health for inst-a")
+	if b.GetHealth("acct-a") == nil {
+		t.Fatal("expected health for acct-a")
 	}
-	if b.GetHealth("inst-b") == nil {
-		t.Fatal("expected health for inst-b")
+	if b.GetHealth("acct-b") == nil {
+		t.Fatal("expected health for acct-b")
 	}
 
-	// Update to only inst-b
-	b.UpdateInstances([]config.InstanceConfig{makeInstance("inst-b", 5)})
+	// Update to only acct-b
+	b.UpdateAccounts([]config.AccountConfig{makeAccount("acct-b", 5)})
 
-	if b.GetHealth("inst-a") != nil {
-		t.Error("expected health for inst-a to be cleaned up")
+	if b.GetHealth("acct-a") != nil {
+		t.Error("expected health for acct-a to be cleaned up")
 	}
-	if b.GetHealth("inst-b") == nil {
-		t.Error("expected health for inst-b to still exist")
+	if b.GetHealth("acct-b") == nil {
+		t.Error("expected health for acct-b to still exist")
 	}
 }
 
-// Test: Budget state affects instance selection
+// Test: Budget state affects account selection
 func TestBalancer_BudgetStateFiltering(t *testing.T) {
-	instances := []config.InstanceConfig{
-		makeInstance("high-util", 5),
-		makeInstance("low-util", 5),
+	accounts := []config.AccountConfig{
+		makeAccount("high-util", 5),
+		makeAccount("low-util", 5),
 	}
-	b := newTestBalancer(instances)
+	b := newTestBalancer(accounts)
 
-	// Set high utilization on one instance to make it Blocked
+	// Set high utilization on one account to make it Blocked
 	h := b.GetHealth("high-util")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.90")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
 	h.Budget().UpdateFromHeaders(context.Background(), headers)
 
-	result, err := b.SelectInstance(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Instance.Name != "low-util" {
-		t.Errorf("expected low-util (high-util is blocked), got %s", result.Instance.Name)
+	if result.Account.Name != "low-util" {
+		t.Errorf("expected low-util (high-util is blocked), got %s", result.Account.Name)
 	}
 	result.Release()
 }

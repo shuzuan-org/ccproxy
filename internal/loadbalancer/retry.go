@@ -15,13 +15,13 @@ type FailureAction int
 
 const (
 	ReturnToClient    FailureAction = iota // 400: return directly
-	FailoverImmediate                       // 401,403,429,529: switch instance
+	FailoverImmediate                       // 401,403,429,529: switch account
 	RetryThenFailover                       // 500-504: retry same, then switch
 )
 
 const (
 	maxAccountSwitches     = 3
-	maxSameInstanceRetries = 3
+	maxSameAccountRetries = 3
 	retryBaseDelay         = 300 * time.Millisecond
 	retryMaxDelay          = 3 * time.Second
 	maxRetryElapsed        = 10 * time.Second
@@ -55,20 +55,20 @@ func RetryDelay(attempt int) time.Duration {
 
 // RequestFunc is called for each attempt. Returns response, HTTP status code, and error.
 // The response should only be read/used if error is nil.
-type RequestFunc func(instance config.InstanceConfig, requestID string) (*http.Response, int, error)
+type RequestFunc func(account config.AccountConfig, requestID string) (*http.Response, int, error)
 
 // RetryCallbacks holds optional callbacks for retry events.
 type RetryCallbacks struct {
-	OnTokenRefreshNeeded func(ctx context.Context, instanceName string)
+	OnTokenRefreshNeeded func(ctx context.Context, accountName string)
 }
 
 // RetryResult contains the result of ExecuteWithRetry.
 type RetryResult struct {
 	Response       *http.Response
 	StatusCode     int
-	InstanceName   string
+	AccountName    string
 	Body           []byte // for error responses that should be forwarded
-	InstancesTried []string
+	AccountsTried  []string
 	Retries        int
 	Failovers      int
 }
@@ -83,12 +83,12 @@ func ExecuteWithRetry(
 	requestFn RequestFunc,
 ) (*RetryResult, error) {
 	startTime := time.Now()
-	failedInstances := make(map[string]bool)
+	failedAccounts := make(map[string]bool)
 	switchCount := 0
-	var instancesTried []string
+	var accountsTried []string
 	retries := 0
 	failovers := 0
-	total529s := 0 // cross-instance 529 counter for storm detection
+	total529s := 0 // cross-account 529 counter for storm detection
 
 	for switchCount <= maxAccountSwitches {
 		// Check total elapsed time
@@ -101,24 +101,24 @@ func ExecuteWithRetry(
 			return nil, fmt.Errorf("retry elapsed time exceeded (%s)", maxRetryElapsed)
 		}
 
-		// Select instance
-		result, err := balancer.SelectInstance(ctx, sessionKey, failedInstances, isStream)
+		// Select account
+		result, err := balancer.SelectAccount(ctx, sessionKey, failedAccounts, isStream)
 		if err != nil {
-			observe.Logger(ctx).Warn("no instance available",
+			observe.Logger(ctx).Warn("no account available",
 				"error", err.Error(),
-				"failed_count", len(failedInstances),
+				"failed_count", len(failedAccounts),
 				"switches", switchCount,
 			)
-			return nil, fmt.Errorf("select instance: %w", err)
+			return nil, fmt.Errorf("select account: %w", err)
 		}
 
-		instanceName := result.Instance.Name
-		instancesTried = append(instancesTried, instanceName)
-		sameInstanceRetries := 0
+		accountName := result.Account.Name
+		accountsTried = append(accountsTried, accountName)
+		sameAccountRetries := 0
 		switched := false
-		observe.Logger(ctx).Debug("selected instance", "instance", instanceName, "switch", switchCount)
+		observe.Logger(ctx).Debug("selected account", "account", accountName, "switch", switchCount)
 
-		for sameInstanceRetries < maxSameInstanceRetries {
+		for sameAccountRetries < maxSameAccountRetries {
 			// Check context cancellation
 			if ctx.Err() != nil {
 				result.Release()
@@ -132,7 +132,7 @@ func ExecuteWithRetry(
 			}
 
 			attemptStart := time.Now()
-			resp, statusCode, err := requestFn(result.Instance, result.RequestID)
+			resp, statusCode, err := requestFn(result.Account, result.RequestID)
 			attemptLatency := time.Since(attemptStart).Microseconds()
 
 			if err == nil && statusCode >= 200 && statusCode < 400 {
@@ -141,14 +141,14 @@ func ExecuteWithRetry(
 				if resp != nil {
 					headers = resp.Header
 				}
-				balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, 0, headers)
-				balancer.BindSession(sessionKey, instanceName)
+				balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, 0, headers)
+				balancer.BindSession(sessionKey, accountName)
 				result.Release()
 				return &RetryResult{
 					Response:       resp,
 					StatusCode:     statusCode,
-					InstanceName:   instanceName,
-					InstancesTried: instancesTried,
+					AccountName:    accountName,
+					AccountsTried:  accountsTried,
 					Retries:        retries,
 					Failovers:      failovers,
 				}, nil
@@ -169,8 +169,8 @@ func ExecuteWithRetry(
 				return &RetryResult{
 					Response:       resp,
 					StatusCode:     statusCode,
-					InstanceName:   instanceName,
-					InstancesTried: instancesTried,
+					AccountName:    accountName,
+					AccountsTried:  accountsTried,
 					Retries:        retries,
 					Failovers:      failovers,
 				}, nil
@@ -179,56 +179,56 @@ func ExecuteWithRetry(
 				// Special handling per status code
 				switch statusCode {
 				case 429:
-					observe.Global.Instances429.Add(1)
-					observe.Global.Instance(instanceName).Errors429.Add(1)
+					observe.Global.Accounts429.Add(1)
+					observe.Global.Account(accountName).Errors429.Add(1)
 					hasResetHeaders := respHeaders != nil &&
 						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
 							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
 					observe.Logger(ctx).Warn("failover: rate limited",
-						"instance", instanceName,
+						"account", accountName,
 						"has_reset_headers", hasResetHeaders,
 						"switch", switchCount+1,
 					)
 				case 529:
-					observe.Global.Instances529.Add(1)
-					observe.Global.Instance(instanceName).Errors529.Add(1)
+					observe.Global.Accounts529.Add(1)
+					observe.Global.Account(accountName).Errors529.Add(1)
 					total529s++
-					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
 					if total529s >= 2 {
-						// Multiple instances returning 529 — system-wide overload, stop retrying
-						observe.Logger(ctx).Warn("consecutive 529s across instances, returning to client",
-							"instance", instanceName, "count", total529s)
+						// Multiple accounts returning 529 — system-wide overload, stop retrying
+						observe.Logger(ctx).Warn("consecutive 529s across accounts, returning to client",
+							"account", accountName, "count", total529s)
 						result.Release()
 						return &RetryResult{
 							Response:       resp,
 							StatusCode:     529,
-							InstanceName:   instanceName,
-							InstancesTried: instancesTried,
+							AccountName:    accountName,
+							AccountsTried:  accountsTried,
 							Retries:        retries,
 							Failovers:      failovers,
 						}, nil
 					}
 				case 401:
 					if callbacks.OnTokenRefreshNeeded != nil {
-						callbacks.OnTokenRefreshNeeded(ctx, instanceName)
+						callbacks.OnTokenRefreshNeeded(ctx, accountName)
 					}
 				}
 
 				if statusCode != 529 { // 529 already reported above
 					observe.Logger(ctx).Warn("failover immediate",
-						"instance", instanceName,
+						"account", accountName,
 						"status", statusCode,
 						"switch", switchCount+1,
 						"retry_after", retryAfter.String(),
 					)
-					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
 				}
 
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
 				result.Release()
-				failedInstances[instanceName] = true
+				failedAccounts[accountName] = true
 				balancer.ClearSession(sessionKey)
 				switchCount++
 				failovers++
@@ -236,22 +236,22 @@ func ExecuteWithRetry(
 				observe.Global.FailoversTotal.Add(1)
 
 			case RetryThenFailover:
-				sameInstanceRetries++
+				sameAccountRetries++
 				retries++
 				observe.Global.RetriesTotal.Add(1)
-				observe.Logger(ctx).Warn("retry on same instance",
-					"instance", instanceName,
+				observe.Logger(ctx).Warn("retry on same account",
+					"account", accountName,
 					"status", statusCode,
-					"attempt", sameInstanceRetries,
-					"max_attempts", maxSameInstanceRetries,
+					"attempt", sameAccountRetries,
+					"max_attempts", maxSameAccountRetries,
 				)
-				if sameInstanceRetries >= maxSameInstanceRetries {
+				if sameAccountRetries >= maxSameAccountRetries {
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
 					}
-					balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
 					result.Release()
-					failedInstances[instanceName] = true
+					failedAccounts[accountName] = true
 					balancer.ClearSession(sessionKey)
 					switchCount++
 					failovers++
@@ -260,13 +260,13 @@ func ExecuteWithRetry(
 					break
 				}
 				// Report the failed attempt (but don't trigger failover yet).
-				balancer.ReportResult(ctx, instanceName, statusCode, attemptLatency, retryAfter, respHeaders)
+				balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
 				// Close previous response body before retrying.
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
 				// Exponential backoff before retry
-				delay := RetryDelay(sameInstanceRetries - 1)
+				delay := RetryDelay(sameAccountRetries - 1)
 				timer := time.NewTimer(delay)
 				select {
 				case <-ctx.Done():

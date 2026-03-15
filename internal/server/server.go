@@ -32,13 +32,13 @@ type Server struct {
 func New(cfg *config.Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// 1. Create instance registry from persistent storage.
-	registry := config.NewInstanceRegistry("data")
-	runtimeInstances := cfg.RuntimeInstances(registry)
+	// 1. Create account registry from persistent storage.
+	registry := config.NewAccountRegistry("data")
+	runtimeAccounts := cfg.RuntimeAccounts(registry)
 
 	// 2. Create concurrency tracker and load balancer.
 	tracker := loadbalancer.NewConcurrencyTracker()
-	balancer := loadbalancer.NewBalancer(runtimeInstances, tracker)
+	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
 	balancer.LoadState("data")
 	balancer.StartCleanup(ctx)
 	balancer.StartPersistence(ctx, "data")
@@ -47,7 +47,7 @@ func New(cfg *config.Config) (*Server, error) {
 	disguiseEngine := disguise.NewEngine("data")
 	disguiseEngine.StartSessionCleanup(ctx)
 
-	// 4. Create OAuth manager (all instances use OAuth).
+	// 4. Create OAuth manager (all accounts use OAuth).
 	store, err := oauth.NewTokenStore("data")
 	if err != nil {
 		cancel()
@@ -59,31 +59,31 @@ func New(cfg *config.Config) (*Server, error) {
 	oauthSessions := oauth.NewSessionStore()
 	oauthSessions.StartCleanup(ctx, time.Minute)
 
-	// Log instance configuration summary.
-	for _, inst := range runtimeInstances {
+	// Log account configuration summary.
+	for _, acct := range runtimeAccounts {
 		proxyInfo := ""
-		if inst.Proxy != "" {
+		if acct.Proxy != "" {
 			proxyInfo = "(via proxy)"
 		}
-		slog.Info("instance configured",
-			"name", inst.Name,
-			"enabled", inst.IsEnabled(),
-			"max_concurrency", inst.MaxConcurrency,
+		slog.Info("account configured",
+			"name", acct.Name,
+			"enabled", acct.IsEnabled(),
+			"max_concurrency", acct.MaxConcurrency,
 			"proxy", proxyInfo,
 		)
 	}
 
 	// Log OAuth token status on startup.
-	for _, inst := range runtimeInstances {
-		token, err := store.Load(inst.Name)
+	for _, acct := range runtimeAccounts {
+		token, err := store.Load(acct.Name)
 		if err != nil {
-			slog.Warn("startup: token load error", "instance", inst.Name, "error", err.Error())
+			slog.Warn("startup: token load error", "account", acct.Name, "error", err.Error())
 		} else if token == nil {
-			slog.Warn("startup: no token stored, login required", "instance", inst.Name)
+			slog.Warn("startup: no token stored, login required", "account", acct.Name)
 		} else if time.Until(token.ExpiresAt) < 0 {
-			slog.Warn("startup: token expired", "instance", inst.Name, "expired_ago", time.Since(token.ExpiresAt).String())
+			slog.Warn("startup: token expired", "account", acct.Name, "expired_ago", time.Since(token.ExpiresAt).String())
 		} else {
-			slog.Info("startup: token valid", "instance", inst.Name, "expires_in", time.Until(token.ExpiresAt).String())
+			slog.Info("startup: token valid", "account", acct.Name, "expires_in", time.Until(token.ExpiresAt).String())
 		}
 	}
 
@@ -112,12 +112,12 @@ func New(cfg *config.Config) (*Server, error) {
 	// Start periodic metrics logging.
 	observe.Global.StartPeriodicLog(ctx, 5*time.Minute, balancer, nil)
 
-	// 6. Register onChange callback to propagate dynamic instance changes.
-	registry.SetOnChange(func(instances []config.Instance) {
-		runtime := cfg.RuntimeInstances(registry)
-		balancer.UpdateInstances(runtime)
-		oauthMgr.UpdateInstances(registry.Names())
-		slog.Info("instances updated dynamically", "count", len(instances))
+	// 6. Register onChange callback to propagate dynamic account changes.
+	registry.SetOnChange(func(accounts []config.Account) {
+		runtime := cfg.RuntimeAccounts(registry)
+		balancer.UpdateAccounts(runtime)
+		oauthMgr.UpdateAccounts(registry.Names())
+		slog.Info("accounts updated dynamically", "count", len(accounts))
 	})
 
 	// 7. Create proxy handler.
@@ -138,10 +138,10 @@ func New(cfg *config.Config) (*Server, error) {
 	adminRL := ratelimit.Middleware(limiter)
 	adminAuth := basicAuth(cfg.Server.AdminPassword)
 
-	mux.Handle("/api/instances", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleInstances))))
-	mux.Handle("/api/instances/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddInstance))))
-	mux.Handle("/api/instances/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveInstance))))
-	mux.Handle("/api/instances/proxy", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateProxy))))
+	mux.Handle("/api/accounts", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAccounts))))
+	mux.Handle("/api/accounts/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddAccount))))
+	mux.Handle("/api/accounts/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveAccount))))
+	mux.Handle("/api/accounts/proxy", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateProxy))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
 	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))
@@ -293,8 +293,8 @@ type oauthTokenAdapter struct {
 	mgr *oauth.Manager
 }
 
-func (a *oauthTokenAdapter) GetValidToken(ctx context.Context, instanceName string) (string, error) {
-	token, err := a.mgr.GetValidToken(ctx, instanceName)
+func (a *oauthTokenAdapter) GetValidToken(ctx context.Context, accountName string) (string, error) {
+	token, err := a.mgr.GetValidToken(ctx, accountName)
 	if err != nil {
 		return "", err
 	}

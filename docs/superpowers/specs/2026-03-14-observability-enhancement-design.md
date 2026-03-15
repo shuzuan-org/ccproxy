@@ -35,7 +35,7 @@ Every function on the request path that currently calls `slog.Info/Warn/Error/De
 
 ### Internal signature changes
 
-These are package-internal methods called on the request path. Note: `AccountHealth` methods are per-instance (no instance param needed), and `BudgetController` is per-instance (no instance param needed). Only ctx is added.
+These are package-internal methods called on the request path. Note: `AccountHealth` methods are per-account (no account param needed), and `BudgetController` is per-account (no account param needed). Only ctx is added.
 
 - `AccountHealth.RecordSuccess()` → `RecordSuccess(ctx context.Context)`
 - `AccountHealth.RecordError(statusCode int)` → `RecordError(ctx context.Context, statusCode int)`
@@ -58,7 +58,7 @@ At the end of every request, emit a single summary log with level determined by 
 
 ```
 "request completed" request_id=xxx api_key=yyy model=claude-sonnet-4-20250514
-  instance=acct-1 status=200 elapsed=1.23s retries=1 failovers=0
+  account=acct-1 status=200 elapsed=1.23s retries=1 failovers=0
   input_tokens=1500 output_tokens=800 stream=true
 ```
 
@@ -66,10 +66,10 @@ At default `info` level, only "eventful" and failed requests appear. Switch to `
 
 ### Retry decision path
 
-When the retry loop ends, include `instances_tried` in the summary showing the full path:
+When the retry loop ends, include `accounts_tried` in the summary showing the full path:
 
 ```
-instances_tried=[acct-1,acct-2,acct-1]
+accounts_tried=[acct-1,acct-2,acct-1]
 ```
 
 ### OAuth token expiry warning
@@ -77,25 +77,25 @@ instances_tried=[acct-1,acct-2,acct-1]
 In the auto-refresh check loop, when a token has < 2 minutes remaining (aligned with the 60s refresh threshold, providing one extra ticker interval of advance warning), emit a Warn:
 
 ```
-"oauth: token expiring soon" instance=acct-1 expires_in=90s
+"oauth: token expiring soon" account=acct-1 expires_in=90s
 ```
 
-### Instance health recovery
+### Account health recovery
 
-When an instance transitions from cooldown back to healthy, emit Info. Implementation: add a `wasCoolingDown` flag to `AccountHealth`. When `IsAvailable()` is called and `time.Now().After(cooldownUntil)` transitions from false to true (i.e., `wasCoolingDown` was set), log the recovery and clear the flag.
+When an account transitions from cooldown back to healthy, emit Info. Implementation: add a `wasCoolingDown` flag to `AccountHealth`. When `IsAvailable()` is called and `time.Now().After(cooldownUntil)` transitions from false to true (i.e., `wasCoolingDown` was set), log the recovery and clear the flag.
 
 ```
-"instance recovered from cooldown" instance=acct-1 cooldown_duration=30s
+"account recovered from cooldown" account=acct-1 cooldown_duration=30s
 ```
 
 ## 3. Metrics Periodic Summary Enhancement
 
-### Per-instance counters
+### Per-account counters
 
 Add to `observe.Metrics`:
 
 ```go
-type InstanceMetrics struct {
+type AccountMetrics struct {
     RequestsTotal   atomic.Int64
     RequestsSuccess atomic.Int64
     RequestsError   atomic.Int64
@@ -104,7 +104,7 @@ type InstanceMetrics struct {
 }
 ```
 
-Stored in a `sync.Map` keyed by instance name. Lazy-initialized on first access via `Global.Instance(name)`.
+Stored in a `sync.Map` keyed by account name. Lazy-initialized on first access via `Global.Account(name)`.
 
 ### Enhanced periodic output
 
@@ -113,7 +113,7 @@ The 5-minute summary will include:
 1. **Global counters** (existing): requests_total, throttled, queued, success, error, retries, failovers, 429s, 529s
 2. **Rate**: requests_per_min since last snapshot
 3. **Uptime**: process uptime
-4. **Per-instance breakdown**: one log line per instance with its counters + current state
+4. **Per-account breakdown**: one log line per account with its counters + current state
 
 Example:
 
@@ -121,17 +121,17 @@ Example:
 "metrics summary" uptime=2h15m requests_total=1500 requests_per_min=5.0
   requests_success=1480 requests_error=20 retries=45 failovers=12
 
-"metrics instance" instance=acct-1 requests=800 success=790 errors=10
+"metrics account" account=acct-1 requests=800 success=790 errors=10
   errors_429=3 errors_529=1 state=healthy concurrency=2/5 budget=normal
 
-"metrics instance" instance=acct-2 requests=700 success=690 errors=10
+"metrics account" account=acct-2 requests=700 success=690 errors=10
   errors_429=5 errors_529=0 state=cooldown concurrency=0/5 budget=sticky_only
 ```
 
 ### State snapshot integration
 
 The periodic summary queries:
-- `HealthTracker` for instance health state (healthy/cooldown/disabled)
+- `HealthTracker` for account health state (healthy/cooldown/disabled)
 - `ConcurrencyTracker` for current slot counts
 - `BudgetController` for budget state (Normal/StickyOnly/Blocked)
 
@@ -139,10 +139,10 @@ This requires `StartPeriodicLog` to receive interfaces or callbacks to query the
 
 ```go
 type StateProvider interface {
-    InstanceStates() map[string]InstanceState
+    AccountStates() map[string]AccountState
 }
 
-type InstanceState struct {
+type AccountState struct {
     Health         string // "healthy", "cooldown", "disabled"
     Concurrency    int    // current active slots
     MaxConcurrency int
@@ -164,6 +164,6 @@ The `Balancer` struct implements `StateProvider` since it already holds referenc
 
 ## 5. Testing Strategy
 
-- Existing tests for `observe/` package to be extended for new InstanceMetrics and StateProvider
+- Existing tests for `observe/` package to be extended for new AccountMetrics and StateProvider
 - health.go and budget.go tests updated for new ctx parameter
 - Integration-style test: verify that a request through the proxy handler produces log lines with request_id correlation (using a custom slog handler that captures output)

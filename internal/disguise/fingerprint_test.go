@@ -13,7 +13,7 @@ func TestFingerprintStore_GetCreatesNew(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	fp := store.Get("instance-1")
+	fp := store.Get("account-1")
 	if fp == nil {
 		t.Fatal("expected non-nil fingerprint")
 	}
@@ -42,8 +42,8 @@ func TestFingerprintStore_GetReturnsSame(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	fp1 := store.Get("instance-1")
-	fp2 := store.Get("instance-1")
+	fp1 := store.Get("account-1")
+	fp2 := store.Get("account-1")
 
 	if fp1.ClientID != fp2.ClientID {
 		t.Errorf("expected same ClientID, got %q vs %q", fp1.ClientID, fp2.ClientID)
@@ -53,16 +53,16 @@ func TestFingerprintStore_GetReturnsSame(t *testing.T) {
 	}
 }
 
-func TestFingerprintStore_DifferentInstances(t *testing.T) {
+func TestFingerprintStore_DifferentAccounts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	fp1 := store.Get("instance-1")
-	fp2 := store.Get("instance-2")
+	fp1 := store.Get("account-1")
+	fp2 := store.Get("account-2")
 
 	if fp1.ClientID == fp2.ClientID {
-		t.Error("expected different ClientIDs for different instances")
+		t.Error("expected different ClientIDs for different accounts")
 	}
 }
 
@@ -71,12 +71,12 @@ func TestFingerprintStore_Remove(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	fp1 := store.Get("instance-1")
-	if err := store.Remove("instance-1"); err != nil {
+	fp1 := store.Get("account-1")
+	if err := store.Remove("account-1"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 
-	fp2 := store.Get("instance-1")
+	fp2 := store.Get("account-1")
 	if fp1.ClientID == fp2.ClientID {
 		t.Error("expected new ClientID after Remove + Get")
 	}
@@ -86,11 +86,11 @@ func TestFingerprintStore_PersistAndReload(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store1 := NewFingerprintStore(dir)
-	fp1 := store1.Get("instance-1")
+	fp1 := store1.Get("account-1")
 
 	// Create a new store from the same directory — should load persisted data.
 	store2 := NewFingerprintStore(dir)
-	fp2 := store2.Get("instance-1")
+	fp2 := store2.Get("account-1")
 
 	if fp1.ClientID != fp2.ClientID {
 		t.Errorf("expected same ClientID after reload, got %q vs %q", fp1.ClientID, fp2.ClientID)
@@ -107,13 +107,13 @@ func TestFingerprintStore_Expiry(t *testing.T) {
 		renewAfter:   50 * time.Millisecond,
 	}
 
-	fp1 := store.Get("instance-1")
+	fp1 := store.Get("account-1")
 	clientID1 := fp1.ClientID
 
 	// Wait for expiry
 	time.Sleep(150 * time.Millisecond)
 
-	fp2 := store.Get("instance-1")
+	fp2 := store.Get("account-1")
 	if fp2.ClientID == clientID1 {
 		t.Error("expected new fingerprint after expiry")
 	}
@@ -129,13 +129,13 @@ func TestFingerprintStore_Renewal(t *testing.T) {
 		renewAfter:   50 * time.Millisecond,
 	}
 
-	fp1 := store.Get("instance-1")
+	fp1 := store.Get("account-1")
 	originalUpdatedAt := fp1.UpdatedAt
 
 	// Wait past renewAfter but before maxAge
 	time.Sleep(80 * time.Millisecond)
 
-	fp2 := store.Get("instance-1")
+	fp2 := store.Get("account-1")
 	// Same fingerprint but updated timestamp (millisecond precision)
 	if fp2.ClientID != fp1.ClientID {
 		t.Error("expected same fingerprint after renewal (not expired)")
@@ -206,7 +206,7 @@ func TestExtractVersionFromUA(t *testing.T) {
 	}
 }
 
-func TestLearnFromHeaders_NewInstance(t *testing.T) {
+func TestLearnFromHeaders_NewAccount(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
@@ -218,9 +218,9 @@ func TestLearnFromHeaders_NewInstance(t *testing.T) {
 	headers.Set("X-Stainless-Arch", "arm64")
 	headers.Set("X-Stainless-Runtime-Version", "v24.14.0")
 
-	store.LearnFromHeaders("inst-new", headers)
+	store.LearnFromHeaders("acct-new", headers)
 
-	fp := store.Get("inst-new")
+	fp := store.Get("acct-new")
 	if fp.UserAgent != "claude-cli/2.2.0 (external, cli)" {
 		t.Errorf("expected learned UA, got %q", fp.UserAgent)
 	}
@@ -241,9 +241,9 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 	h1 := http.Header{}
 	h1.Set("User-Agent", "claude-cli/2.1.22 (external, cli)")
 	h1.Set("X-Stainless-OS", "Linux")
-	store.LearnFromHeaders("inst-1", h1)
+	store.LearnFromHeaders("acct-1", h1)
 
-	fp1 := store.Get("inst-1")
+	fp1 := store.Get("acct-1")
 	if fp1.UserAgent != "claude-cli/2.1.22 (external, cli)" {
 		t.Fatalf("initial UA mismatch: %q", fp1.UserAgent)
 	}
@@ -252,9 +252,9 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 	h2 := http.Header{}
 	h2.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
 	h2.Set("X-Stainless-OS", "Darwin")
-	store.LearnFromHeaders("inst-1", h2)
+	store.LearnFromHeaders("acct-1", h2)
 
-	fp2 := store.Get("inst-1")
+	fp2 := store.Get("acct-1")
 	if fp2.UserAgent != "claude-cli/2.2.0 (external, cli)" {
 		t.Errorf("expected merged newer UA, got %q", fp2.UserAgent)
 	}
@@ -272,15 +272,15 @@ func TestLearnFromHeaders_OlderVersionNoMerge(t *testing.T) {
 	h1 := http.Header{}
 	h1.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
 	h1.Set("X-Stainless-OS", "Darwin")
-	store.LearnFromHeaders("inst-1", h1)
+	store.LearnFromHeaders("acct-1", h1)
 
 	// Learn with older version → should NOT merge (only refresh TTL)
 	h2 := http.Header{}
 	h2.Set("User-Agent", "claude-cli/2.1.22 (external, cli)")
 	h2.Set("X-Stainless-OS", "Linux")
-	store.LearnFromHeaders("inst-1", h2)
+	store.LearnFromHeaders("acct-1", h2)
 
-	fp := store.Get("inst-1")
+	fp := store.Get("acct-1")
 	if fp.UserAgent != "claude-cli/2.2.0 (external, cli)" {
 		t.Errorf("expected UA unchanged (older version), got %q", fp.UserAgent)
 	}

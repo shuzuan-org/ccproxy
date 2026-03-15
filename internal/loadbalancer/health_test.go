@@ -163,7 +163,7 @@ func TestConsecutive401_Disable(t *testing.T) {
 	h.RecordError(context.Background(), 401, 0, nil)
 
 	if !h.IsDisabled() {
-		t.Error("expected instance to be disabled after 3 consecutive 401s")
+		t.Error("expected account to be disabled after 3 consecutive 401s")
 	}
 	if h.DisabledReason() != "consecutive_401" {
 		t.Errorf("expected reason 'consecutive_401', got %q", h.DisabledReason())

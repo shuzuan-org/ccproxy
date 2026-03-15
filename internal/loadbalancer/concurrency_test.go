@@ -212,7 +212,7 @@ func TestConcurrencyTracker_ConcurrentAcquire(t *testing.T) {
 	}
 }
 
-func TestConcurrencyTracker_RemoveInstance(t *testing.T) {
+func TestConcurrencyTracker_RemoveAccount(t *testing.T) {
 	tracker := NewConcurrencyTracker()
 
 	// Acquire some slots
@@ -234,15 +234,15 @@ func TestConcurrencyTracker_RemoveInstance(t *testing.T) {
 		t.Fatalf("expected 2 active slots, got %d", tracker.ActiveSlots("inst1"))
 	}
 
-	// Remove instance
-	tracker.RemoveInstance("inst1")
+	// Remove account
+	tracker.RemoveAccount("inst1")
 
 	if tracker.ActiveSlots("inst1") != 0 {
-		t.Errorf("expected 0 active slots after RemoveInstance, got %d", tracker.ActiveSlots("inst1"))
+		t.Errorf("expected 0 active slots after RemoveAccount, got %d", tracker.ActiveSlots("inst1"))
 	}
 
 	// LoadRate should also be 0
 	if rate := tracker.LoadRate("inst1", 5); rate != 0 {
-		t.Errorf("expected 0%% load rate after RemoveInstance, got %d%%", rate)
+		t.Errorf("expected 0%% load rate after RemoveAccount, got %d%%", rate)
 	}
 }

@@ -3,7 +3,7 @@ package disguise
 import "net/http"
 
 // DefaultHeaders are the HTTP headers that mimic Claude CLI.
-// Used as fallback when no per-instance fingerprint is available.
+// Used as fallback when no per-account fingerprint is available.
 // Keep these in sync with sub2api/internal/pkg/claude/constants.go.
 var DefaultHeaders = map[string]string{
 	"User-Agent":                    "claude-cli/2.1.22 (external, cli)",
@@ -14,7 +14,7 @@ var DefaultHeaders = map[string]string{
 }
 
 // ApplyHeaders sets all Claude CLI impersonation headers on the request.
-// When fp is non-nil, per-instance fingerprint values are used; otherwise
+// When fp is non-nil, per-account fingerprint values are used; otherwise
 // DefaultHeaders provides the fallback.
 func ApplyHeaders(req *http.Request, isStream bool, fp *Fingerprint) {
 	if fp != nil {
@@ -28,7 +28,7 @@ func ApplyHeaders(req *http.Request, isStream bool, fp *Fingerprint) {
 			req.Header.Set(k, v)
 		}
 	}
-	// Fixed headers (same for all instances)
+	// Fixed headers (same for all accounts)
 	req.Header.Set("X-Stainless-Lang", "js")
 	req.Header.Set("X-Stainless-Runtime", "node")
 	req.Header.Set("X-Stainless-Retry-Count", "0")

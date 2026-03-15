@@ -23,7 +23,7 @@ type ServerConfig struct {
 	RateLimit      int    `toml:"rate_limit"`       // max requests per minute per IP for admin routes
 	BaseURL        string `toml:"base_url"`          // upstream API base URL (default: https://api.anthropic.com)
 	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 300)
-	MaxConcurrency int    `toml:"max_concurrency"`   // per-instance concurrency limit (default: 5)
+	MaxConcurrency int    `toml:"max_concurrency"`   // per-account concurrency limit (default: 5)
 	LogLevel       string `toml:"log_level"`         // debug, info, warn, error (default: info)
 	LogFormat      string `toml:"log_format"`        // text or json (default: text)
 }
@@ -34,15 +34,15 @@ type APIKeyConfig struct {
 	Enabled bool   `toml:"enabled"`
 }
 
-// InstanceConfig is the runtime representation of an instance, built from
+// AccountConfig is the runtime representation of an account, built from
 // global config + registry entry. Not parsed from TOML directly.
-type InstanceConfig struct {
+type AccountConfig struct {
 	Name           string
 	MaxConcurrency int
 	BaseURL        string
 	RequestTimeout int
 	Enabled        bool
-	Proxy          string // SOCKS5 proxy URL for this instance (e.g. "socks5://host:port")
+	Proxy          string // SOCKS5 proxy URL for this account (e.g. "socks5://host:port")
 }
 
 // Load reads, parses, applies defaults, auto-generates missing credentials,
@@ -214,30 +214,29 @@ func SetupLogging(cfg *Config) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// IsEnabled returns true when the instance is enabled.
-func (ic *InstanceConfig) IsEnabled() bool {
-	return ic.Enabled
+// IsEnabled returns true when the account is enabled.
+func (ac *AccountConfig) IsEnabled() bool {
+	return ac.Enabled
 }
 
-// RuntimeInstance builds a full InstanceConfig from global settings + a registry entry.
-func (c *Config) RuntimeInstance(inst Instance) InstanceConfig {
-	return InstanceConfig{
-		Name:           inst.Name,
+// RuntimeAccount builds a full AccountConfig from global settings + a registry entry.
+func (c *Config) RuntimeAccount(acct Account) AccountConfig {
+	return AccountConfig{
+		Name:           acct.Name,
 		MaxConcurrency: c.Server.MaxConcurrency,
 		BaseURL:        c.Server.BaseURL,
 		RequestTimeout: c.Server.RequestTimeout,
-		Enabled:        inst.Enabled,
-		Proxy:          inst.Proxy,
+		Enabled:        acct.Enabled,
+		Proxy:          acct.Proxy,
 	}
 }
 
-// RuntimeInstances builds all InstanceConfigs from a registry.
-func (c *Config) RuntimeInstances(registry *InstanceRegistry) []InstanceConfig {
+// RuntimeAccounts builds all AccountConfigs from a registry.
+func (c *Config) RuntimeAccounts(registry *AccountRegistry) []AccountConfig {
 	entries := registry.List()
-	result := make([]InstanceConfig, 0, len(entries))
+	result := make([]AccountConfig, 0, len(entries))
 	for _, e := range entries {
-		result = append(result, c.RuntimeInstance(e))
+		result = append(result, c.RuntimeAccount(e))
 	}
 	return result
 }
-

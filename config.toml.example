@@ -15,5 +15,5 @@ max_concurrency = 5
 # name = "dev-team"
 # enabled = true
 
-# Instances are managed dynamically via the admin dashboard (Add Claude button).
-# They are persisted in data/instances.json — no TOML config needed.
+# Accounts are managed dynamically via the admin dashboard (Add Claude button).
+# They are persisted in data/accounts.json — no TOML config needed.

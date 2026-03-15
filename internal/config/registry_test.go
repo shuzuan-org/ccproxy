@@ -11,7 +11,7 @@ import (
 func TestRegistryAdd(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	if err := r.Add("alice"); err != nil {
 		t.Fatalf("Add alice: %v", err)
@@ -28,14 +28,14 @@ func TestRegistryAdd(t *testing.T) {
 		t.Errorf("names = %v, want [alice, bob]", list)
 	}
 	if !list[0].Enabled || !list[1].Enabled {
-		t.Error("new instances should be enabled by default")
+		t.Error("new accounts should be enabled by default")
 	}
 }
 
 func TestRegistryAdd_Duplicate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	_ = r.Add("alice")
 	err := r.Add("alice")
@@ -47,7 +47,7 @@ func TestRegistryAdd_Duplicate(t *testing.T) {
 func TestRegistryAdd_Empty(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	err := r.Add("")
 	if err == nil {
@@ -63,7 +63,7 @@ func TestRegistryAdd_Empty(t *testing.T) {
 func TestRegistryRemove(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	_ = r.Add("alice")
 	_ = r.Add("bob")
@@ -84,11 +84,11 @@ func TestRegistryRemove(t *testing.T) {
 func TestRegistryRemove_NotFound(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	err := r.Remove("nonexistent")
 	if err == nil {
-		t.Fatal("expected error for nonexistent instance")
+		t.Fatal("expected error for nonexistent account")
 	}
 }
 
@@ -97,12 +97,12 @@ func TestRegistryPersistence(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create and populate
-	r1 := NewInstanceRegistry(dir)
+	r1 := NewAccountRegistry(dir)
 	_ = r1.Add("alice")
 	_ = r1.Add("bob")
 
 	// Load from disk
-	r2 := NewInstanceRegistry(dir)
+	r2 := NewAccountRegistry(dir)
 	list := r2.List()
 	if len(list) != 2 {
 		t.Fatalf("persisted len = %d, want 2", len(list))
@@ -112,7 +112,7 @@ func TestRegistryPersistence(t *testing.T) {
 	}
 
 	// Verify file permissions
-	info, err := os.Stat(filepath.Join(dir, "instances.json"))
+	info, err := os.Stat(filepath.Join(dir, "accounts.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestRegistryPersistence(t *testing.T) {
 func TestRegistryHas(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	_ = r.Add("alice")
 
@@ -139,7 +139,7 @@ func TestRegistryHas(t *testing.T) {
 func TestRegistryNames(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	_ = r.Add("alice")
 	_ = r.Add("bob")
@@ -156,10 +156,10 @@ func TestRegistryNames(t *testing.T) {
 func TestRegistryOnChange(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := NewInstanceRegistry(dir)
+	r := NewAccountRegistry(dir)
 
 	var called atomic.Int32
-	r.SetOnChange(func(instances []Instance) {
+	r.SetOnChange(func(accounts []Account) {
 		called.Add(1)
 	})
 

@@ -18,7 +18,7 @@ type Engine struct {
 	sessions     *SessionMaskStore
 }
 
-// NewEngine creates a new disguise engine with per-instance fingerprint storage
+// NewEngine creates a new disguise engine with per-account fingerprint storage
 // and session masking. dataDir is the path to the persistent data directory.
 func NewEngine(dataDir string) *Engine {
 	return &Engine{
@@ -38,27 +38,27 @@ func (e *Engine) StartSessionCleanup(ctx context.Context) {
 // origReq is the original incoming request (used for Claude Code client detection
 // because it has the full set of headers: User-Agent, X-App, etc.).
 // upstreamReq is the outbound request to Anthropic (headers/body are modified here).
-// instanceName identifies which proxy instance is being used (for per-instance fingerprinting).
+// accountName identifies which proxy account is being used (for per-account fingerprinting).
 //
 // The layers:
 // 1. TLS fingerprint — handled externally by HTTP transport selection
-// 2. HTTP headers — User-Agent, X-Stainless-*, etc. (per-instance fingerprint)
+// 2. HTTP headers — User-Agent, X-Stainless-*, etc. (per-account fingerprint)
 // 3. anthropic-beta — scenario-based beta token composition
 // 4. System prompt injection — inject Claude Code system prompt
 // 5. metadata.user_id — generate/rewrite fake user_id with session masking
 // 6. Model ID normalization — short name → full versioned name
 // 7. Thinking cache_control cleanup — remove cache_control from thinking blocks
 // 8. Body sanitization — tools injection, field removal
-func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string, instanceName string) ([]byte, bool) {
+func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string, accountName string) ([]byte, bool) {
 	ctx := origReq.Context()
 
 	// Detect using origReq which has full client headers (User-Agent, X-App, etc.)
 	if IsClaudeCodeClient(origReq.Header, body, origReq.URL.Path) {
 		observe.Logger(ctx).Debug("disguise: native Claude Code client detected, lightweight pass-through",
-			"instance", instanceName,
+			"account", accountName,
 		)
 		// Learn fingerprint from real CC client for future disguise use
-		e.fingerprints.LearnFromHeaders(instanceName, origReq.Header)
+		e.fingerprints.LearnFromHeaders(accountName, origReq.Header)
 
 		// Real CC client via OAuth: lightweight processing only.
 		// 1. Supplement oauth beta header (preserve client's existing betas)
@@ -67,7 +67,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		upstreamReq.Header.Set("Anthropic-Beta", newBeta)
 		if clientBeta != newBeta {
 			observe.Logger(ctx).Debug("disguise: beta header supplemented",
-				"instance", instanceName,
+				"account", accountName,
 				"before", clientBeta,
 				"after", newBeta,
 			)
@@ -82,7 +82,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
-		maskedSession := e.sessions.Get(instanceName)
+		maskedSession := e.sessions.Get(accountName)
 		originalUserID, _ := metadata["user_id"].(string)
 		if originalUserID != "" {
 			metadata["user_id"] = RewriteUserIDWithMasking(originalUserID, sessionSeed, maskedSession)
@@ -90,7 +90,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			metadata["user_id"] = GenerateUserID(sessionSeed)
 		}
 		observe.Logger(ctx).Debug("disguise: user_id rewritten (CC pass-through)",
-			"instance", instanceName,
+			"account", accountName,
 			"before", truncateUserID(originalUserID),
 			"after", truncateUserID(metadata["user_id"].(string)),
 		)
@@ -104,7 +104,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 	// Non-CC client: full disguise pipeline
 	observe.Logger(ctx).Debug("disguise: non-CC client, applying full disguise",
-		"instance", instanceName,
+		"account", accountName,
 		"original_ua", origReq.Header.Get("User-Agent"),
 	)
 
@@ -119,15 +119,15 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 	// Layer 7: Thinking cache_control cleanup (before other modifications)
 	if CleanThinkingCacheControl(parsed) {
-		observe.Logger(ctx).Debug("disguise: [layer 7] thinking cache_control cleaned", "instance", instanceName)
+		observe.Logger(ctx).Debug("disguise: [layer 7] thinking cache_control cleaned", "account", accountName)
 	}
 
-	// Layer 2: HTTP Headers (per-instance fingerprint)
-	fp := e.fingerprints.Get(instanceName)
+	// Layer 2: HTTP Headers (per-account fingerprint)
+	fp := e.fingerprints.Get(accountName)
 	ApplyHeaders(upstreamReq, isStream, fp)
 	if fp != nil {
-		observe.Logger(ctx).Debug("disguise: [layer 2] headers applied (per-instance fingerprint)",
-			"instance", instanceName,
+		observe.Logger(ctx).Debug("disguise: [layer 2] headers applied (per-account fingerprint)",
+			"account", accountName,
 			"original_ua", origReq.Header.Get("User-Agent"),
 			"disguised_ua", fp.UserAgent,
 			"stainless_os", fp.StainlessOS,
@@ -135,7 +135,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		)
 	} else {
 		observe.Logger(ctx).Debug("disguise: [layer 2] headers applied (default fingerprint)",
-			"instance", instanceName,
+			"account", accountName,
 			"original_ua", origReq.Header.Get("User-Agent"),
 			"disguised_ua", DefaultHeaders["User-Agent"],
 		)
@@ -146,7 +146,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	newBeta := BetaHeader(model, hasTools)
 	upstreamReq.Header.Set("Anthropic-Beta", newBeta)
 	observe.Logger(ctx).Debug("disguise: [layer 3] beta header set",
-		"instance", instanceName,
+		"account", accountName,
 		"model", model,
 		"has_tools", hasTools,
 		"before", originalBeta,
@@ -161,18 +161,18 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		hasSystemBefore := parsed["system"] != nil
 		injectSystemPromptInPlace(parsed)
 		observe.Logger(ctx).Debug("disguise: [layer 4] system prompt injected",
-			"instance", instanceName,
+			"account", accountName,
 			"had_system_before", hasSystemBefore,
 		)
 	} else {
 		observe.Logger(ctx).Debug("disguise: [layer 4] system prompt skipped (haiku model)",
-			"instance", instanceName,
+			"account", accountName,
 			"model", model,
 		)
 	}
 
 	// Layer 5: metadata.user_id with session masking
-	maskedSession := e.sessions.Get(instanceName)
+	maskedSession := e.sessions.Get(accountName)
 	originalUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
 		originalUserID, _ = meta["user_id"].(string)
@@ -183,7 +183,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		newUserID, _ = meta["user_id"].(string)
 	}
 	observe.Logger(ctx).Debug("disguise: [layer 5] metadata.user_id set",
-		"instance", instanceName,
+		"account", accountName,
 		"before", truncateUserID(originalUserID),
 		"after", truncateUserID(newUserID),
 	)
@@ -192,7 +192,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	normalizeModelInPlace(parsed)
 	if normalizedModel, ok := parsed["model"].(string); ok && normalizedModel != model {
 		observe.Logger(ctx).Debug("disguise: [layer 6] model ID normalized",
-			"instance", instanceName,
+			"account", accountName,
 			"before", model,
 			"after", normalizedModel,
 		)
@@ -205,7 +205,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	sanitizeRequestBodyInPlace(parsed)
 	if hadTemperature || hadToolChoice || !hadTools {
 		observe.Logger(ctx).Debug("disguise: [layer 8] body sanitized",
-			"instance", instanceName,
+			"account", accountName,
 			"removed_temperature", hadTemperature,
 			"removed_tool_choice", hadToolChoice,
 			"injected_empty_tools", !hadTools,

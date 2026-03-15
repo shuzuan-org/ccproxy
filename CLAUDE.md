@@ -38,20 +38,20 @@ internal/
   apierror/         Shared API error types
   auth/             Bearer token validation middleware (constant-time compare)
   cli/              Cobra commands: root (start), version
-  config/           TOML config loading, validation, defaults, instance registry
+  config/           TOML config loading, validation, defaults, account registry
   disguise/         8-layer Claude CLI impersonation engine
   fileutil/         File I/O helpers (atomic write, etc.)
   loadbalancer/     3-layer balancer, concurrency tracker, retry/failover, budget, health, usage
   netutil/          SOCKS5 proxy support
   oauth/            PKCE flow, AES-256-GCM token store, session store, Anthropic provider
-  observe/          Request tracing context, per-instance metrics, StateProvider, periodic logging
+  observe/          Request tracing context, per-account metrics, StateProvider, periodic logging
   proxy/            HTTP proxy handler, SSE streaming, body filter, error mapping
   ratelimit/        Per-IP rate limiting middleware
   server/           HTTP server setup (net/http mux, middleware wiring)
   session/          Session affinity with TTL management
   tls/              TLS fingerprint spoofing
 data/               Runtime data — NOT committed (.gitignore)
-  instances.json    Dynamic instance registry (0600)
+  accounts.json     Dynamic account registry (0600)
   oauth_tokens.json Encrypted OAuth tokens (0600)
 config.toml.example Reference configuration
 ```
@@ -69,29 +69,29 @@ config.toml.example Reference configuration
 - `config.Load(path)` reads, parses, applies defaults, auto-generates missing credentials, and validates in one call.
 - If `admin_password` is empty or `api_keys` has no enabled entries, `Load` auto-generates cryptographically secure values, persists them to the config file, and prints them to the console.
 - `base_url`, `request_timeout`, `max_concurrency` are global settings under `[server]`.
-- Instances are **not** defined in TOML. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/instances.json` by `config.InstanceRegistry`.
-- `config.RuntimeInstance(inst)` and `config.RuntimeInstances(registry)` build `InstanceConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).
-- `InstanceRegistry.SetOnChange(fn)` propagates dynamic add/remove to balancer and OAuth manager at runtime.
+- Accounts are **not** defined in TOML. They are managed dynamically via the admin dashboard ("Add Claude" / "Remove" buttons) and persisted to `data/accounts.json` by `config.AccountRegistry`.
+- `config.RuntimeAccount(acct)` and `config.RuntimeAccounts(registry)` build `AccountConfig` structs from global settings + registry entries for downstream consumers (balancer, proxy, oauth).
+- `AccountRegistry.SetOnChange(fn)` propagates dynamic add/remove to balancer and OAuth manager at runtime.
 
 ### Concurrency
 
-- `ConcurrencyTracker` in `internal/loadbalancer/concurrency.go` uses `sync.Mutex` and a `map[instanceName]map[requestID]time.Time` for slot tracking. No Redis.
+- `ConcurrencyTracker` in `internal/loadbalancer/concurrency.go` uses `sync.Mutex` and a `map[accountName]map[requestID]time.Time` for slot tracking. No Redis.
 - Session affinity uses `sync.Map` with `{apiKeyName}:{sessionID}` keys and 1h TTL.
-- OAuth token store uses per-instance mutexes to prevent concurrent refresh races.
+- OAuth token store uses per-account mutexes to prevent concurrent refresh races.
 
 ### Disguise Engine
 
-Activation condition: `!isClaudeCodeClient(request)`. All instances use OAuth; disguise is always applied for non-Claude Code clients. TLS fingerprint is always enabled.
+Activation condition: `!isClaudeCodeClient(request)`. All accounts use OAuth; disguise is always applied for non-Claude Code clients. TLS fingerprint is always enabled.
 
 The `isClaudeCodeClient` detector in `internal/disguise/detector.go` uses a gated scoring system: User-Agent must match `claude-cli/x.x.x` (gate), then for `/v1/messages` requests, at least 2 of 4 signals must match (X-App header, anthropic-beta token, metadata.user_id pattern, system prompt Dice coefficient). Non-messages paths pass with UA gate alone.
 
 ### OAuth
 
-All instances use OAuth authentication. Anthropic OAuth constants (ClientID, AuthURL, TokenURL, RedirectURI, Scopes) are hardcoded in `internal/oauth/provider.go`.
+All accounts use OAuth authentication. Anthropic OAuth constants (ClientID, AuthURL, TokenURL, RedirectURI, Scopes) are hardcoded in `internal/oauth/provider.go`.
 
-Tokens are stored per-instance (not per-provider) at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
+Tokens are stored per-account (not per-provider) at `data/oauth_tokens.json` with 0600 permissions. Encryption key is derived via Argon2 from `hostname + username + machine-id` — no passphrase is ever stored. Never log or return raw token values.
 
-The admin dashboard at `/admin/` provides a web UI for OAuth instance management: add instance, remove instance, login (PKCE flow with manual code paste), refresh, and logout. PKCE sessions are stored in-memory with 10-minute TTL. Instance add/remove triggers `InstanceRegistry.onChange` which updates the balancer and OAuth manager dynamically.
+The admin dashboard at `/admin/` provides a web UI for OAuth account management: add account, remove account, login (PKCE flow with manual code paste), refresh, and logout. PKCE sessions are stored in-memory with 10-minute TTL. Account add/remove triggers `AccountRegistry.onChange` which updates the balancer and OAuth manager dynamically.
 
 ### SSE Streaming
 

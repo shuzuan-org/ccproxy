@@ -45,17 +45,17 @@ var userIDFormatB = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([\w-]+)
 
 // RewriteUserID deterministically rewrites a client's user_id to prevent
 // Anthropic from correlating different proxy users. The clientID portion is
-// replaced with sha256(instanceSeed + originalClientID)[:32] (64 hex chars),
-// and the session UUID is re-derived via generateSessionUUID(instanceSeed + originalSession).
+// replaced with sha256(accountSeed + originalClientID)[:32] (64 hex chars),
+// and the session UUID is re-derived via generateSessionUUID(accountSeed + originalSession).
 //
 // If the original user_id does not match any known format, falls back to GenerateUserID.
-func RewriteUserID(originalUserID, instanceSeed string) string {
+func RewriteUserID(originalUserID, accountSeed string) string {
 	// Try format A: user_{hex}_account__session_{uuid}
 	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
 		clientHex := m[1]
 		sessionUUID := m[2]
-		newClient := deterministicClientID(instanceSeed, clientHex)
-		newSession := generateSessionUUID(instanceSeed + sessionUUID)
+		newClient := deterministicClientID(accountSeed, clientHex)
+		newSession := generateSessionUUID(accountSeed + sessionUUID)
 		return fmt.Sprintf("user_%s_account__session_%s", newClient, newSession)
 	}
 
@@ -64,30 +64,30 @@ func RewriteUserID(originalUserID, instanceSeed string) string {
 		clientHex := m[1]
 		accountUUID := m[2]
 		sessionUUID := m[3]
-		newClient := deterministicClientID(instanceSeed, clientHex)
-		newAccount := generateSessionUUID(instanceSeed + accountUUID)
-		newSession := generateSessionUUID(instanceSeed + sessionUUID)
+		newClient := deterministicClientID(accountSeed, clientHex)
+		newAccount := generateSessionUUID(accountSeed + accountUUID)
+		newSession := generateSessionUUID(accountSeed + sessionUUID)
 		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, newSession)
 	}
 
 	// Fallback: unknown format, generate fresh
-	return GenerateUserID(instanceSeed)
+	return GenerateUserID(accountSeed)
 }
 
-// deterministicClientID derives a 64-char hex string from instanceSeed + originalClientID.
-func deterministicClientID(instanceSeed, originalClientID string) string {
-	hash := sha256.Sum256([]byte(instanceSeed + originalClientID))
+// deterministicClientID derives a 64-char hex string from seed + originalClientID.
+func deterministicClientID(accountSeed, originalClientID string) string {
+	hash := sha256.Sum256([]byte(accountSeed + originalClientID))
 	return hex.EncodeToString(hash[:])
 }
 
 // RewriteUserIDWithMasking works like RewriteUserID but replaces the session UUID
 // portion with the provided maskedSessionUUID to ensure all requests through the
-// same instance share a consistent session identity.
-func RewriteUserIDWithMasking(originalUserID, instanceSeed, maskedSessionUUID string) string {
+// same account share a consistent session identity.
+func RewriteUserIDWithMasking(originalUserID, accountSeed, maskedSessionUUID string) string {
 	// Try format A: user_{hex}_account__session_{uuid}
 	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
 		clientHex := m[1]
-		newClient := deterministicClientID(instanceSeed, clientHex)
+		newClient := deterministicClientID(accountSeed, clientHex)
 		return fmt.Sprintf("user_%s_account__session_%s", newClient, maskedSessionUUID)
 	}
 
@@ -95,15 +95,15 @@ func RewriteUserIDWithMasking(originalUserID, instanceSeed, maskedSessionUUID st
 	if m := userIDFormatB.FindStringSubmatch(originalUserID); m != nil {
 		clientHex := m[1]
 		accountUUID := m[2]
-		newClient := deterministicClientID(instanceSeed, clientHex)
-		newAccount := generateSessionUUID(instanceSeed + accountUUID)
+		newClient := deterministicClientID(accountSeed, clientHex)
+		newAccount := generateSessionUUID(accountSeed + accountUUID)
 		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, maskedSessionUUID)
 	}
 
 	// Fallback: unknown format, derive deterministic clientID from seed
 	var clientID string
-	if instanceSeed != "" {
-		clientID = deterministicClientID(instanceSeed, "default-client")
+	if accountSeed != "" {
+		clientID = deterministicClientID(accountSeed, "default-client")
 	} else {
 		clientID = GenerateClientID()
 	}

@@ -11,8 +11,8 @@ type maskedSession struct {
 	expiresAt time.Time
 }
 
-// SessionMaskStore maps instance names to masked session UUIDs.
-// Each instance gets a stable session UUID that refreshes on access
+// SessionMaskStore maps account names to masked session UUIDs.
+// Each account gets a stable session UUID that refreshes on access
 // and expires after TTL of inactivity.
 type SessionMaskStore struct {
 	mu       sync.Mutex
@@ -28,20 +28,20 @@ func NewSessionMaskStore() *SessionMaskStore {
 	}
 }
 
-// Get returns the masked session UUID for the given instance, creating
+// Get returns the masked session UUID for the given account, creating
 // one if absent or expired. Active sessions get their TTL refreshed.
-func (s *SessionMaskStore) Get(instanceName string) string {
+func (s *SessionMaskStore) Get(accountName string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	if ms, ok := s.sessions[instanceName]; ok && now.Before(ms.expiresAt) {
+	if ms, ok := s.sessions[accountName]; ok && now.Before(ms.expiresAt) {
 		ms.expiresAt = now.Add(s.ttl)
 		return ms.uuid
 	}
 
 	uuid := generateSessionUUID("")
-	s.sessions[instanceName] = &maskedSession{
+	s.sessions[accountName] = &maskedSession{
 		uuid:      uuid,
 		expiresAt: now.Add(s.ttl),
 	}

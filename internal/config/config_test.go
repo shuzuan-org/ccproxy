@@ -315,7 +315,7 @@ func TestLoadConfig_NoAutoGenerateWhenPresent(t *testing.T) {
 	}
 }
 
-func TestRuntimeInstance(t *testing.T) {
+func TestRuntimeAccount(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{
 			BaseURL:        "https://api.anthropic.com",
@@ -324,24 +324,23 @@ func TestRuntimeInstance(t *testing.T) {
 		},
 	}
 
-	inst := cfg.RuntimeInstance(Instance{Name: "alice", Enabled: true, Proxy: "socks5://127.0.0.1:1080"})
-	if inst.Name != "alice" {
-		t.Errorf("name = %q, want alice", inst.Name)
+	acct := cfg.RuntimeAccount(Account{Name: "alice", Enabled: true, Proxy: "socks5://127.0.0.1:1080"})
+	if acct.Name != "alice" {
+		t.Errorf("name = %q, want alice", acct.Name)
 	}
-	if inst.MaxConcurrency != 3 {
-		t.Errorf("max_concurrency = %d, want 3", inst.MaxConcurrency)
+	if acct.MaxConcurrency != 3 {
+		t.Errorf("max_concurrency = %d, want 3", acct.MaxConcurrency)
 	}
-	if inst.BaseURL != "https://api.anthropic.com" {
-		t.Errorf("base_url = %q", inst.BaseURL)
+	if acct.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("base_url = %q", acct.BaseURL)
 	}
-	if inst.RequestTimeout != 120 {
-		t.Errorf("request_timeout = %d, want 120", inst.RequestTimeout)
+	if acct.RequestTimeout != 120 {
+		t.Errorf("request_timeout = %d, want 120", acct.RequestTimeout)
 	}
-	if !inst.IsEnabled() {
+	if !acct.IsEnabled() {
 		t.Error("should be enabled")
 	}
-	if inst.Proxy != "socks5://127.0.0.1:1080" {
-		t.Errorf("proxy = %q, want socks5://127.0.0.1:1080", inst.Proxy)
+	if acct.Proxy != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %q, want socks5://127.0.0.1:1080", acct.Proxy)
 	}
 }
-

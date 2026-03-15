@@ -16,7 +16,7 @@ func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 
 	dir := t.TempDir()
-	registry := config.NewInstanceRegistry(dir)
+	registry := config.NewAccountRegistry(dir)
 	_ = registry.Add("test-oauth")
 
 	cfg := &config.Config{
@@ -26,10 +26,10 @@ func newTestHandler(t *testing.T) *Handler {
 			MaxConcurrency: 5,
 		},
 	}
-	runtimeInstances := cfg.RuntimeInstances(registry)
+	runtimeAccounts := cfg.RuntimeAccounts(registry)
 
 	tracker := loadbalancer.NewConcurrencyTracker()
-	balancer := loadbalancer.NewBalancer(runtimeInstances, tracker)
+	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
 	store, err := oauth.NewTokenStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
@@ -39,7 +39,7 @@ func newTestHandler(t *testing.T) *Handler {
 	return NewHandler(balancer, mgr, sessions, cfg, registry)
 }
 
-func TestHandleInstances_IncludesTokenStatus(t *testing.T) {
+func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
 	h := newTestHandler(t)
 
 	tok := oauth.OAuthToken{
@@ -50,15 +50,15 @@ func TestHandleInstances_IncludesTokenStatus(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "/api/instances", nil)
+	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	w := httptest.NewRecorder()
-	h.HandleInstances(w, req)
+	h.HandleAccounts(w, req)
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	var states []InstanceState
+	var states []AccountState
 	if err := json.NewDecoder(w.Body).Decode(&states); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -70,14 +70,14 @@ func TestHandleInstances_IncludesTokenStatus(t *testing.T) {
 	}
 }
 
-func TestHandleInstances_NoToken(t *testing.T) {
+func TestHandleAccounts_NoToken(t *testing.T) {
 	h := newTestHandler(t)
 
-	req := httptest.NewRequest("GET", "/api/instances", nil)
+	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	w := httptest.NewRecorder()
-	h.HandleInstances(w, req)
+	h.HandleAccounts(w, req)
 
-	var states []InstanceState
+	var states []AccountState
 	if err := json.NewDecoder(w.Body).Decode(&states); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestHandleInstances_NoToken(t *testing.T) {
 func TestHandleOAuthLoginStart(t *testing.T) {
 	h := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"instance": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthLoginStart(w, req)
@@ -114,10 +114,10 @@ func TestHandleOAuthLoginStart(t *testing.T) {
 	}
 }
 
-func TestHandleOAuthLoginStart_InvalidInstance(t *testing.T) {
+func TestHandleOAuthLoginStart_InvalidAccount(t *testing.T) {
 	h := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"instance": "nonexistent"})
+	body, _ := json.Marshal(map[string]string{"account": "nonexistent"})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthLoginStart(w, req)
@@ -130,7 +130,7 @@ func TestHandleOAuthLoginStart_InvalidInstance(t *testing.T) {
 func TestHandleOAuthRefresh_NoToken(t *testing.T) {
 	h := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"instance": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/refresh", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthRefresh(w, req)
@@ -148,7 +148,7 @@ func TestHandleOAuthLogout(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"instance": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/logout", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthLogout(w, req)
@@ -163,44 +163,44 @@ func TestHandleOAuthLogout(t *testing.T) {
 	}
 }
 
-func TestHandleAddInstance(t *testing.T) {
+func TestHandleAddAccount(t *testing.T) {
 	h := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"name": "new-instance"})
-	req := httptest.NewRequest("POST", "/api/instances/add", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]string{"name": "new-account"})
+	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleAddInstance(w, req)
+	h.HandleAddAccount(w, req)
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	// Verify it shows up in the list
-	if !h.registry.Has("new-instance") {
-		t.Error("new-instance not found in registry")
+	if !h.registry.Has("new-account") {
+		t.Error("new-account not found in registry")
 	}
 }
 
-func TestHandleAddInstance_Duplicate(t *testing.T) {
+func TestHandleAddAccount_Duplicate(t *testing.T) {
 	h := newTestHandler(t)
 
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
-	req := httptest.NewRequest("POST", "/api/instances/add", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleAddInstance(w, req)
+	h.HandleAddAccount(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400 for duplicate", w.Code)
 	}
 }
 
-func TestHandleRemoveInstance(t *testing.T) {
+func TestHandleRemoveAccount(t *testing.T) {
 	h := newTestHandler(t)
 
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
-	req := httptest.NewRequest("POST", "/api/instances/remove", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/accounts/remove", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleRemoveInstance(w, req)
+	h.HandleRemoveAccount(w, req)
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())

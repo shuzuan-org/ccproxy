@@ -21,8 +21,8 @@ func TestMetrics_Snapshot(t *testing.T) {
 	m.RequestsError.Store(3)
 	m.RetriesTotal.Store(4)
 	m.FailoversTotal.Store(1)
-	m.Instances429.Store(5)
-	m.Instances529.Store(2)
+	m.Accounts429.Store(5)
+	m.Accounts529.Store(2)
 
 	snap := m.Snapshot()
 
@@ -34,8 +34,8 @@ func TestMetrics_Snapshot(t *testing.T) {
 		"requests_error":     3,
 		"retries_total":      4,
 		"failovers_total":    1,
-		"instances_429":      5,
-		"instances_529":      2,
+		"accounts_429":      5,
+		"accounts_529":      2,
 	}
 
 	for k, want := range expected {
@@ -90,35 +90,35 @@ func TestMetrics_ConcurrentAddSnapshot(t *testing.T) {
 	}
 }
 
-func TestInstanceMetrics(t *testing.T) {
+func TestAccountMetrics(t *testing.T) {
 	t.Parallel()
 	m := &Metrics{}
 
-	im1 := m.Instance("acct-1")
-	if im1 == nil {
-		t.Fatal("Instance returned nil")
+	am1 := m.Account("acct-1")
+	if am1 == nil {
+		t.Fatal("Account returned nil")
 	}
 
 	// Same pointer on repeated access
-	im2 := m.Instance("acct-1")
-	if im1 != im2 {
-		t.Fatal("Instance returned different pointer for same name")
+	am2 := m.Account("acct-1")
+	if am1 != am2 {
+		t.Fatal("Account returned different pointer for same name")
 	}
 
-	// Different instance returns different pointer
-	im3 := m.Instance("acct-2")
-	if im1 == im3 {
-		t.Fatal("Different instances returned same pointer")
+	// Different account returns different pointer
+	am3 := m.Account("acct-2")
+	if am1 == am3 {
+		t.Fatal("Different accounts returned same pointer")
 	}
 
-	im1.RequestsTotal.Add(5)
-	im1.RequestsSuccess.Add(3)
-	im1.RequestsError.Add(2)
-	im1.Errors429.Add(1)
-	im1.Errors529.Add(1)
+	am1.RequestsTotal.Add(5)
+	am1.RequestsSuccess.Add(3)
+	am1.RequestsError.Add(2)
+	am1.Errors429.Add(1)
+	am1.Errors529.Add(1)
 
-	if im1.RequestsTotal.Load() != 5 {
-		t.Fatalf("expected 5, got %d", im1.RequestsTotal.Load())
+	if am1.RequestsTotal.Load() != 5 {
+		t.Fatalf("expected 5, got %d", am1.RequestsTotal.Load())
 	}
 }
 
@@ -171,11 +171,11 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	m := &Metrics{}
 	m.RequestsTotal.Store(100)
 	m.RequestsSuccess.Store(95)
-	m.Instance("acct-1").RequestsTotal.Store(60)
-	m.Instance("acct-2").RequestsTotal.Store(40)
+	m.Account("acct-1").RequestsTotal.Store(60)
+	m.Account("acct-2").RequestsTotal.Store(40)
 
 	provider := &mockStateProvider{
-		states: map[string]InstanceState{
+		states: map[string]AccountState{
 			"acct-1": {Health: "healthy", Concurrency: 2, MaxConcurrency: 5, BudgetState: "normal"},
 			"acct-2": {Health: "cooldown", Concurrency: 0, MaxConcurrency: 5, BudgetState: "sticky_only"},
 		},
@@ -194,15 +194,15 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	if !strings.Contains(output, "requests_per_min") {
 		t.Errorf("missing 'requests_per_min' in output:\n%s", output)
 	}
-	if !strings.Contains(output, "metrics instance") {
-		t.Errorf("missing 'metrics instance' in output:\n%s", output)
+	if !strings.Contains(output, "metrics account") {
+		t.Errorf("missing 'metrics account' in output:\n%s", output)
 	}
 }
 
 type mockStateProvider struct {
-	states map[string]InstanceState
+	states map[string]AccountState
 }
 
-func (m *mockStateProvider) InstanceStates() map[string]InstanceState {
+func (m *mockStateProvider) AccountStates() map[string]AccountState {
 	return m.states
 }

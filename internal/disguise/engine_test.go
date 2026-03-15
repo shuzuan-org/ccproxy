@@ -63,7 +63,7 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -129,7 +129,7 @@ func TestEngineApply_OAuthNonClaudeCode_WithTools(t *testing.T) {
 		"tools":    []interface{}{map[string]interface{}{"name": "my_tool"}},
 	})
 
-	_, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "inst-1")
+	_, applied := e.Apply(origReq, upstreamReq, body, false, "test-session", "acct-1")
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
@@ -169,7 +169,7 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	// Should be applied=true so handler appends ?beta=true
 	if !applied {
@@ -245,11 +245,11 @@ func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
 	}
 
 	origReq1, upReq1, body1 := makeReq()
-	out1, _ := e.Apply(origReq1, upReq1, body1, false, "same-seed", "inst-1")
+	out1, _ := e.Apply(origReq1, upReq1, body1, false, "same-seed", "acct-1")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upReq2, body2 := makeReq()
-	out2, _ := e.Apply(origReq2, upReq2, body2, false, "same-seed", "inst-1")
+	out2, _ := e.Apply(origReq2, upReq2, body2, false, "same-seed", "acct-1")
 	parsed2 := parseBody(t, out2)
 
 	uid1 := parsed1["metadata"].(map[string]interface{})["user_id"].(string)
@@ -271,7 +271,7 @@ func TestEngineApply_SystemPromptNotDuplicated(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -302,7 +302,7 @@ func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -391,7 +391,7 @@ func TestEngineApply_ModelNormalization(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -415,7 +415,7 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	_, applied := e.Apply(origReq, upstreamReq, body, true, "seed", "inst-1")
+	_, applied := e.Apply(origReq, upstreamReq, body, true, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -427,8 +427,8 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 	}
 }
 
-// TestEngineApply_PerInstanceFingerprint verifies that different instances get different fingerprints.
-func TestEngineApply_PerInstanceFingerprint(t *testing.T) {
+// TestEngineApply_PerAccountFingerprint verifies that different accounts get different fingerprints.
+func TestEngineApply_PerAccountFingerprint(t *testing.T) {
 	e := newTestEngine(t)
 
 	body := buildEngineBody(t, map[string]interface{}{
@@ -438,31 +438,31 @@ func TestEngineApply_PerInstanceFingerprint(t *testing.T) {
 
 	_, upstreamReq1 := newTestRequestPair(t)
 	origReq1 := newTestRequest(t, nil)
-	e.Apply(origReq1, upstreamReq1, body, false, "seed", "inst-1")
+	e.Apply(origReq1, upstreamReq1, body, false, "seed", "acct-1")
 
 	_, upstreamReq2 := newTestRequestPair(t)
 	origReq2 := newTestRequest(t, nil)
-	e.Apply(origReq2, upstreamReq2, body, false, "seed", "inst-2")
+	e.Apply(origReq2, upstreamReq2, body, false, "seed", "acct-2")
 
-	// Different instances should potentially have different User-Agent values
+	// Different accounts should potentially have different User-Agent values
 	// (they're random, so could occasionally match, but ClientID will differ)
 	ua1 := upstreamReq1.Header.Get("User-Agent")
 	ua2 := upstreamReq2.Header.Get("User-Agent")
 	if ua1 == "" || ua2 == "" {
-		t.Error("expected User-Agent to be set for both instances")
+		t.Error("expected User-Agent to be set for both accounts")
 	}
 
-	// Same instance should get the same fingerprint
+	// Same account should get the same fingerprint
 	_, upstreamReq3 := newTestRequestPair(t)
 	origReq3 := newTestRequest(t, nil)
-	e.Apply(origReq3, upstreamReq3, body, false, "seed", "inst-1")
+	e.Apply(origReq3, upstreamReq3, body, false, "seed", "acct-1")
 	ua3 := upstreamReq3.Header.Get("User-Agent")
 	if ua1 != ua3 {
-		t.Errorf("same instance should get same UA: %q vs %q", ua1, ua3)
+		t.Errorf("same account should get same UA: %q vs %q", ua1, ua3)
 	}
 }
 
-// TestEngineApply_SessionMasking verifies that same instance gets same session UUID.
+// TestEngineApply_SessionMasking verifies that same account gets same session UUID.
 func TestEngineApply_SessionMasking(t *testing.T) {
 	e := newTestEngine(t)
 
@@ -472,11 +472,11 @@ func TestEngineApply_SessionMasking(t *testing.T) {
 	})
 
 	origReq1, upstreamReq1 := newTestRequestPair(t)
-	out1, _ := e.Apply(origReq1, upstreamReq1, body, false, "seed", "inst-1")
+	out1, _ := e.Apply(origReq1, upstreamReq1, body, false, "seed", "acct-1")
 	parsed1 := parseBody(t, out1)
 
 	origReq2, upstreamReq2 := newTestRequestPair(t)
-	out2, _ := e.Apply(origReq2, upstreamReq2, body, false, "seed", "inst-1")
+	out2, _ := e.Apply(origReq2, upstreamReq2, body, false, "seed", "acct-1")
 	parsed2 := parseBody(t, out2)
 
 	getSession := func(p map[string]interface{}) string {
@@ -492,16 +492,16 @@ func TestEngineApply_SessionMasking(t *testing.T) {
 	s1 := getSession(parsed1)
 	s2 := getSession(parsed2)
 	if s1 != s2 {
-		t.Errorf("same instance should have same masked session UUID: %q vs %q", s1, s2)
+		t.Errorf("same account should have same masked session UUID: %q vs %q", s1, s2)
 	}
 
-	// Different instance should have different session UUID
+	// Different account should have different session UUID
 	origReq3, upstreamReq3 := newTestRequestPair(t)
-	out3, _ := e.Apply(origReq3, upstreamReq3, body, false, "seed", "inst-2")
+	out3, _ := e.Apply(origReq3, upstreamReq3, body, false, "seed", "acct-2")
 	parsed3 := parseBody(t, out3)
 	s3 := getSession(parsed3)
 	if s1 == s3 {
-		t.Error("different instances should have different masked session UUIDs")
+		t.Error("different accounts should have different masked session UUIDs")
 	}
 }
 
@@ -518,7 +518,7 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -565,7 +565,7 @@ func TestEngineApply_InjectsEmptyTools(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -595,7 +595,7 @@ func TestEngineApply_PreservesExistingTools(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -624,7 +624,7 @@ func TestEngineApply_RemovesTemperatureAndToolChoice(t *testing.T) {
 		"tool_choice": map[string]interface{}{"type": "auto"},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 
 	if !applied {
 		t.Fatal("expected disguise to be applied")
@@ -667,7 +667,7 @@ func TestEngineApply_ThinkingCacheControlCleaned(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
@@ -699,7 +699,7 @@ func TestEngineApply_OpenCodeReplacement(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
@@ -783,7 +783,7 @@ func TestEngineApply_CacheControlLimit(t *testing.T) {
 		},
 	})
 
-	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "inst-1")
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 	if !applied {
 		t.Fatal("expected disguise to be applied")
 	}
@@ -845,10 +845,10 @@ func TestEngineApply_LearnFingerprint(t *testing.T) {
 		"messages": []interface{}{},
 	})
 
-	e.Apply(origReq, upstreamReq, body, false, "seed", "inst-learn")
+	e.Apply(origReq, upstreamReq, body, false, "seed", "acct-learn")
 
 	// After processing a real CC client, the fingerprint should be learned
-	fp := e.fingerprints.Get("inst-learn")
+	fp := e.fingerprints.Get("acct-learn")
 	if fp.UserAgent != "claude-cli/2.3.0 (external, cli)" {
 		t.Errorf("expected learned UA from CC client, got %q", fp.UserAgent)
 	}
