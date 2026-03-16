@@ -41,6 +41,17 @@ func doRequest(t *testing.T, handler http.Handler, authHeader string) *httptest.
 	return rr
 }
 
+func doRequestWithXAPIKey(t *testing.T, handler http.Handler, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
 func TestMissingAuthorizationHeader(t *testing.T) {
 	handler := Middleware(makeTestKeys())(successHandler())
 	rr := doRequest(t, handler, "")
@@ -158,5 +169,55 @@ func TestAuthInfoInContext(t *testing.T) {
 	}
 	if capturedInfo.APIKeyName != "key-one" {
 		t.Errorf("expected APIKeyName %q, got %q", "key-one", capturedInfo.APIKeyName)
+	}
+}
+
+func TestXAPIKeyValid(t *testing.T) {
+	handler := Middleware(makeTestKeys())(successHandler())
+	rr := doRequestWithXAPIKey(t, handler, "valid-key-one")
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+	body, _ := io.ReadAll(rr.Body)
+	if string(body) != "key-one" {
+		t.Errorf("expected body %q, got %q", "key-one", string(body))
+	}
+}
+
+func TestXAPIKeyInvalid(t *testing.T) {
+	handler := Middleware(makeTestKeys())(successHandler())
+	rr := doRequestWithXAPIKey(t, handler, "wrong-key")
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rr.Code)
+	}
+}
+
+func TestXAPIKeyDisabled(t *testing.T) {
+	handler := Middleware(makeTestKeys())(successHandler())
+	rr := doRequestWithXAPIKey(t, handler, "disabled-key")
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for disabled key, got %d", rr.Code)
+	}
+}
+
+func TestAuthorizationTakesPrecedenceOverXAPIKey(t *testing.T) {
+	handler := Middleware(makeTestKeys())(successHandler())
+
+	// Both headers set; Authorization should win
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer valid-key-one")
+	req.Header.Set("x-api-key", "valid-key-two")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+	body, _ := io.ReadAll(rr.Body)
+	if string(body) != "key-one" {
+		t.Errorf("expected Authorization key %q to take precedence, got %q", "key-one", string(body))
 	}
 }

@@ -25,24 +25,24 @@ func GetAuthInfo(ctx context.Context) (AuthInfo, bool) {
 	return info, ok
 }
 
-// Middleware validates Bearer token from Authorization header
+// extractToken returns the bearer token from the request, checking
+// Authorization header first, then x-api-key header as fallback.
+func extractToken(r *http.Request) string {
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			return strings.TrimPrefix(authHeader, "Bearer ")
+		}
+	}
+	return r.Header.Get("x-api-key")
+}
+
+// Middleware validates bearer token from Authorization or x-api-key header.
 func Middleware(apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Missing Authorization header")
-				return
-			}
-
-			if !strings.HasPrefix(authHeader, "Bearer ") {
-				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Invalid Authorization header format")
-				return
-			}
-
-			token := strings.TrimPrefix(authHeader, "Bearer ")
+			token := extractToken(r)
 			if token == "" {
-				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Empty bearer token")
+				apierror.Write(w, http.StatusUnauthorized, "authentication_error", "Missing API key: provide via Authorization header or x-api-key header")
 				return
 			}
 
