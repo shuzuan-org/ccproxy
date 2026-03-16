@@ -37,6 +37,11 @@ func NewAnthropicProvider() *AnthropicProvider {
 	}
 }
 
+// SetTokenURL overrides the token endpoint URL (for testing only).
+func (p *AnthropicProvider) SetTokenURL(url string) {
+	p.tokenURL = url
+}
+
 // AuthorizationURL builds the OAuth authorization URL with PKCE parameters.
 // Mirrors sub2api's BuildAuthorizationURL: manual Sprintf, scope uses "+", fixed param order.
 func (p *AnthropicProvider) AuthorizationURL(state, codeChallenge string) string {
@@ -114,6 +119,8 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 		return nil, err
 	}
 
+	slog.Debug("oauth: token request body", "body", string(jsonBody), "url", p.tokenURL)
+
 	req, err := http.NewRequestWithContext(ctx, "POST", p.tokenURL, strings.NewReader(string(jsonBody)))
 	if err != nil {
 		return nil, err
@@ -150,7 +157,7 @@ func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]an
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		slog.Error("oauth: token endpoint error",
 			"status", resp.StatusCode,
-			"body_len", len(respBody),
+			"body", string(respBody),
 			"grant_type", body["grant_type"],
 		)
 		return nil, fmt.Errorf("token request failed: status %d", resp.StatusCode)

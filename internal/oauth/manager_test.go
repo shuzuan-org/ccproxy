@@ -219,7 +219,22 @@ func TestExchangeCode_Success(t *testing.T) {
 }
 
 func TestExchangeCode_WithState(t *testing.T) {
-	srv := mockTokenServer(t)
+	// Verify that when code contains "#state", the state parameter is included
+	// in the token request body sent to Anthropic. This is CRITICAL — Anthropic
+	// rejects requests without state as "Invalid request format".
+	// Regression: commit 849d241 stripped state in handler before passing to provider,
+	// causing provider to never send state to Anthropic.
+	var receivedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-access",
+			"refresh_token": "new-refresh",
+			"expires_in":    3600,
+			"scope":         "user:inference",
+		})
+	}))
 	defer srv.Close()
 
 	m, _ := newTestManager(t, srv.URL)
@@ -230,6 +245,87 @@ func TestExchangeCode_WithState(t *testing.T) {
 	}
 	if token.AccessToken != "new-access" {
 		t.Errorf("access_token = %q, want new-access", token.AccessToken)
+	}
+
+	// State MUST be sent to Anthropic's token endpoint.
+	if receivedBody["state"] != "mystate" {
+		t.Errorf("state = %v, want \"mystate\" — Anthropic requires state in token exchange", receivedBody["state"])
+	}
+	// Code must NOT contain the state suffix.
+	if code, _ := receivedBody["code"].(string); code != "auth-code" {
+		t.Errorf("code = %q, want \"auth-code\" (without #state suffix)", code)
+	}
+}
+
+func TestExchangeCode_WithoutState_NoStateParam(t *testing.T) {
+	// When code does NOT contain "#state", the state parameter must be absent
+	// from the token request body.
+	var receivedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-access",
+			"refresh_token": "new-refresh",
+			"expires_in":    3600,
+			"scope":         "user:inference",
+		})
+	}))
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+
+	_, err := m.GetProvider().ExchangeCode(context.Background(), "auth-code-only", "verifier", "")
+	if err != nil {
+		t.Fatalf("ExchangeCode: %v", err)
+	}
+
+	if _, exists := receivedBody["state"]; exists {
+		t.Errorf("state should not be present when code has no #state suffix, got %v", receivedBody["state"])
+	}
+}
+
+func TestExchangeCode_RequestFormat(t *testing.T) {
+	// Verify the token request uses JSON Content-Type and includes all required fields.
+	var (
+		contentType string
+		receivedBody map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "tok",
+			"refresh_token": "ref",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+
+	m, _ := newTestManager(t, srv.URL)
+	_, err := m.GetProvider().ExchangeCode(context.Background(), "code123#state456", "my-verifier", "")
+	if err != nil {
+		t.Fatalf("ExchangeCode: %v", err)
+	}
+
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", contentType)
+	}
+
+	required := map[string]string{
+		"code":          "code123",
+		"grant_type":    "authorization_code",
+		"client_id":     ClientID,
+		"redirect_uri":  RedirectURI,
+		"code_verifier": "my-verifier",
+		"state":         "state456",
+	}
+	for key, want := range required {
+		got, _ := receivedBody[key].(string)
+		if got != want {
+			t.Errorf("body[%q] = %q, want %q", key, got, want)
+		}
 	}
 }
 

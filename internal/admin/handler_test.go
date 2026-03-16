@@ -293,6 +293,186 @@ func TestHandleDashboard(t *testing.T) {
 	}
 }
 
+func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
+	// CRITICAL regression test: the handler MUST pass the full code (including #state)
+	// to ExchangeAndSave, so the provider can extract and send the state parameter
+	// to Anthropic's token endpoint. Anthropic rejects requests without state.
+	// Regression: commit 849d241 stripped state in handler, breaking OAuth login.
+
+	// Create a mock token server that captures the request body.
+	var receivedBody map[string]any
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "test-access",
+			"refresh_token": "test-refresh",
+			"expires_in":    3600,
+			"scope":         "user:inference",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	// Build handler with provider pointing to mock server.
+	dir := t.TempDir()
+	registry := config.NewAccountRegistry(dir)
+	_ = registry.Add("test-oauth")
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 300,
+			MaxConcurrency: 5,
+		},
+	}
+	runtimeAccounts := cfg.RuntimeAccounts(registry)
+
+	tracker := loadbalancer.NewConcurrencyTracker()
+	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
+	store, _ := oauth.NewTokenStore(t.TempDir())
+	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
+	sessions := oauth.NewSessionStore()
+	h := NewHandler(balancer, mgr, sessions, cfg, registry)
+
+	// Start a PKCE session to get a valid session ID and state.
+	sessionID, _, err := sessions.Create("test-oauth")
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	session, _ := sessions.Get(sessionID)
+	state := session.State
+
+	// Submit code with correct state appended after '#'.
+	fullCode := "TpDo2YA9RPCH1jeIUF96XAqcH6BxEytjyIVtsVWhhOL9YooD#" + state
+	body, _ := json.Marshal(map[string]string{
+		"session_id": sessionID,
+		"code":       fullCode,
+	})
+	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleOAuthLoginComplete(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Verify the state was sent to Anthropic's token endpoint.
+	if receivedBody["state"] != state {
+		t.Errorf("token request state = %v, want %q — handler must pass full code to provider", receivedBody["state"], state)
+	}
+	// Verify only the auth code (without #state) was sent as the code parameter.
+	if code, _ := receivedBody["code"].(string); code != "TpDo2YA9RPCH1jeIUF96XAqcH6BxEytjyIVtsVWhhOL9YooD" {
+		t.Errorf("token request code = %q, want auth code without #state suffix", code)
+	}
+}
+
+func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T) {
+	// When token exchange fails, the session MUST be preserved so the user
+	// can retry without starting a new login flow.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+
+	dir := t.TempDir()
+	registry := config.NewAccountRegistry(dir)
+	_ = registry.Add("test-oauth")
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 300,
+			MaxConcurrency: 5,
+		},
+	}
+	runtimeAccounts := cfg.RuntimeAccounts(registry)
+
+	tracker := loadbalancer.NewConcurrencyTracker()
+	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
+	store, _ := oauth.NewTokenStore(t.TempDir())
+	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
+	sessions := oauth.NewSessionStore()
+	h := NewHandler(balancer, mgr, sessions, cfg, registry)
+
+	sessionID, _, _ := sessions.Create("test-oauth")
+	session, _ := sessions.Get(sessionID)
+
+	fullCode := "somecode#" + session.State
+	body, _ := json.Marshal(map[string]string{
+		"session_id": sessionID,
+		"code":       fullCode,
+	})
+	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleOAuthLoginComplete(w, req)
+
+	if w.Code == 200 {
+		t.Fatal("expected error response for failed exchange")
+	}
+
+	// Session must still exist for retry.
+	if _, ok := sessions.Get(sessionID); !ok {
+		t.Error("session was deleted after exchange failure — user cannot retry")
+	}
+}
+
+func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
+	// Admin API error responses MUST NOT use 5xx status codes, because
+	// Cloudflare replaces 502/503 responses with its own HTML error pages,
+	// breaking the frontend JSON parser.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+
+	dir := t.TempDir()
+	registry := config.NewAccountRegistry(dir)
+	_ = registry.Add("test-oauth")
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BaseURL:        "https://api.anthropic.com",
+			RequestTimeout: 300,
+			MaxConcurrency: 5,
+		},
+	}
+	runtimeAccounts := cfg.RuntimeAccounts(registry)
+
+	tracker := loadbalancer.NewConcurrencyTracker()
+	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
+	store, _ := oauth.NewTokenStore(t.TempDir())
+	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
+	sessions := oauth.NewSessionStore()
+	h := NewHandler(balancer, mgr, sessions, cfg, registry)
+
+	sessionID, _, _ := sessions.Create("test-oauth")
+	session, _ := sessions.Get(sessionID)
+
+	fullCode := "somecode#" + session.State
+	body, _ := json.Marshal(map[string]string{
+		"session_id": sessionID,
+		"code":       fullCode,
+	})
+	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.HandleOAuthLoginComplete(w, req)
+
+	if w.Code >= 500 {
+		t.Errorf("status = %d — admin API must not return 5xx (Cloudflare replaces with HTML)", w.Code)
+	}
+
+	// Verify it returns JSON, not HTML.
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
 func TestHandleOAuthLoginComplete_InvalidSession(t *testing.T) {
 	t.Parallel()
 	h := newTestHandler(t)

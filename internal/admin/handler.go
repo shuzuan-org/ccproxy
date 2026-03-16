@@ -182,10 +182,8 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	// Validate OAuth state parameter to prevent CSRF.
 	// The code field may contain "authcode#state" (state appended by frontend).
-	actualCode := req.Code
 	codeState := ""
 	if idx := strings.Index(req.Code, "#"); idx != -1 {
-		actualCode = req.Code[:idx]
 		codeState = req.Code[idx+1:]
 	}
 	if subtle.ConstantTimeCompare([]byte(session.State), []byte(codeState)) != 1 {
@@ -194,17 +192,16 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Exchange code for token (use actualCode without the appended state)
+	// Exchange code for token (pass full code with #state so provider sends state to Anthropic)
 	slog.Info("oauth: completing login", "account", session.AccountName, "session_id", req.SessionID)
 	proxyURL := h.registry.GetProxy(session.AccountName)
-	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.AccountName, actualCode, session.Verifier, proxyURL)
+	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.AccountName, req.Code, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
 			"account", session.AccountName,
 			"error", err.Error(),
 		)
-		h.sessions.Delete(req.SessionID)
-		writeError(w, http.StatusBadGateway, "code exchange failed")
+		writeError(w, http.StatusBadRequest, "code exchange failed: "+err.Error())
 		return
 	}
 
@@ -239,7 +236,7 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Account)
 	if err != nil {
 		slog.Error("oauth: manual refresh failed", "account", req.Account, "error", err.Error())
-		writeError(w, http.StatusBadGateway, "refresh failed")
+		writeError(w, http.StatusBadRequest, "refresh failed: "+err.Error())
 		return
 	}
 
