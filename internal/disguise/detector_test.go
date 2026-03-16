@@ -213,3 +213,27 @@ func TestDiceCoefficient_SimilarStrings(t *testing.T) {
 		t.Errorf("expected dice >= 0.5 for similar strings, got %f", got)
 	}
 }
+
+func TestIsClaudeCodeClient_ArraySystemWithBillingHeader(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.76 (external, cli)")
+	headers.Set("X-App", "cli")
+	headers.Set("Anthropic-Version", "2023-06-01")
+
+	userID := "user_" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" + "_account__session_abc-123"
+
+	// Simulate v2.1.66+ format: billing header is the first block,
+	// Claude Code system prompt is in a later block.
+	system := []interface{}{
+		map[string]interface{}{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.76; cc_entrypoint=cli; cch=abc12"},
+		map[string]interface{}{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude. Here are instructions."},
+	}
+
+	body := buildTestBody(t, system, userID)
+
+	// Should detect: X-App(1) + Anthropic-Version(1) + user_id(1) + system_prompt(1) = 4 of 5
+	if !IsClaudeCodeClient(headers, body, messagesPath) {
+		t.Error("expected true for array system with billing header prefix block and CC prompt in later block")
+	}
+}

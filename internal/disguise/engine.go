@@ -410,12 +410,13 @@ func sanitizeSystemTextInPlace(parsed map[string]interface{}) {
 // injectSystemPromptInPlace injects the Claude Code system prompt into parsed map.
 // Mutates parsed in-place. No marshaling.
 func injectSystemPromptInPlace(parsed map[string]interface{}) {
-	// Check if system prompt already contains Claude Code prompt
+	// Check if any system block already contains Claude Code prompt
 	if system, ok := parsed["system"]; ok {
-		systemText := extractSystemText(system)
-		for _, prefix := range claudeCodePromptPrefixes {
-			if strings.HasPrefix(systemText, prefix) {
-				return // already has Claude Code prompt
+		for _, text := range extractAllSystemTexts(system) {
+			for _, prefix := range claudeCodePromptPrefixes {
+				if strings.HasPrefix(text, prefix) {
+					return // already has Claude Code prompt
+				}
 			}
 		}
 	}

@@ -119,52 +119,64 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 }
 
 // checkSystemPromptFromParsed checks system prompt similarity from already-parsed system field.
+// Iterates all system text blocks (newer CC versions use array format where the
+// Claude Code prompt may not be the first block).
 func checkSystemPromptFromParsed(system interface{}) bool {
-	systemText := extractSystemText(system)
-	if systemText == "" {
+	texts := extractAllSystemTexts(system)
+	if len(texts) == 0 {
 		return false
 	}
 
-	truncated := systemText[:min(len(systemText), 200)]
 	var bestDice float64
-	for _, prefix := range claudeCodePromptPrefixes {
-		if strings.HasPrefix(systemText, prefix) {
-			return true
-		}
-		dice := DiceCoefficient(truncated, prefix)
-		if dice >= 0.5 {
-			slog.Debug("disguise/detect: system prompt matched by Dice coefficient",
-				"dice", dice,
-				"prefix", prefix[:min(len(prefix), 60)],
-			)
-			return true
-		}
-		if dice > bestDice {
-			bestDice = dice
+	var bestPreview string
+	for _, text := range texts {
+		truncated := text[:min(len(text), 200)]
+		for _, prefix := range claudeCodePromptPrefixes {
+			if strings.HasPrefix(text, prefix) {
+				return true
+			}
+			dice := DiceCoefficient(truncated, prefix)
+			if dice >= 0.5 {
+				slog.Debug("disguise/detect: system prompt matched by Dice coefficient",
+					"dice", dice,
+					"prefix", prefix[:min(len(prefix), 60)],
+				)
+				return true
+			}
+			if dice > bestDice {
+				bestDice = dice
+				bestPreview = truncated
+			}
 		}
 	}
 	slog.Debug("disguise/detect: system prompt did not match any known prefix",
 		"best_dice", bestDice,
-		"system_preview", truncated[:min(len(truncated), 80)],
+		"system_preview", bestPreview[:min(len(bestPreview), 80)],
 	)
 	return false
 }
 
-func extractSystemText(system interface{}) string {
+// extractAllSystemTexts returns all text values from the system field.
+// Handles both string format and array-of-blocks format.
+func extractAllSystemTexts(system interface{}) []string {
 	switch v := system.(type) {
 	case string:
-		return v
+		if v != "" {
+			return []string{v}
+		}
 	case []interface{}:
 		// Array format: [{"type":"text","text":"..."}]
+		var texts []string
 		for _, item := range v {
 			if m, ok := item.(map[string]interface{}); ok {
-				if t, ok := m["text"].(string); ok {
-					return t
+				if t, ok := m["text"].(string); ok && t != "" {
+					texts = append(texts, t)
 				}
 			}
 		}
+		return texts
 	}
-	return ""
+	return nil
 }
 
 // DiceCoefficient calculates the Sorensen-Dice coefficient between two strings.

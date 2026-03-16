@@ -96,7 +96,11 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	if !ok {
 		t.Fatal("expected system key in body after disguise")
 	}
-	sysText := extractSystemText(system)
+	allTexts := extractAllSystemTexts(system)
+	sysText := ""
+	if len(allTexts) > 0 {
+		sysText = allTexts[0]
+	}
 	if !strings.HasPrefix(sysText, "You are Claude Code") {
 		t.Errorf("expected system prompt to start with Claude Code prompt, got %q", sysText)
 	}
@@ -310,9 +314,10 @@ func TestEngineApply_NoSystemPromptForHaiku(t *testing.T) {
 
 	parsed := parseBody(t, outBody)
 	if system, ok := parsed["system"]; ok {
-		sysText := extractSystemText(system)
-		if strings.Contains(sysText, "You are Claude Code") {
-			t.Errorf("expected NO Claude Code system prompt for Haiku, but found it: %q", sysText)
+		for _, sysText := range extractAllSystemTexts(system) {
+			if strings.Contains(sysText, "You are Claude Code") {
+				t.Errorf("expected NO Claude Code system prompt for Haiku, but found it: %q", sysText)
+			}
 		}
 	}
 }
@@ -709,7 +714,7 @@ func TestEngineApply_OpenCodeReplacement(t *testing.T) {
 	// After replacement, the system text should not contain "OpenCode".
 	// Since the replaced text matches a CC prefix, it may remain as string
 	// (injectSystemPromptInPlace returns early) or be converted to array.
-	sysText := extractSystemText(parsed["system"])
+	sysText := strings.Join(extractAllSystemTexts(parsed["system"]), " ")
 	if strings.Contains(sysText, "OpenCode") {
 		t.Errorf("expected OpenCode to be replaced, but found: %q", sysText)
 	}
@@ -925,7 +930,7 @@ func TestEngineApply_FiltersBillingSystemBlocks_StringType(t *testing.T) {
 
 	// After filtering, system prompt injection will re-create the system field.
 	// The key thing is the billing text should not be present.
-	sysText := extractSystemText(parsed["system"])
+	sysText := strings.Join(extractAllSystemTexts(parsed["system"]), " ")
 	if strings.Contains(sysText, "x-anthropic-billing-header") {
 		t.Errorf("billing string system should have been filtered, found: %q", sysText)
 	}
