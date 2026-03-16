@@ -82,6 +82,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
+		// Filter billing/internal system blocks (CC clients can carry these too)
+		filterSystemBlocksByPrefix(parsed)
+
 		maskedSession := e.sessions.Get(accountName)
 		originalUserID, _ := metadata["user_id"].(string)
 		if originalUserID != "" {
@@ -143,7 +146,31 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 	// Layer 3: anthropic-beta
 	originalBeta := origReq.Header.Get("Anthropic-Beta")
-	newBeta := BetaHeader(model, hasTools)
+	var newBeta string
+	if strings.Contains(origReq.URL.Path, "count_tokens") {
+		// count_tokens endpoint needs the token-counting beta
+		newBeta = MergeAnthropicBeta(
+			[]string{BetaClaudeCode, BetaOAuth, BetaInterleavedThinking, BetaTokenCounting},
+			originalBeta,
+		)
+	} else {
+		// Merge required betas with client-provided betas, then strip claude-code
+		// for non-CC clients (we add it back via required set for disguise)
+		required := []string{BetaOAuth, BetaInterleavedThinking}
+		if !IsHaikuModel(model) {
+			required = append([]string{BetaClaudeCode}, required...)
+		}
+		if hasTools {
+			required = append(required, BetaFineGrainedToolStreaming)
+		}
+		newBeta = MergeAnthropicBeta(required, originalBeta)
+		// Strip claude-code token that might have leaked from non-CC client
+		newBeta = StripBetaTokens(newBeta, []string{BetaClaudeCode})
+		// Re-add for non-Haiku models (disguise requires it)
+		if !IsHaikuModel(model) {
+			newBeta = BetaClaudeCode + "," + newBeta
+		}
+	}
 	upstreamReq.Header.Set("Anthropic-Beta", newBeta)
 	observe.Logger(ctx).Debug("disguise: [layer 3] beta header set",
 		"account", accountName,
@@ -152,6 +179,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		"before", originalBeta,
 		"after", newBeta,
 	)
+
+	// Filter billing/internal system blocks before any system prompt processing
+	filterSystemBlocksByPrefix(parsed)
 
 	// Sanitize third-party tool prompts before system prompt injection
 	sanitizeSystemTextInPlace(parsed)
@@ -221,6 +251,62 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		return body, true
 	}
 	return result, true
+}
+
+// systemBlockFilterPrefixes lists text prefixes that identify system blocks which
+// should be removed before forwarding to upstream. These blocks are injected by
+// the Anthropic client SDK and expose billing/internal metadata.
+var systemBlockFilterPrefixes = []string{"x-anthropic-billing-header"}
+
+// filterSystemBlocksByPrefix removes system blocks whose text starts with any
+// of the systemBlockFilterPrefixes. Handles both string and array system fields.
+// Mutates parsed in-place.
+func filterSystemBlocksByPrefix(parsed map[string]interface{}) {
+	system, ok := parsed["system"]
+	if !ok {
+		return
+	}
+
+	switch v := system.(type) {
+	case string:
+		trimmed := strings.TrimSpace(v)
+		for _, prefix := range systemBlockFilterPrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
+				delete(parsed, "system")
+				return
+			}
+		}
+	case []interface{}:
+		filtered := make([]interface{}, 0, len(v))
+		for _, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				filtered = append(filtered, item)
+				continue
+			}
+			text, ok := m["text"].(string)
+			if !ok {
+				filtered = append(filtered, item)
+				continue
+			}
+			trimmed := strings.TrimSpace(text)
+			skip := false
+			for _, prefix := range systemBlockFilterPrefixes {
+				if strings.HasPrefix(trimmed, prefix) {
+					skip = true
+					break
+				}
+			}
+			if !skip {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(parsed, "system")
+		} else {
+			parsed["system"] = filtered
+		}
+	}
 }
 
 // truncateUserID returns a shortened user_id for logging: first 12 + last 8 chars.

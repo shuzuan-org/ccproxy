@@ -129,8 +129,9 @@ func New(cfg *config.Config) (*Server, error) {
 	// 9. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
 
-	// API route — requires bearer token auth.
+	// API routes — require bearer token auth.
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
+	mux.Handle("/v1/messages/count_tokens", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))
 
 	// Admin routes — rate-limited and protected by basic auth.
 	limiter := ratelimit.NewLimiter(cfg.Server.RateLimit, time.Minute)

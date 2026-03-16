@@ -75,6 +75,10 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 
 	delete(parsed, "thinking")
 
+	// Remove thinking-dependent context management strategies (e.g. clear_thinking)
+	// since thinking blocks are being filtered out.
+	removeThinkingDependentContextStrategies(parsed)
+
 	messages, ok := parsed["messages"].([]any)
 	if !ok {
 		result, _ := json.Marshal(parsed)
@@ -139,6 +143,41 @@ func filterThinkingFromContent(content []any) []any {
 		})
 	}
 	return result
+}
+
+// removeThinkingDependentContextStrategies removes context_management edits
+// that depend on thinking blocks (e.g. "clear_thinking_20251015"). Called when
+// thinking blocks are being filtered out, to prevent API errors from referencing
+// strategies that no longer apply. Mutates parsed in-place.
+func removeThinkingDependentContextStrategies(parsed map[string]any) {
+	cm, ok := parsed["context_management"].(map[string]any)
+	if !ok {
+		return
+	}
+	edits, ok := cm["edits"].([]any)
+	if !ok {
+		return
+	}
+
+	filtered := make([]any, 0, len(edits))
+	for _, edit := range edits {
+		editMap, ok := edit.(map[string]any)
+		if !ok {
+			filtered = append(filtered, edit)
+			continue
+		}
+		editType, _ := editMap["type"].(string)
+		if strings.HasPrefix(editType, "clear_thinking") {
+			continue
+		}
+		filtered = append(filtered, edit)
+	}
+
+	if len(filtered) == 0 {
+		delete(cm, "edits")
+	} else {
+		cm["edits"] = filtered
+	}
 }
 
 // filterToolsFromContent converts tool_use and tool_result blocks to text.

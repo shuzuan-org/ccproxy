@@ -235,6 +235,119 @@ func TestFilterThinkingBlocks_NoThinking(t *testing.T) {
 	}
 }
 
+func TestFilterThinkingBlocks_RemovesClearThinkingStrategy(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"thinking": {"type": "enabled", "budget_tokens": 1024},
+		"context_management": {
+			"edits": [
+				{"type": "clear_thinking_20251015"},
+				{"type": "summarize_20250101"}
+			]
+		},
+		"messages": [{
+			"role": "assistant",
+			"content": [
+				{"type": "thinking", "thinking": "hmm"},
+				{"type": "text", "text": "ok"}
+			]
+		}]
+	}`
+
+	result := FilterThinkingBlocks([]byte(body))
+
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	// thinking top-level should be removed
+	if _, ok := parsed["thinking"]; ok {
+		t.Error("top-level 'thinking' should be removed")
+	}
+
+	// context_management.edits should not have clear_thinking
+	cm, ok := parsed["context_management"].(map[string]any)
+	if !ok {
+		t.Fatal("expected context_management to exist")
+	}
+	edits, ok := cm["edits"].([]any)
+	if !ok {
+		t.Fatal("expected edits to exist")
+	}
+
+	for _, edit := range edits {
+		editMap := edit.(map[string]any)
+		editType, _ := editMap["type"].(string)
+		if strings.HasPrefix(editType, "clear_thinking") {
+			t.Errorf("clear_thinking strategy should have been removed, found: %q", editType)
+		}
+	}
+
+	// summarize should still be present
+	if len(edits) != 1 {
+		t.Errorf("expected 1 remaining edit, got %d", len(edits))
+	}
+}
+
+func TestFilterThinkingBlocks_RemovesEditsFieldWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"thinking": {"type": "enabled"},
+		"context_management": {
+			"edits": [
+				{"type": "clear_thinking_20251015"}
+			]
+		},
+		"messages": [{
+			"role": "user",
+			"content": [{"type": "text", "text": "hello"}]
+		}]
+	}`
+
+	result := FilterThinkingBlocks([]byte(body))
+
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	cm, ok := parsed["context_management"].(map[string]any)
+	if !ok {
+		t.Fatal("expected context_management to exist")
+	}
+
+	if _, hasEdits := cm["edits"]; hasEdits {
+		t.Error("edits field should be deleted when all entries are filtered")
+	}
+}
+
+func TestFilterThinkingBlocks_NoContextManagement(t *testing.T) {
+	t.Parallel()
+
+	// Should not panic or error when no context_management field exists
+	body := `{
+		"thinking": {"type": "enabled"},
+		"messages": [{
+			"role": "user",
+			"content": [{"type": "text", "text": "hello"}]
+		}]
+	}`
+
+	result := FilterThinkingBlocks([]byte(body))
+
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	if _, ok := parsed["thinking"]; ok {
+		t.Error("top-level 'thinking' should be removed")
+	}
+}
+
 func TestFilterSignatureSensitiveBlocks(t *testing.T) {
 	t.Parallel()
 

@@ -82,6 +82,76 @@ func TestCountTokensBetaHeaderValue(t *testing.T) {
 	}
 }
 
+func TestMergeAnthropicBeta_EmptyIncoming(t *testing.T) {
+	t.Parallel()
+	got := MergeAnthropicBeta([]string{BetaOAuth, BetaInterleavedThinking}, "")
+	want := BetaOAuth + "," + BetaInterleavedThinking
+	if got != want {
+		t.Errorf("MergeAnthropicBeta empty incoming: expected %q, got %q", want, got)
+	}
+}
+
+func TestMergeAnthropicBeta_DeduplicatesTokens(t *testing.T) {
+	t.Parallel()
+	// Incoming already has BetaOAuth — should not duplicate
+	got := MergeAnthropicBeta(
+		[]string{BetaOAuth, BetaInterleavedThinking},
+		BetaOAuth+","+BetaContext1M,
+	)
+	want := BetaOAuth + "," + BetaInterleavedThinking + "," + BetaContext1M
+	if got != want {
+		t.Errorf("MergeAnthropicBeta dedup: expected %q, got %q", want, got)
+	}
+}
+
+func TestMergeAnthropicBeta_PreservesClientExtras(t *testing.T) {
+	t.Parallel()
+	got := MergeAnthropicBeta(
+		[]string{BetaOAuth},
+		BetaClaudeCode+","+BetaFastMode,
+	)
+	want := BetaOAuth + "," + BetaClaudeCode + "," + BetaFastMode
+	if got != want {
+		t.Errorf("MergeAnthropicBeta extras: expected %q, got %q", want, got)
+	}
+}
+
+func TestStripBetaTokens_RemovesSpecifiedTokens(t *testing.T) {
+	t.Parallel()
+	input := BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+	got := StripBetaTokens(input, []string{BetaClaudeCode})
+	want := BetaOAuth + "," + BetaInterleavedThinking
+	if got != want {
+		t.Errorf("StripBetaTokens: expected %q, got %q", want, got)
+	}
+}
+
+func TestStripBetaTokens_EmptyInput(t *testing.T) {
+	t.Parallel()
+	got := StripBetaTokens("", []string{BetaClaudeCode})
+	if got != "" {
+		t.Errorf("StripBetaTokens empty: expected empty string, got %q", got)
+	}
+}
+
+func TestStripBetaTokens_NoMatchingTokens(t *testing.T) {
+	t.Parallel()
+	input := BetaOAuth + "," + BetaInterleavedThinking
+	got := StripBetaTokens(input, []string{BetaClaudeCode})
+	if got != input {
+		t.Errorf("StripBetaTokens no match: expected %q, got %q", input, got)
+	}
+}
+
+func TestStripBetaTokens_HandlesWhitespace(t *testing.T) {
+	t.Parallel()
+	input := BetaClaudeCode + " , " + BetaOAuth
+	got := StripBetaTokens(input, []string{BetaClaudeCode})
+	if got != BetaOAuth {
+		t.Errorf("StripBetaTokens whitespace: expected %q, got %q", BetaOAuth, got)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
 }

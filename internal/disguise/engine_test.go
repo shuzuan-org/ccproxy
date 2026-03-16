@@ -822,6 +822,179 @@ func TestEngineApply_CacheControlLimit(t *testing.T) {
 	}
 }
 
+// TestEngineApply_FiltersBillingSystemBlocks verifies that system blocks starting
+// with "x-anthropic-billing-header" are removed during disguise.
+func TestEngineApply_FiltersBillingSystemBlocks(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"system": []interface{}{
+			map[string]interface{}{"type": "text", "text": "x-anthropic-billing-header: some billing data"},
+			map[string]interface{}{"type": "text", "text": "You are a helpful assistant."},
+		},
+		"messages": []interface{}{},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+	sysArr, ok := parsed["system"].([]interface{})
+	if !ok {
+		t.Fatalf("expected system to be array, got %T", parsed["system"])
+	}
+
+	// Billing block should be removed; should NOT find any block with billing text
+	for _, item := range sysArr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		text, _ := m["text"].(string)
+		if strings.Contains(text, "x-anthropic-billing-header") {
+			t.Errorf("billing block should have been filtered, found: %q", text)
+		}
+	}
+}
+
+// TestEngineApply_FiltersBillingSystemBlocks_CCClient verifies billing blocks
+// are also filtered for real CC clients.
+func TestEngineApply_FiltersBillingSystemBlocks_CCClient(t *testing.T) {
+	e := newTestEngine(t)
+
+	origReq := newTestRequest(t, nil)
+	origReq.Header.Set("User-Agent", "claude-cli/2.1.71 (external, cli)")
+	origReq.Header.Set("X-App", "cli")
+	origReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+
+	upstreamReq := newTestRequest(t, nil)
+	upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+
+	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123"
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"system": []interface{}{
+			map[string]interface{}{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+			map[string]interface{}{"type": "text", "text": "x-anthropic-billing-header: billing data"},
+		},
+		"metadata": map[string]interface{}{"user_id": validUserID},
+		"messages": []interface{}{},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+	if !applied {
+		t.Fatal("expected applied=true")
+	}
+
+	parsed := parseBody(t, outBody)
+	sysArr, ok := parsed["system"].([]interface{})
+	if !ok {
+		t.Fatalf("expected system to be array, got %T", parsed["system"])
+	}
+
+	for _, item := range sysArr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		text, _ := m["text"].(string)
+		if strings.Contains(text, "x-anthropic-billing-header") {
+			t.Errorf("billing block should have been filtered for CC client, found: %q", text)
+		}
+	}
+}
+
+// TestEngineApply_FiltersBillingSystemBlocks_StringType verifies that a string
+// system field starting with billing prefix is removed.
+func TestEngineApply_FiltersBillingSystemBlocks_StringType(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"system":   "x-anthropic-billing-header: data",
+		"messages": []interface{}{},
+	})
+
+	outBody, _ := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+	parsed := parseBody(t, outBody)
+
+	// After filtering, system prompt injection will re-create the system field.
+	// The key thing is the billing text should not be present.
+	sysText := extractSystemText(parsed["system"])
+	if strings.Contains(sysText, "x-anthropic-billing-header") {
+		t.Errorf("billing string system should have been filtered, found: %q", sysText)
+	}
+}
+
+// TestEngineApply_CountTokensBeta verifies that count_tokens requests use
+// the correct beta header with token-counting beta.
+func TestEngineApply_CountTokensBeta(t *testing.T) {
+	e := newTestEngine(t)
+
+	origReq := newTestRequest(t, nil)
+	origReq.URL.Path = "/v1/messages/count_tokens"
+	upstreamReq := newTestRequest(t, nil)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+	})
+
+	_, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	if !strings.Contains(beta, BetaTokenCounting) {
+		t.Errorf("expected beta to contain %q for count_tokens, got %q", BetaTokenCounting, beta)
+	}
+	if !strings.Contains(beta, BetaClaudeCode) {
+		t.Errorf("expected beta to contain %q for count_tokens, got %q", BetaClaudeCode, beta)
+	}
+}
+
+// TestEngineApply_MergesClientBetas verifies that client-provided betas like
+// context-1m are preserved and merged with required betas.
+func TestEngineApply_MergesClientBetas(t *testing.T) {
+	e := newTestEngine(t)
+
+	origReq := newTestRequest(t, nil)
+	origReq.Header.Set("Anthropic-Beta", BetaContext1M+","+BetaFastMode)
+	upstreamReq := newTestRequest(t, nil)
+
+	body := buildEngineBody(t, map[string]interface{}{
+		"model":    "claude-sonnet-4-5",
+		"messages": []interface{}{},
+	})
+
+	_, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	// Client betas should be preserved
+	if !strings.Contains(beta, BetaContext1M) {
+		t.Errorf("expected beta to contain client %q, got %q", BetaContext1M, beta)
+	}
+	if !strings.Contains(beta, BetaFastMode) {
+		t.Errorf("expected beta to contain client %q, got %q", BetaFastMode, beta)
+	}
+	// Required betas should be present
+	if !strings.Contains(beta, BetaOAuth) {
+		t.Errorf("expected beta to contain %q, got %q", BetaOAuth, beta)
+	}
+	if !strings.Contains(beta, BetaClaudeCode) {
+		t.Errorf("expected beta to contain %q, got %q", BetaClaudeCode, beta)
+	}
+}
+
 // TestEngineApply_LearnFingerprint verifies that fingerprint learning occurs
 // when a real CC client is detected.
 func TestEngineApply_LearnFingerprint(t *testing.T) {

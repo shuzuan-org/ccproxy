@@ -38,14 +38,14 @@ var forwardHeaders = []string{
 	"Anthropic-Dangerous-Direct-Browser-Access",
 }
 
-// Handler routes incoming /v1/messages requests to upstream Anthropic accounts.
+// Handler routes incoming /v1/messages and /v1/messages/count_tokens requests
+// to upstream Anthropic accounts.
 type Handler struct {
 	balancer     *loadbalancer.Balancer
 	disguise     *disguise.Engine
 	oauthManager *oauth.Manager
 	httpClient   *http.Client // shared client for all accounts
 	baseURL      string       // global upstream base URL
-	upstreamURL  string       // precomputed baseURL + "/v1/messages"
 }
 
 // NewHandler constructs a Handler with a shared HTTP client.
@@ -70,8 +70,7 @@ func NewHandler(
 			Transport: transport,
 			Timeout:   timeout,
 		},
-		baseURL:     baseURL,
-		upstreamURL: baseURL + "/v1/messages",
+		baseURL: baseURL,
 	}
 }
 
@@ -346,8 +345,8 @@ func (h *Handler) doRequest(
 	// Step 5b: Apply disguise if needed (OAuth and not Claude Code client).
 	body := rawBody
 
-	// Build upstream URL.
-	upstreamURL := h.upstreamURL
+	// Build upstream URL dynamically from request path.
+	upstreamURL := h.baseURL + origReq.URL.Path
 
 	// Build upstream request (will be modified before sending).
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, nil)
