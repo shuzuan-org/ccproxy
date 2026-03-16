@@ -125,14 +125,28 @@ func checkSystemPromptFromParsed(system interface{}) bool {
 		return false
 	}
 
+	truncated := systemText[:min(len(systemText), 200)]
+	var bestDice float64
 	for _, prefix := range claudeCodePromptPrefixes {
 		if strings.HasPrefix(systemText, prefix) {
 			return true
 		}
-		if DiceCoefficient(systemText[:min(len(systemText), 200)], prefix) >= 0.5 {
+		dice := DiceCoefficient(truncated, prefix)
+		if dice >= 0.5 {
+			slog.Debug("disguise/detect: system prompt matched by Dice coefficient",
+				"dice", dice,
+				"prefix", prefix[:min(len(prefix), 60)],
+			)
 			return true
 		}
+		if dice > bestDice {
+			bestDice = dice
+		}
 	}
+	slog.Debug("disguise/detect: system prompt did not match any known prefix",
+		"best_dice", bestDice,
+		"system_preview", truncated[:min(len(truncated), 80)],
+	)
 	return false
 }
 

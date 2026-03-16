@@ -2,6 +2,7 @@ package disguise
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -83,10 +84,19 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 			fp = generateFingerprint(now)
 			s.fingerprints[accountName] = fp
 			s.saveLocked()
+			slog.Debug("disguise/fingerprint: expired, regenerated",
+				"account", accountName,
+				"age", age.String(),
+				"ua", fp.UserAgent,
+			)
 		} else {
 			// Renew TTL
 			fp.UpdatedAt = now.UnixMilli()
 			s.saveLocked()
+			slog.Debug("disguise/fingerprint: TTL renewed",
+				"account", accountName,
+				"age", age.String(),
+			)
 		}
 		return fp
 	}
@@ -95,6 +105,12 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 	fp = generateFingerprint(now)
 	s.fingerprints[accountName] = fp
 	s.saveLocked()
+	slog.Debug("disguise/fingerprint: created for new account",
+		"account", accountName,
+		"ua", fp.UserAgent,
+		"os", fp.StainlessOS,
+		"arch", fp.StainlessArch,
+	)
 	return fp
 }
 
@@ -160,6 +176,12 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 		fp = createFromHeaders(headers, now)
 		s.fingerprints[accountName] = fp
 		s.saveLocked()
+		slog.Debug("disguise/fingerprint: learned from CC client (new)",
+			"account", accountName,
+			"ua", fp.UserAgent,
+			"os", fp.StainlessOS,
+			"arch", fp.StainlessArch,
+		)
 		return
 	}
 
@@ -168,9 +190,15 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 	requestVer := extractVersionFromUA(ua)
 
 	if isNewerVersion(requestVer, existingVer) {
+		oldUA := fp.UserAgent
 		mergeHeaders(fp, headers)
 		fp.UpdatedAt = now.UnixMilli()
 		s.saveLocked()
+		slog.Debug("disguise/fingerprint: learned newer version from CC client",
+			"account", accountName,
+			"old_ua", oldUA,
+			"new_ua", fp.UserAgent,
+		)
 	} else {
 		// Same or older version — just refresh TTL
 		fp.UpdatedAt = now.UnixMilli()

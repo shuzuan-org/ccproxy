@@ -243,7 +243,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	}
 
 	// Enforce cache_control limit (after all other modifications)
-	enforceCacheControlLimit(parsed)
+	enforceCacheControlLimit(ctx, parsed)
 
 	// Marshal once at the end
 	result, err := json.Marshal(parsed)
@@ -510,7 +510,7 @@ const maxCacheControlBlocks = 4
 // count exceeds maxCacheControlBlocks. Removal priority:
 // 1. Messages from the beginning (oldest), skipping thinking blocks
 // 2. System blocks from the end (preserving the injected Claude Code prompt at index 0)
-func enforceCacheControlLimit(parsed map[string]interface{}) {
+func enforceCacheControlLimit(ctx context.Context, parsed map[string]interface{}) {
 	type loc struct {
 		parent map[string]interface{}
 	}
@@ -570,18 +570,29 @@ func enforceCacheControlLimit(parsed map[string]interface{}) {
 	}
 
 	excess := total - maxCacheControlBlocks
+	removedFromMessages := 0
+	removedFromSystem := 0
 
 	// Remove from messages first (oldest → newest)
 	for i := 0; i < len(messageLocs) && excess > 0; i++ {
 		delete(messageLocs[i].parent, "cache_control")
 		excess--
+		removedFromMessages++
 	}
 
 	// Remove from system (from the end, preserving index 0 which is the injected prompt)
 	for i := len(systemLocs) - 1; i >= 1 && excess > 0; i-- {
 		delete(systemLocs[i].parent, "cache_control")
 		excess--
+		removedFromSystem++
 	}
+
+	observe.Logger(ctx).Debug("disguise: cache_control limit enforced",
+		"total_found", total,
+		"max_allowed", maxCacheControlBlocks,
+		"removed_from_messages", removedFromMessages,
+		"removed_from_system", removedFromSystem,
+	)
 }
 
 // normalizeModelInPlace normalizes the model ID in parsed map in-place.

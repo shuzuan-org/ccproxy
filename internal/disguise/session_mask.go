@@ -2,6 +2,7 @@ package disguise
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -45,6 +46,11 @@ func (s *SessionMaskStore) Get(accountName string) string {
 		uuid:      uuid,
 		expiresAt: now.Add(s.ttl),
 	}
+	slog.Debug("disguise/session_mask: created new mask",
+		"account", accountName,
+		"mask_uuid", uuid[:8]+"...",
+		"ttl", s.ttl.String(),
+	)
 	return uuid
 }
 
@@ -68,9 +74,17 @@ func (s *SessionMaskStore) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	expired := 0
 	for name, ms := range s.sessions {
 		if now.After(ms.expiresAt) {
 			delete(s.sessions, name)
+			expired++
 		}
+	}
+	if expired > 0 {
+		slog.Debug("disguise/session_mask: cleanup expired masks",
+			"expired", expired,
+			"remaining", len(s.sessions),
+		)
 	}
 }

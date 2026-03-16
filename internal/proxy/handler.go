@@ -162,17 +162,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if stage == 0 && IsSignatureError(errBody) {
+				errMsg := extractErrorMessage(errBody)
 				log.Info("signature error detected, retrying with thinking blocks filtered",
 					"account", acct.Name,
 					"stage", stage,
+					"error_msg", errMsg,
 				)
 				bodyToSend = FilterThinkingBlocks(rawBody)
 				continue
 			}
 			if stage == 1 && (IsSignatureError(errBody) || IsToolRelatedError(errBody)) {
+				errMsg := extractErrorMessage(errBody)
 				log.Info("signature+tool error detected, retrying with all sensitive blocks filtered",
 					"account", acct.Name,
 					"stage", stage,
+					"error_msg", errMsg,
 				)
 				bodyToSend = FilterSignatureSensitiveBlocks(rawBody)
 				continue
@@ -481,4 +485,21 @@ func truncateBody(body []byte, maxLen int) string {
 		return string(body)
 	}
 	return string(body[:maxLen]) + "...(truncated)"
+}
+
+// extractErrorMessage extracts the error.message field from an API error response body.
+func extractErrorMessage(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "(parse failed)"
+	}
+	msg := parsed.Error.Message
+	if len(msg) > 200 {
+		return msg[:200] + "..."
+	}
+	return msg
 }

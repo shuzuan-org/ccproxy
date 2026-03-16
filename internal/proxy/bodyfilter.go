@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -111,6 +112,7 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 // thinking → text, redacted_thinking → removed, empty → placeholder.
 func filterThinkingFromContent(content []any) []any {
 	var result []any
+	converted, removed := 0, 0
 	for _, block := range content {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
@@ -129,11 +131,19 @@ func filterThinkingFromContent(content []any) []any {
 				"type": "text",
 				"text": text,
 			})
+			converted++
 		case "redacted_thinking":
-			// Remove entirely.
+			removed++
 		default:
 			result = append(result, block)
 		}
+	}
+
+	if converted > 0 || removed > 0 {
+		slog.Debug("bodyfilter: thinking blocks filtered",
+			"thinking_to_text", converted,
+			"redacted_removed", removed,
+		)
 	}
 
 	if len(result) == 0 {
@@ -183,6 +193,7 @@ func removeThinkingDependentContextStrategies(parsed map[string]any) {
 // filterToolsFromContent converts tool_use and tool_result blocks to text.
 func filterToolsFromContent(content []any) []any {
 	var result []any
+	converted := 0
 	for _, block := range content {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
@@ -200,6 +211,7 @@ func filterToolsFromContent(content []any) []any {
 				"type": "text",
 				"text": fmt.Sprintf("(tool_use) name=%s id=%s input=%s", name, id, string(inputJSON)),
 			})
+			converted++
 		case "tool_result":
 			toolUseID, _ := blockMap["tool_use_id"].(string)
 			contentStr := ""
@@ -214,9 +226,15 @@ func filterToolsFromContent(content []any) []any {
 				"type": "text",
 				"text": fmt.Sprintf("(tool_result) tool_use_id=%s content=%s", toolUseID, contentStr),
 			})
+			converted++
 		default:
 			result = append(result, block)
 		}
+	}
+	if converted > 0 {
+		slog.Debug("bodyfilter: tool blocks filtered",
+			"tools_to_text", converted,
+		)
 	}
 	return result
 }

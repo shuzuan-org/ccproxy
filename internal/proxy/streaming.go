@@ -95,18 +95,30 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 				usage.InputTokens = p.Message.Usage.InputTokens
 				usage.CacheCreationInputTokens = p.Message.Usage.CacheCreationInputTokens
 				usage.CacheReadInputTokens = p.Message.Usage.CacheReadInputTokens
+				observe.Logger(ctx).Debug("SSE: message_start usage",
+					"input_tokens", p.Message.Usage.InputTokens,
+					"cache_creation", p.Message.Usage.CacheCreationInputTokens,
+					"cache_read", p.Message.Usage.CacheReadInputTokens,
+				)
 			}
 			// Reverse-map model ID so downstream sees the original short name.
 			if originalModel != "" {
 				normalized := disguise.NormalizeModelID(originalModel)
 				if normalized != originalModel {
 					data = bytes.Replace(data, []byte(`"`+normalized+`"`), []byte(`"`+originalModel+`"`), 1)
+					observe.Logger(ctx).Debug("SSE: model ID reverse-mapped",
+						"from", normalized,
+						"to", originalModel,
+					)
 				}
 			}
 		case "message_delta":
 			var p messageDeltaPayload
 			if err := json.Unmarshal(data, &p); err == nil {
 				usage.OutputTokens = p.Usage.OutputTokens
+				observe.Logger(ctx).Debug("SSE: message_delta usage",
+					"output_tokens", p.Usage.OutputTokens,
+				)
 			}
 		case "error":
 			usage.SSEError = true
@@ -178,6 +190,9 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 		if ctx.Err() != nil {
 			return usage, nil
 		}
+		observe.Logger(ctx).Warn("SSE: scanner error",
+			"error", err.Error(),
+		)
 		return usage, err
 	}
 
