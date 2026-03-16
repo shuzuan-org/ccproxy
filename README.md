@@ -14,14 +14,35 @@
 
 ## 快速开始
 
-**构建：**
+### Docker（推荐）
+
+一行命令启动：
+
+```bash
+docker run -d --name ccproxy --hostname ccproxy \
+  -p 80:80 -v ccproxy-data:/data \
+  saloolooo/ccproxy
+```
+
+启用 HTTPS 自动证书（需要域名已解析到服务器）：
+
+```bash
+docker run -d --name ccproxy --hostname ccproxy \
+  -p 80:80 -p 443:443 -v ccproxy-data:/data \
+  -e DOMAIN=proxy.example.com \
+  saloolooo/ccproxy
+```
+
+> **注意：** `--hostname ccproxy` 是必需的——OAuth 令牌加密密钥从主机名派生，缺少固定主机名会导致容器重建后令牌失效。
+
+容器内置 Caddy 反向代理，自动处理 TLS 证书。配置文件和数据持久化在 `/data` 卷中。
+
+### 从源码构建
 
 ```bash
 make build
 # 输出：bin/ccproxy
 ```
-
-**运行：**
 
 ```bash
 ./bin/ccproxy
