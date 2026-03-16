@@ -2,9 +2,15 @@ package tls
 
 import (
 	"context"
+	"crypto/md5"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 func TestNewTransport(t *testing.T) {
@@ -41,10 +47,10 @@ func TestClaudeCLIv2Spec_FreshPerCall(t *testing.T) {
 
 func TestClaudeCLIv2Spec_CipherSuiteCount(t *testing.T) {
 	spec := claudeCLIv2Spec()
-	// Full Node.js 20.x + OpenSSL 3.x profile: 56 cipher suites covering
-	// TLS 1.3, ECDHE, DHE, DHE-DSS, AES-CCM, ARIA, and legacy RSA.
-	if got := len(spec.CipherSuites); got != 56 {
-		t.Errorf("expected 56 cipher suites, got %d", got)
+	// Full Node.js 20.x + OpenSSL 3.x profile: 59 cipher suites covering
+	// TLS 1.3, ECDHE, DHE, DHE-DSS, AES-CCM, ARIA, legacy RSA, and SCSV.
+	if got := len(spec.CipherSuites); got != 59 {
+		t.Errorf("expected 59 cipher suites, got %d", got)
 	}
 }
 
@@ -106,6 +112,81 @@ func TestGetOrCreateTransport_DifferentProxy(t *testing.T) {
 	tr2 := ft.getOrCreateTransport("socks5://proxy:1080")
 	if tr1 == tr2 {
 		t.Error("expected different transports for different proxyURLs")
+	}
+}
+
+// ja3Hash computes the JA3 hash from a utls ClientHelloSpec.
+// JA3 = MD5(SSLVersion,CipherSuites,Extensions,EllipticCurves,EllipticCurvePointFormats)
+// where values within each field are separated by "-".
+func ja3Hash(spec *utls.ClientHelloSpec) string {
+	// For TLS 1.3, ClientHello.legacy_version = 0x0303 = 771.
+	version := "771"
+
+	// Cipher suites
+	ciphers := make([]string, len(spec.CipherSuites))
+	for i, c := range spec.CipherSuites {
+		ciphers[i] = strconv.FormatUint(uint64(c), 10)
+	}
+
+	// Extensions, curves, point formats
+	var extIDs, curveIDs, pointFmts []string
+	for _, ext := range spec.Extensions {
+		switch e := ext.(type) {
+		case *utls.SNIExtension:
+			extIDs = append(extIDs, "0")
+		case *utls.SupportedPointsExtension:
+			extIDs = append(extIDs, "11")
+			for _, p := range e.SupportedPoints {
+				pointFmts = append(pointFmts, strconv.Itoa(int(p)))
+			}
+		case *utls.SupportedCurvesExtension:
+			extIDs = append(extIDs, "10")
+			for _, c := range e.Curves {
+				curveIDs = append(curveIDs, strconv.FormatUint(uint64(c), 10))
+			}
+		case *utls.SessionTicketExtension:
+			extIDs = append(extIDs, "35")
+		case *utls.ALPNExtension:
+			extIDs = append(extIDs, "16")
+		case *utls.ExtendedMasterSecretExtension:
+			extIDs = append(extIDs, "23")
+		case *utls.GenericExtension:
+			extIDs = append(extIDs, strconv.Itoa(int(e.Id)))
+		case *utls.SignatureAlgorithmsExtension:
+			extIDs = append(extIDs, "13")
+		case *utls.SupportedVersionsExtension:
+			extIDs = append(extIDs, "43")
+		case *utls.PSKKeyExchangeModesExtension:
+			extIDs = append(extIDs, "45")
+		case *utls.KeyShareExtension:
+			extIDs = append(extIDs, "51")
+		default:
+			panic(fmt.Sprintf("ja3Hash: unhandled extension type %T", ext))
+		}
+	}
+
+	ja3 := fmt.Sprintf("%s,%s,%s,%s,%s",
+		version,
+		strings.Join(ciphers, "-"),
+		strings.Join(extIDs, "-"),
+		strings.Join(curveIDs, "-"),
+		strings.Join(pointFmts, "-"),
+	)
+
+	hash := md5.Sum([]byte(ja3))
+	return fmt.Sprintf("%x", hash)
+}
+
+func TestClaudeCLIv2Spec_JA3Hash(t *testing.T) {
+	t.Parallel()
+	// Lock down the JA3 fingerprint so accidental spec changes are caught.
+	// Captured from real Claude CLI v2 (Node.js 20.x + OpenSSL 3.x).
+	const expectedJA3 = "1a28e69016765d92e3b381168d68922c"
+
+	spec := claudeCLIv2Spec()
+	got := ja3Hash(spec)
+	if got != expectedJA3 {
+		t.Errorf("JA3 hash mismatch:\n  got:  %s\n  want: %s", got, expectedJA3)
 	}
 }
 

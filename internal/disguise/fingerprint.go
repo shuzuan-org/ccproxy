@@ -2,8 +2,6 @@ package disguise
 
 import (
 	"encoding/json"
-	"fmt"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,19 +107,14 @@ func (s *FingerprintStore) Remove(accountName string) error {
 	return s.saveLocked()
 }
 
-var (
-	osList   = []string{"Linux", "Darwin"}
-	archList = []string{"x64", "arm64"}
-)
-
 func generateFingerprint(now time.Time) *Fingerprint {
 	return &Fingerprint{
 		ClientID:                GenerateClientID(),
-		UserAgent:               fmt.Sprintf("claude-cli/2.1.%d (external, cli)", 20+rand.Intn(10)),
-		StainlessPackageVersion: fmt.Sprintf("0.%d.%d", 69+rand.Intn(5), rand.Intn(5)),
-		StainlessOS:             osList[rand.Intn(len(osList))],
-		StainlessArch:           archList[rand.Intn(len(archList))],
-		StainlessRuntimeVersion: fmt.Sprintf("v24.%d.0", 12+rand.Intn(4)),
+		UserAgent:               DefaultHeaders["User-Agent"],
+		StainlessPackageVersion: DefaultHeaders["X-Stainless-Package-Version"],
+		StainlessOS:             DefaultHeaders["X-Stainless-OS"],
+		StainlessArch:           DefaultHeaders["X-Stainless-Arch"],
+		StainlessRuntimeVersion: DefaultHeaders["X-Stainless-Runtime-Version"],
 		CreatedAt:               now.UnixMilli(),
 		UpdatedAt:               now.UnixMilli(),
 	}
