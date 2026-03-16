@@ -165,6 +165,10 @@ func ExecuteWithRetry(
 
 			switch action {
 			case ReturnToClient:
+				observe.Logger(ctx).Debug("retry: returning to client",
+					"account", accountName,
+					"status", statusCode,
+				)
 				result.Release()
 				return &RetryResult{
 					Response:       resp,

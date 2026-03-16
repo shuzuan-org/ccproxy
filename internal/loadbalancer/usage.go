@@ -90,6 +90,7 @@ func (uf *UsageFetcher) FetchIfNeeded(ctx context.Context, accountName string, b
 			ttl = usageErrorCacheTTL
 		}
 		if time.Since(entry.fetchedAt) < ttl {
+			observe.Logger(ctx).Debug("usage: cache hit", "account", accountName)
 			return entry.resp
 		}
 	}

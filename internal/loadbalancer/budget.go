@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -147,6 +148,13 @@ func (bc *BudgetController) UpdateFromUsageAPI(fiveHour, sevenDay UsageAPIWindow
 	if t, err := time.Parse(time.RFC3339, sevenDay.ResetsAt); err == nil {
 		bc.window7d.ResetAt = t
 	}
+
+	slog.Debug("budget: usage API updated",
+		"account", bc.name,
+		"util_5h", bc.window5h.Utilization,
+		"util_7d", bc.window7d.Utilization,
+		"state", bc.stateLocked().String(),
+	)
 }
 
 // State returns the scheduling state based on the worse of the two windows.
@@ -257,6 +265,14 @@ func (bc *BudgetController) DynamicMaxConcurrency(hardLimit int) int {
 	}
 	if dynamic < 1 {
 		dynamic = 1
+	}
+	if dynamic != hardLimit {
+		slog.Debug("budget: dynamic concurrency adjusted",
+			"account", bc.name,
+			"default_max", hardLimit,
+			"effective_max", dynamic,
+			"max_util", maxUtil,
+		)
 	}
 	return dynamic
 }

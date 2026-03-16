@@ -212,9 +212,23 @@ func (h *AccountHealth) IsAvailable() bool {
 	return available
 }
 
+// ScoreBreakdown holds the individual components of a composite score.
+type ScoreBreakdown struct {
+	Score        float64
+	ErrRate      float64
+	LatencyScore float64
+	LoadRate     float64
+	MaxUtil      float64
+}
+
 // Score computes a composite score (lower is better).
 // score = errorRate*0.3 + normalizedLatency*0.2 + loadRate/100*0.2 + maxUtil*0.3
 func (h *AccountHealth) Score(loadRate int) float64 {
+	return h.ScoreDetail(loadRate).Score
+}
+
+// ScoreDetail computes a composite score and returns the breakdown of each component.
+func (h *AccountHealth) ScoreDetail(loadRate int) ScoreBreakdown {
 	errRate := h.ErrorRate()
 
 	// Normalize latency: use fast EMA relative to slow EMA.
@@ -231,8 +245,15 @@ func (h *AccountHealth) Score(loadRate int) float64 {
 	}
 
 	maxUtil := h.budget.MaxUtilization()
+	lr := float64(loadRate) / 100.0
 
-	return errRate*0.3 + normalizedLatency*0.2 + float64(loadRate)/100.0*0.2 + maxUtil*0.3
+	return ScoreBreakdown{
+		Score:        errRate*0.3 + normalizedLatency*0.2 + lr*0.2 + maxUtil*0.3,
+		ErrRate:      errRate,
+		LatencyScore: normalizedLatency,
+		LoadRate:     lr,
+		MaxUtil:      maxUtil,
+	}
 }
 
 // ErrorRate returns the error rate in the sliding window.

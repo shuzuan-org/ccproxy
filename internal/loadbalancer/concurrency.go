@@ -84,6 +84,11 @@ func (t *ConcurrencyTracker) TryAcquire(accountName, requestID string, maxConcur
 
 	if active >= maxConcurrency {
 		mu.Unlock()
+		slog.Debug("concurrency: acquire rejected",
+			"account", accountName,
+			"active", active,
+			"max_concurrency", maxConcurrency,
+		)
 		return nil, false, rate
 	}
 

@@ -146,19 +146,35 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 									AccountName: si.AccountName,
 									LastRequest: time.Now(),
 								})
+								observe.Logger(ctx).Debug("balancer: sticky session hit",
+									"account", acct.Name,
+									"session_key", sessionKey,
+								)
 								return &SelectResult{Account: *acct, RequestID: requestID, Release: release}, nil
 							}
+						} else {
+							observe.Logger(ctx).Debug("balancer: sticky session skipped (overloaded)",
+								"account", acct.Name,
+								"load_rate", rate,
+							)
 						}
+					} else {
+						observe.Logger(ctx).Debug("balancer: sticky session skipped (unavailable)",
+							"account", acct.Name,
+						)
 					}
 				}
 			}
 			// Sticky session expired or account unavailable
+			observe.Logger(ctx).Debug("balancer: sticky session expired", "session_key", sessionKey)
 			b.sessions.Delete(sessionKey)
 		}
 	}
 
 	// Layer 3: Score-based selection with budget state filtering
 	candidates := make([]accountCandidate, 0, len(accounts))
+	filteredBudget := 0
+	filteredLoad := 0
 	for _, acct := range accounts {
 		if excludeAccounts[acct.Name] {
 			continue
@@ -176,6 +192,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 					"account", acct.Name,
 					"reason", state.String(),
 				)
+				filteredBudget++
 				continue
 			}
 		}
@@ -186,6 +203,11 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 		}
 		rate := b.tracker.LoadRate(acct.Name, effectiveMax)
 		if rate >= 100 {
+			observe.Logger(ctx).Debug("balancer: candidate skipped (overloaded)",
+				"account", acct.Name,
+				"load_rate", rate,
+			)
+			filteredLoad++
 			continue
 		}
 		var lu time.Time
@@ -202,6 +224,12 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	}
 
 	if len(candidates) == 0 {
+		observe.Logger(ctx).Debug("balancer: no candidates after filtering",
+			"total_accounts", len(accounts),
+			"excluded", len(excludeAccounts),
+			"filtered_budget", filteredBudget,
+			"filtered_load", filteredLoad,
+		)
 		return nil, ErrAllAccountsBusy
 	}
 
@@ -237,17 +265,29 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 
 	// Try to acquire slot
 	for _, c := range candidates {
+		h := health[c.account.Name]
 		effectiveMax := c.account.MaxConcurrency
-		if h := health[c.account.Name]; h != nil {
+		if h != nil {
 			effectiveMax = EffectiveMaxConcurrency(h.budget, c.account.MaxConcurrency)
 		}
 		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.account.Name, time.Now())
-			observe.Logger(ctx).Debug("balancer: account selected",
+			// Log score breakdown for the selected account
+			logAttrs := []any{
 				"account", c.account.Name,
 				"score", c.score,
 				"candidates", len(candidates),
-			)
+			}
+			if h != nil {
+				detail := h.ScoreDetail(c.loadRate)
+				logAttrs = append(logAttrs,
+					"err_rate", detail.ErrRate,
+					"latency_score", detail.LatencyScore,
+					"load_rate", detail.LoadRate,
+					"max_util", detail.MaxUtil,
+				)
+			}
+			observe.Logger(ctx).Debug("balancer: account selected", logAttrs...)
 			return &SelectResult{Account: c.account, RequestID: requestID, Release: release}, nil
 		}
 	}
@@ -276,11 +316,13 @@ func (b *Balancer) BindSession(sessionKey, accountName string) {
 		AccountName: accountName,
 		LastRequest: time.Now(),
 	})
+	slog.Debug("session: bound", "account", accountName, "session_key", sessionKey)
 }
 
 // ClearSession removes a sticky session binding.
 func (b *Balancer) ClearSession(sessionKey string) {
 	b.sessions.Delete(sessionKey)
+	slog.Debug("session: cleared", "session_key", sessionKey)
 }
 
 // UpdateAccounts atomically replaces the account list (for hot-reload),
