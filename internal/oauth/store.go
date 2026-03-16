@@ -95,6 +95,22 @@ func (s *TokenStore) Delete(providerName string) error {
 	return s.persistToDisk()
 }
 
+// MarkExpired atomically marks the token for the given provider as expired.
+// The entire read-modify-write happens under a single write lock.
+func (s *TokenStore) MarkExpired(providerName string) error {
+	s.loadOnce.Do(s.populateCache)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	token, ok := s.cache[providerName]
+	if !ok || token == nil {
+		return nil
+	}
+	token.ExpiresAt = time.Now()
+	return s.persistToDisk()
+}
+
 func (s *TokenStore) List() []string {
 	s.loadOnce.Do(s.populateCache)
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -165,7 +166,7 @@ func TestRegistryOnChange(t *testing.T) {
 
 	_ = r.Add("alice")
 
-	// onChange is called in a goroutine, wait briefly
+	// onChange is called via channel consumer goroutine, wait briefly
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if called.Load() > 0 {
@@ -176,6 +177,56 @@ func TestRegistryOnChange(t *testing.T) {
 
 	if called.Load() == 0 {
 		t.Error("onChange was not called after Add")
+	}
+}
+
+func TestRegistryOnChange_Serialized(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r := NewAccountRegistry(dir)
+
+	var lastSnapshot atomic.Value // stores []Account
+	var callCount atomic.Int32
+
+	r.SetOnChange(func(accounts []Account) {
+		// Simulate slow consumer to expose ordering issues
+		time.Sleep(10 * time.Millisecond)
+		cp := make([]Account, len(accounts))
+		copy(cp, accounts)
+		lastSnapshot.Store(cp)
+		callCount.Add(1)
+	})
+
+	// Rapid-fire adds
+	for i := 0; i < 5; i++ {
+		if err := r.Add(fmt.Sprintf("acct-%d", i)); err != nil {
+			t.Fatalf("Add acct-%d: %v", i, err)
+		}
+	}
+
+	// Wait for consumer to finish processing
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if callCount.Load() > 0 {
+			// Give the consumer time to process any remaining items
+			time.Sleep(50 * time.Millisecond)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wait for any in-flight processing to complete
+	time.Sleep(100 * time.Millisecond)
+
+	snap := lastSnapshot.Load()
+	if snap == nil {
+		t.Fatal("onChange was never called")
+	}
+
+	accounts := snap.([]Account)
+	// The last snapshot received must contain all 5 accounts
+	if len(accounts) != 5 {
+		t.Errorf("final snapshot has %d accounts, want 5", len(accounts))
 	}
 }
 

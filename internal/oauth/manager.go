@@ -138,8 +138,15 @@ func (m *Manager) ForceRefresh(ctx context.Context, accountName string) (*OAuthT
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Re-read token under lock to avoid using a stale refresh token
+	// that was already rotated by another goroutine.
+	freshToken, _ := m.store.Load(accountName)
+	if freshToken == nil || freshToken.RefreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available for account %q", accountName)
+	}
+
 	proxyURL := m.resolveProxy(accountName)
-	newToken, err := m.provider.RefreshToken(ctx, token.RefreshToken, proxyURL)
+	newToken, err := m.provider.RefreshToken(ctx, freshToken.RefreshToken, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("refresh token: %w", err)
 	}
@@ -230,12 +237,10 @@ func (m *Manager) GetStore() *TokenStore {
 // MarkTokenExpired immediately marks the stored token for an account as expired.
 // This causes the next GetValidToken call to trigger a refresh.
 func (m *Manager) MarkTokenExpired(accountName string) {
-	token, err := m.store.Load(accountName)
-	if err != nil || token == nil {
+	if err := m.store.MarkExpired(accountName); err != nil {
+		slog.Warn("failed to mark token expired", "account", accountName, "error", err.Error())
 		return
 	}
-	token.ExpiresAt = time.Now()
-	_ = m.store.Save(accountName, *token)
 	slog.Info("token marked as expired", "account", accountName)
 }
 

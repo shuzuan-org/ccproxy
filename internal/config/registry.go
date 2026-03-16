@@ -26,6 +26,7 @@ type AccountRegistry struct {
 	path     string
 	accounts []Account
 	onChange func([]Account)
+	changeCh chan []Account // serialized change notifications
 }
 
 // NewAccountRegistry creates or loads an AccountRegistry from the given data directory.
@@ -65,18 +66,10 @@ func (r *AccountRegistry) Add(name string) error {
 		return fmt.Errorf("persist account: %w", err)
 	}
 
-	// Capture callback and snapshot before releasing lock
-	onChange := r.onChange
-	var snapshot []Account
-	if onChange != nil {
-		snapshot = make([]Account, len(r.accounts))
-		copy(snapshot, r.accounts)
-	}
+	// Send snapshot to serialized change channel
+	r.notifyChange()
 	r.mu.Unlock()
 
-	if onChange != nil {
-		go onChange(snapshot)
-	}
 	return nil
 }
 
@@ -107,18 +100,10 @@ func (r *AccountRegistry) Remove(name string) error {
 		return fmt.Errorf("persist removal: %w", err)
 	}
 
-	// Capture callback and snapshot before releasing lock
-	onChange := r.onChange
-	var snapshot []Account
-	if onChange != nil {
-		snapshot = make([]Account, len(r.accounts))
-		copy(snapshot, r.accounts)
-	}
+	// Send snapshot to serialized change channel
+	r.notifyChange()
 	r.mu.Unlock()
 
-	if onChange != nil {
-		go onChange(snapshot)
-	}
 	return nil
 }
 
@@ -184,12 +169,35 @@ func (r *AccountRegistry) GetProxy(name string) string {
 	return ""
 }
 
-// SetOnChange registers a callback that is invoked (in a goroutine) whenever
-// the account list changes.
+// SetOnChange registers a callback that is invoked whenever the account list
+// changes. Notifications are serialized through a channel so that rapid
+// Add/Remove calls cannot cause an older snapshot to overwrite a newer one.
 func (r *AccountRegistry) SetOnChange(fn func([]Account)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.onChange = fn
+	r.changeCh = make(chan []Account, 1)
+	go func() {
+		for snapshot := range r.changeCh {
+			fn(snapshot)
+		}
+	}()
+}
+
+// notifyChange sends the current account snapshot to the change channel.
+// Must be called under write lock.
+func (r *AccountRegistry) notifyChange() {
+	if r.changeCh == nil {
+		return
+	}
+	snapshot := make([]Account, len(r.accounts))
+	copy(snapshot, r.accounts)
+	// Drain stale snapshot, then send latest
+	select {
+	case <-r.changeCh:
+	default:
+	}
+	r.changeCh <- snapshot
 }
 
 func (r *AccountRegistry) save() error {

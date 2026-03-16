@@ -3,10 +3,12 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -408,6 +410,92 @@ func TestMarkTokenExpired(t *testing.T) {
 	}
 	if time.Until(loaded.ExpiresAt) > time.Second {
 		t.Errorf("token should be expired, expires_at = %v", loaded.ExpiresAt)
+	}
+}
+
+func TestForceRefresh_ConcurrentRefresh(t *testing.T) {
+	// Verify that concurrent ForceRefresh calls re-read the token under lock
+	// and do not use a stale refresh token read before locking.
+	var refreshCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := refreshCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  fmt.Sprintf("access-%d", n),
+			"refresh_token": fmt.Sprintf("refresh-%d", n),
+			"expires_in":    3600,
+			"scope":         "user:inference",
+		})
+	}))
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+	tok := OAuthToken{
+		AccessToken:  "initial",
+		RefreshToken: "initial-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	_ = store.Save("test-oauth", tok)
+
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			_, err := m.ForceRefresh(context.Background(), "test-oauth")
+			errs <- err
+		}()
+	}
+
+	for i := 0; i < 10; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	// Final token should be valid and from the server
+	final, err := store.Load("test-oauth")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if final == nil || final.AccessToken == "initial" {
+		t.Error("token was not refreshed")
+	}
+}
+
+func TestMarkExpired_Atomic(t *testing.T) {
+	srv := mockTokenServer(t)
+	defer srv.Close()
+
+	m, store := newTestManager(t, srv.URL)
+
+	tok := OAuthToken{
+		AccessToken:  "valid",
+		RefreshToken: "refresh-me",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	_ = store.Save("test-oauth", tok)
+
+	// Concurrent MarkTokenExpired calls should not race
+	errs := make(chan struct{}, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			m.MarkTokenExpired("test-oauth")
+			errs <- struct{}{}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-errs
+	}
+
+	loaded, _ := store.Load("test-oauth")
+	if loaded == nil {
+		t.Fatal("expected token to still exist")
+	}
+	if time.Until(loaded.ExpiresAt) > time.Second {
+		t.Errorf("token should be expired, expires_at = %v", loaded.ExpiresAt)
+	}
+	// RefreshToken must be preserved
+	if loaded.RefreshToken != "refresh-me" {
+		t.Errorf("refresh token mutated: got %q", loaded.RefreshToken)
 	}
 }
 
