@@ -36,7 +36,7 @@ func TestUsageFetcher_FetchSuccess(t *testing.T) {
 			t.Error("missing anthropic-beta header")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -67,7 +67,7 @@ func TestUsageFetcher_CacheHit(t *testing.T) {
 	var fetchCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fetchCount.Add(1)
-		json.NewEncoder(w).Encode(UsageResponse{
+		_ = json.NewEncoder(w).Encode(UsageResponse{
 			FiveHour: UsageWindowResponse{Utilization: 10},
 			SevenDay: UsageWindowResponse{Utilization: 20},
 		})

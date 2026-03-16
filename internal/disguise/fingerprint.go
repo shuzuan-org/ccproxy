@@ -83,7 +83,7 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 			// Expired — regenerate
 			fp = generateFingerprint(now)
 			s.fingerprints[accountName] = fp
-			s.saveLocked()
+			_ = s.saveLocked()
 			slog.Debug("disguise/fingerprint: expired, regenerated",
 				"account", accountName,
 				"age", age.String(),
@@ -92,7 +92,7 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 		} else {
 			// Renew TTL
 			fp.UpdatedAt = now.UnixMilli()
-			s.saveLocked()
+			_ = s.saveLocked()
 			slog.Debug("disguise/fingerprint: TTL renewed",
 				"account", accountName,
 				"age", age.String(),
@@ -104,7 +104,7 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 	// New account — generate and persist
 	fp = generateFingerprint(now)
 	s.fingerprints[accountName] = fp
-	s.saveLocked()
+	_ = s.saveLocked()
 	slog.Debug("disguise/fingerprint: created for new account",
 		"account", accountName,
 		"ua", fp.UserAgent,
@@ -175,7 +175,7 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 		// No fingerprint yet -- create from observed headers
 		fp = createFromHeaders(headers, now)
 		s.fingerprints[accountName] = fp
-		s.saveLocked()
+		_ = s.saveLocked()
 		slog.Debug("disguise/fingerprint: learned from CC client (new)",
 			"account", accountName,
 			"ua", fp.UserAgent,
@@ -193,7 +193,7 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 		oldUA := fp.UserAgent
 		mergeHeaders(fp, headers)
 		fp.UpdatedAt = now.UnixMilli()
-		s.saveLocked()
+		_ = s.saveLocked()
 		slog.Debug("disguise/fingerprint: learned newer version from CC client",
 			"account", accountName,
 			"old_ua", oldUA,
@@ -202,7 +202,7 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 	} else {
 		// Same or older version — just refresh TTL
 		fp.UpdatedAt = now.UnixMilli()
-		s.saveLocked()
+		_ = s.saveLocked()
 	}
 }
 

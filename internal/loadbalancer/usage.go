@@ -158,7 +158,7 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, accountName, apiURL string)
 			uf.cacheError(accountName)
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

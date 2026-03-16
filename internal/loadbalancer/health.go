@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -150,10 +149,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		h.Disable("forbidden")
 
 	case 400:
-		// Check for organization disabled message
-		if responseHeaders != nil {
-			// 400 with "organization disabled" text handled by caller via body check
-		}
+		// 400 with "organization disabled" text handled by caller via body check
 		h.recordWindow(true)
 
 	default:
@@ -369,7 +365,3 @@ func pruneWindow(times []time.Time, cutoff time.Time) []time.Time {
 	return times[i:]
 }
 
-// hasOrgDisabledError checks if a 400 response body contains "organization disabled".
-func hasOrgDisabledError(body string) bool {
-	return strings.Contains(strings.ToLower(body), "organization disabled")
-}
