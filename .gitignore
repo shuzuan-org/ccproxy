@@ -4,3 +4,6 @@ data/
 *.db
 oauth_tokens.json
 config.toml
+logs/
+*.log
+*.skill
