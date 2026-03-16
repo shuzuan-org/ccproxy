@@ -197,6 +197,36 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	if !strings.Contains(output, "metrics account") {
 		t.Errorf("missing 'metrics account' in output:\n%s", output)
 	}
+	if !strings.Contains(output, "metrics system") {
+		t.Errorf("missing 'metrics system' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "goroutines") {
+		t.Errorf("missing 'goroutines' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "heap_alloc_mb") {
+		t.Errorf("missing 'heap_alloc_mb' in output:\n%s", output)
+	}
+}
+
+func TestLogSystemMetrics(t *testing.T) {
+	t.Parallel()
+
+	var buf safeBuf
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	logSystemMetrics(logger)
+
+	output := buf.String()
+	if !strings.Contains(output, "metrics system") {
+		t.Errorf("missing 'metrics system' in output:\n%s", output)
+	}
+	// Go runtime fields should always be present
+	for _, field := range []string{"goroutines", "heap_alloc_mb", "heap_sys_mb", "gc_cycles", "gc_pause_ms"} {
+		if !strings.Contains(output, field) {
+			t.Errorf("missing field %q in output:\n%s", field, output)
+		}
+	}
 }
 
 type mockStateProvider struct {

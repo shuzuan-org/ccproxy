@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 // StateProvider supplies runtime state for periodic metrics snapshots.
@@ -133,7 +138,49 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 						)
 					}
 				}
+
+				// System resource metrics
+				logSystemMetrics(logger)
 			}
 		}
 	}()
+}
+
+// logSystemMetrics logs Go runtime and system resource metrics.
+func logSystemMetrics(logger *slog.Logger) {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	attrs := []any{
+		"goroutines", runtime.NumGoroutine(),
+		"heap_alloc_mb", fmt.Sprintf("%.1f", float64(memStats.HeapAlloc)/1024/1024),
+		"heap_sys_mb", fmt.Sprintf("%.1f", float64(memStats.HeapSys)/1024/1024),
+		"gc_cycles", memStats.NumGC,
+		"gc_pause_ms", fmt.Sprintf("%.2f", float64(memStats.PauseNs[(memStats.NumGC+255)%256])/1e6),
+	}
+
+	// System CPU (non-blocking, interval=0)
+	if cpuPercent, err := cpu.Percent(0, false); err == nil && len(cpuPercent) > 0 {
+		attrs = append(attrs, "cpu_percent", fmt.Sprintf("%.1f", cpuPercent[0]))
+	}
+
+	// System memory
+	if vmStat, err := mem.VirtualMemory(); err == nil {
+		attrs = append(attrs,
+			"mem_total_mb", fmt.Sprintf("%.0f", float64(vmStat.Total)/1024/1024),
+			"mem_used_mb", fmt.Sprintf("%.0f", float64(vmStat.Used)/1024/1024),
+			"mem_percent", fmt.Sprintf("%.1f", vmStat.UsedPercent),
+		)
+	}
+
+	// System load average
+	if loadAvg, err := load.Avg(); err == nil {
+		attrs = append(attrs,
+			"load_1", fmt.Sprintf("%.2f", loadAvg.Load1),
+			"load_5", fmt.Sprintf("%.2f", loadAvg.Load5),
+			"load_15", fmt.Sprintf("%.2f", loadAvg.Load15),
+		)
+	}
+
+	logger.Info("metrics system", attrs...)
 }

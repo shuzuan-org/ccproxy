@@ -215,7 +215,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 
 		// Request summary log and per-account metrics — error path.
-		summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result)
+		summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result, nil)
 		if result != nil {
 			recordAccountMetrics(result.AccountName, result.StatusCode, true)
 		}
@@ -233,14 +233,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"model", originalModel,
 		"elapsed", elapsed.Round(time.Millisecond),
 	)
-
-	// Request summary log — success path. Level varies by retry/failover count.
-	summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result)
-	if result.Retries > 0 || result.Failovers > 0 {
-		log.Info("request completed", summaryAttrs...)
-	} else {
-		log.Debug("request completed", summaryAttrs...)
-	}
 
 	// Per-account metrics recording.
 	recordAccountMetrics(result.AccountName, result.StatusCode, false)
@@ -278,6 +270,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	contentType := resp.Header.Get("Content-Type")
 	isSSE := strings.Contains(contentType, "text/event-stream")
 
+	var usage *UsageInfo
+
 	if isSSE {
 		// Step 7: Streaming response — forward SSE and extract usage.
 		copyHeaders(w.Header(), resp.Header)
@@ -287,8 +281,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		if _, err := ForwardSSE(r.Context(), resp.Body, w, originalModel); err != nil {
+		if u, err := ForwardSSE(r.Context(), resp.Body, w, originalModel); err != nil {
 			log.Error("SSE forwarding error", "error", err)
+		} else {
+			usage = u
 		}
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
@@ -311,6 +307,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
+	}
+
+	// Request summary log — success path, after SSE/JSON processing completes.
+	totalElapsed := time.Since(requestStart)
+	summaryAttrs := buildSummaryAttrs(originalModel, isStream, totalElapsed, result, usage)
+	if result.Retries > 0 || result.Failovers > 0 {
+		log.Info("request completed", summaryAttrs...)
+	} else {
+		log.Debug("request completed", summaryAttrs...)
 	}
 }
 
@@ -450,7 +455,7 @@ func copyHeaders(dst, src http.Header) {
 }
 
 // buildSummaryAttrs constructs the common structured log attributes for request summary.
-func buildSummaryAttrs(model string, isStream bool, elapsed time.Duration, result *loadbalancer.RetryResult) []any {
+func buildSummaryAttrs(model string, isStream bool, elapsed time.Duration, result *loadbalancer.RetryResult, usage *UsageInfo) []any {
 	attrs := []any{
 		"model", model,
 		"stream", isStream,
@@ -463,6 +468,14 @@ func buildSummaryAttrs(model string, isStream bool, elapsed time.Duration, resul
 			"retries", result.Retries,
 			"failovers", result.Failovers,
 			"accounts_tried", result.AccountsTried,
+		)
+	}
+	if usage != nil {
+		attrs = append(attrs,
+			"input_tokens", usage.InputTokens,
+			"output_tokens", usage.OutputTokens,
+			"cache_creation", usage.CacheCreationInputTokens,
+			"cache_read", usage.CacheReadInputTokens,
 		)
 	}
 	return attrs

@@ -242,6 +242,21 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 		}
 		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
 			b.lastUsed.Store(c.account.Name, time.Now())
+			logAttrs := []any{
+				"account", c.account.Name,
+				"score", c.score,
+				"candidates", 1,
+			}
+			if h := health[c.account.Name]; h != nil {
+				detail := h.ScoreDetail(c.loadRate)
+				logAttrs = append(logAttrs,
+					"err_rate", detail.ErrRate,
+					"latency_score", detail.LatencyScore,
+					"load_rate", detail.LoadRate,
+					"max_util", detail.MaxUtil,
+				)
+			}
+			observe.Logger(ctx).Debug("balancer: account selected", logAttrs...)
 			return &SelectResult{Account: c.account, RequestID: requestID, Release: release}, nil
 		}
 		return nil, ErrAllAccountsBusy

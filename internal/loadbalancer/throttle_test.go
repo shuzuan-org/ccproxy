@@ -14,6 +14,27 @@ func TestPoolThrottle_ShouldThrottle_NoRequests(t *testing.T) {
 	}
 }
 
+func TestPoolThrottle_ShouldThrottle_ColdWindow(t *testing.T) {
+	t.Parallel()
+	pt := NewPoolThrottle(10)
+
+	// 1 request, 0 accepts — should NOT throttle (below minThrottleSamples=3)
+	pt.RecordRequest()
+	for i := 0; i < 100; i++ {
+		if pt.ShouldThrottle() {
+			t.Error("should not throttle with only 1 request (below minThrottleSamples)")
+		}
+	}
+
+	// 2 requests, 0 accepts — still below threshold
+	pt.RecordRequest()
+	for i := 0; i < 100; i++ {
+		if pt.ShouldThrottle() {
+			t.Error("should not throttle with only 2 requests (below minThrottleSamples)")
+		}
+	}
+}
+
 func TestPoolThrottle_ShouldThrottle_AllAccepted(t *testing.T) {
 	t.Parallel()
 	pt := NewPoolThrottle(10)
