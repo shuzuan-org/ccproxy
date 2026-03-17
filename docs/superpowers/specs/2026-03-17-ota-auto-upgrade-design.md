@@ -123,7 +123,7 @@ The `Updater` exposes a `Status() UpdateStatus` method. The periodic log reporte
 ```
 ccproxy_{version}_linux_amd64.tar.gz
 ccproxy_{version}_linux_arm64.tar.gz
-ccproxy_{version}_checksums.txt
+checksums.txt
 ```
 
 ## Release Workflow
