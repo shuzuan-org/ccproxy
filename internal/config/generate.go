@@ -13,8 +13,8 @@ import (
 
 const (
 	adminPasswordLength = 32
-	apiKeyHexLength     = 32 // 32 hex chars = 16 bytes
-	apiKeyPrefix        = "sk-ccproxy-"
+	apiKeyHexLength     = 64 // 64 hex chars = 32 bytes
+	apiKeyPrefix        = "sk-"
 	passwordCharset     = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 
