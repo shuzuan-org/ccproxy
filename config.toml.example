@@ -7,6 +7,9 @@ base_url = "https://api.anthropic.com"
 request_timeout = 600
 max_concurrency = 5  # hard limit per account; effective value is dynamically adjusted by budget utilization
 # log_level = "info"    # debug, info, warn, error
+# auto_update = true          # enable background auto-upgrade (default: true)
+# update_check_interval = "1h" # check interval, min 5m, max 24h (default: 1h)
+# update_repo = "binn/ccproxy" # GitHub owner/repo for update source
 
 # API keys — leave this section empty or omit entirely to auto-generate on first start
 # [[api_keys]]

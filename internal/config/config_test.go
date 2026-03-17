@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,6 +411,58 @@ func TestRuntimeAccounts_Multiple(t *testing.T) {
 		if a.MaxConcurrency != 5 {
 			t.Errorf("%s: max_concurrency = %d, want 5", a.Name, a.MaxConcurrency)
 		}
+	}
+}
+
+func TestLoad_AutoUpdateDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	os.WriteFile(cfgPath, []byte("[server]\nadmin_password = \"test123\"\n"), 0o600)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.AutoUpdate == nil {
+		t.Fatal("AutoUpdate should not be nil after defaults applied")
+	}
+	if !*cfg.Server.AutoUpdate {
+		t.Error("AutoUpdate default should be true")
+	}
+	if cfg.Server.UpdateCheckInterval != "1h" {
+		t.Errorf("UpdateCheckInterval default = %q, want 1h", cfg.Server.UpdateCheckInterval)
+	}
+	if cfg.Server.UpdateRepo != "binn/ccproxy" {
+		t.Errorf("UpdateRepo default = %q, want binn/ccproxy", cfg.Server.UpdateRepo)
+	}
+}
+
+func TestLoad_UpdateCheckIntervalValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval string
+		wantErr  bool
+	}{
+		{"valid 1h", "1h", false},
+		{"valid 30m", "30m", false},
+		{"too short", "1m", true},
+		{"too long", "48h", true},
+		{"invalid", "notaduration", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.toml")
+			content := fmt.Sprintf("[server]\nadmin_password = \"test123\"\nupdate_check_interval = %q\n", tt.interval)
+			os.WriteFile(cfgPath, []byte(content), 0o600)
+			_, err := Load(cfgPath)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error for interval %q, got nil", tt.interval)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error for interval %q: %v", tt.interval, err)
+			}
+		})
 	}
 }
 

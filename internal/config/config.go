@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -17,14 +18,25 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host           string `toml:"host"`
-	Port           int    `toml:"port"`
-	AdminPassword  string `toml:"admin_password"`
-	RateLimit      int    `toml:"rate_limit"`       // max requests per minute per IP for admin routes
-	BaseURL        string `toml:"base_url"`          // upstream API base URL (default: https://api.anthropic.com)
-	RequestTimeout int    `toml:"request_timeout"`   // seconds (default: 600, aligned with Claude Code's X-Stainless-Timeout)
-	MaxConcurrency int    `toml:"max_concurrency"`   // per-account concurrency hard limit; actual value is dynamically adjusted by budget utilization (default: 5)
-	LogLevel string `toml:"log_level"` // debug, info, warn, error (default: info)
+	Host                string `toml:"host"`
+	Port                int    `toml:"port"`
+	AdminPassword       string `toml:"admin_password"`
+	RateLimit           int    `toml:"rate_limit"`            // max requests per minute per IP for admin routes
+	BaseURL             string `toml:"base_url"`              // upstream API base URL (default: https://api.anthropic.com)
+	RequestTimeout      int    `toml:"request_timeout"`       // seconds (default: 600, aligned with Claude Code's X-Stainless-Timeout)
+	MaxConcurrency      int    `toml:"max_concurrency"`       // per-account concurrency hard limit; actual value is dynamically adjusted by budget utilization (default: 5)
+	LogLevel            string `toml:"log_level"`             // debug, info, warn, error (default: info)
+	AutoUpdate          *bool  `toml:"auto_update"`           // nil = true (default); pointer to distinguish unset from false
+	UpdateCheckInterval string `toml:"update_check_interval"` // duration string, e.g. "1h", "30m"
+	UpdateRepo          string `toml:"update_repo"`           // GitHub owner/repo
+}
+
+// IsAutoUpdateEnabled returns true when auto-update is enabled (default: true when AutoUpdate is nil).
+func (s ServerConfig) IsAutoUpdateEnabled() bool {
+	if s.AutoUpdate == nil {
+		return true
+	}
+	return *s.AutoUpdate
 }
 
 type APIKeyConfig struct {
@@ -133,6 +145,16 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.LogLevel == "" {
 		cfg.Server.LogLevel = "info"
 	}
+	if cfg.Server.AutoUpdate == nil {
+		t := true
+		cfg.Server.AutoUpdate = &t
+	}
+	if cfg.Server.UpdateCheckInterval == "" {
+		cfg.Server.UpdateCheckInterval = "1h"
+	}
+	if cfg.Server.UpdateRepo == "" {
+		cfg.Server.UpdateRepo = "binn/ccproxy"
+	}
 }
 
 // Validate checks all business rules and returns an error describing
@@ -168,6 +190,17 @@ func (c *Config) Validate() error {
 	}
 	if enabledKeys == 0 {
 		errs = append(errs, errors.New("at least one enabled api_key is required"))
+	}
+
+	if c.Server.UpdateCheckInterval != "" {
+		d, parseErr := time.ParseDuration(c.Server.UpdateCheckInterval)
+		if parseErr != nil {
+			errs = append(errs, fmt.Errorf("invalid update_check_interval %q: %w", c.Server.UpdateCheckInterval, parseErr))
+		} else if d < 5*time.Minute {
+			errs = append(errs, fmt.Errorf("update_check_interval must be >= 5m, got %s", d))
+		} else if d > 24*time.Hour {
+			errs = append(errs, fmt.Errorf("update_check_interval must be <= 24h, got %s", d))
+		}
 	}
 
 	if len(errs) > 0 {
