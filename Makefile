@@ -1,4 +1,4 @@
-.PHONY: build build-linux run test clean docker-build docker-run docker-push
+.PHONY: build build-linux run test clean docker-build docker-run docker-push release
 
 VERSION ?= dev
 LDFLAGS := -ldflags "-X github.com/binn/ccproxy/internal/cli.Version=$(VERSION) -s -w"
@@ -29,3 +29,8 @@ docker-push:
 		--build-arg VERSION=$(VERSION) \
 		-t saloolooo/ccproxy:$(VERSION) -t saloolooo/ccproxy:latest \
 		--push .
+
+release:
+	@if [ -z "$(VERSION)" ] || [ "$(VERSION)" = "dev" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
+	git tag -a v$(VERSION) -m "Release v$(VERSION)"
+	git push origin v$(VERSION)
