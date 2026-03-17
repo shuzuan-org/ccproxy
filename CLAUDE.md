@@ -21,6 +21,7 @@ make clean          # 清理 bin/ 和 data/
 
 ```bash
 VERSION=1.0.0 make build
+make release VERSION=1.0.0  # 创建 git tag 并推送，触发 CI 发布
 ```
 
 运行单个包的测试：
@@ -37,7 +38,7 @@ internal/
   admin/            内嵌 HTML 仪表盘处理器和静态资源
   apierror/         共享 API 错误类型
   auth/             Bearer token 验证中间件（恒定时间比较）
-  cli/              Cobra 命令：root（启动）、version
+  cli/              Cobra 命令：root（启动）、version、upgrade
   config/           TOML 配置加载、校验、默认值、账户注册表
   disguise/         8 层 Claude CLI 伪装引擎
   fileutil/         文件 I/O 辅助工具（原子写入等）
@@ -50,6 +51,7 @@ internal/
   server/           HTTP 服务器设置（net/http mux、中间件组装）
   session/          会话亲和性与 TTL 管理
   tls/              TLS 指纹伪装
+  updater/          OTA 自动升级引擎（GitHub Releases + go-selfupdate）
 data/               运行时数据 — 不提交（.gitignore）
   accounts.json     动态账户注册表 (0600)
   oauth_tokens.json 加密的 OAuth 令牌 (0600)
@@ -92,6 +94,15 @@ config.toml.example 参考配置
 令牌按账户（非按提供者）存储在 `data/oauth_tokens.json`，权限 0600。加密密钥通过 Argon2 从 `hostname + username + machine-id` 派生——不存储任何口令。绝不记录或返回原始令牌值。
 
 管理仪表盘位于 `/admin/`，提供 OAuth 账户管理的 Web UI：添加账户、删除账户、登录（PKCE 流程 + 手动粘贴授权码）、刷新和登出。PKCE 会话存储在内存中，TTL 10 分钟。账户增删触发 `AccountRegistry.onChange`，动态更新负载均衡器和 OAuth 管理器。
+
+### 自动升级
+
+- `internal/updater/` 使用 `go-selfupdate` 检查 GitHub Releases 并自动替换二进制
+- 后台定期检查（默认 1 小时），发现新版本后下载、校验 SHA256、原子替换、发送 SIGTERM 触发重启
+- Docker 环境自动禁用（检测 `/.dockerenv`）
+- `dev` 版本跳过后台检查
+- CLI: `ccproxy upgrade [--check] [--force]`
+- Admin API: `GET /api/update/status`, `POST /api/update/check`, `POST /api/update/apply`
 
 ### SSE 流式传输
 
