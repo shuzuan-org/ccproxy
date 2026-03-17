@@ -42,6 +42,8 @@ type Updater struct {
 	lastCheck time.Time
 	checking  bool
 	updating  bool
+
+	applyMu sync.Mutex // serializes Apply calls
 }
 
 // New creates an Updater. Does not start background checking.
@@ -53,6 +55,11 @@ func New(cfg Config) *Updater {
 		isDev:    cfg.CurrentVersion == "dev",
 		isDocker: dockerErr == nil,
 	}
+}
+
+// IsDocker returns true if running inside a Docker container.
+func (u *Updater) IsDocker() bool {
+	return u.isDocker
 }
 
 // Status returns the current update status.
@@ -125,7 +132,11 @@ func (u *Updater) CheckNow(ctx context.Context) (string, error) {
 }
 
 // Apply checks for update and applies it if available. Returns (updated, newVersion, error).
+// Serialized via applyMu to prevent concurrent binary replacement.
 func (u *Updater) Apply(ctx context.Context, force bool) (bool, string, error) {
+	u.applyMu.Lock()
+	defer u.applyMu.Unlock()
+
 	u.mu.Lock()
 	u.updating = true
 	u.mu.Unlock()

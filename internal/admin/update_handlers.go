@@ -1,8 +1,8 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/binn/ccproxy/internal/updater"
 )
@@ -10,71 +10,75 @@ import (
 // HandleUpdateStatus returns the current update status.
 func (h *Handler) HandleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	if h.updater == nil {
-		json.NewEncoder(w).Encode(updater.UpdateStatus{})
+		writeJSON(w, updater.UpdateStatus{})
 		return
 	}
 
-	json.NewEncoder(w).Encode(h.updater.Status())
+	writeJSON(w, h.updater.Status())
 }
 
 // HandleUpdateCheck triggers an immediate version check.
 func (h *Handler) HandleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if h.updater == nil {
-		http.Error(w, "updater not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "updater not available")
 		return
 	}
 
 	latest, err := h.updater.CheckNow(r.Context())
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"latest": latest})
+	writeJSON(w, map[string]string{"latest": latest})
 }
 
 // HandleUpdateApply triggers an immediate upgrade.
 func (h *Handler) HandleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if h.updater == nil {
-		http.Error(w, "updater not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "updater not available")
+		return
+	}
+
+	if h.updater.IsDocker() {
+		writeError(w, http.StatusServiceUnavailable, "update not supported in Docker")
 		return
 	}
 
 	updated, newVer, err := h.updater.Apply(r.Context(), false)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"updated":     updated,
 		"new_version": newVer,
 	})
 
 	if updated {
-		go h.updater.Restart()
+		// Flush response before restart to ensure client receives it.
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			h.updater.Restart()
+		}()
 	}
 }

@@ -112,12 +112,11 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	slog.Info("usage fetcher started")
 
 	// Create auto-updater.
-	var upd *updater.Updater
 	checkInterval, _ := time.ParseDuration(cfg.Server.UpdateCheckInterval)
 	if checkInterval == 0 {
 		checkInterval = time.Hour
 	}
-	upd = updater.New(updater.Config{
+	upd := updater.New(updater.Config{
 		CurrentVersion: version,
 		Repo:           cfg.Server.UpdateRepo,
 		CheckInterval:  checkInterval,
@@ -126,10 +125,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	go upd.Start(ctx)
 
 	// Start periodic metrics logging with update status.
-	var updateProv observe.UpdateStatusProvider
-	if upd != nil {
-		updateProv = &updateAdapter{upd: upd}
-	}
+	updateProv := observe.UpdateStatusProvider(&updateAdapter{upd: upd})
 	observe.Global.StartPeriodicLog(ctx, 5*time.Minute, balancer, updateProv, nil)
 
 	// 6. Register onChange callback to propagate dynamic account changes.
