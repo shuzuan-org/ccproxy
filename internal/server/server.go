@@ -256,12 +256,9 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("panic recovered", "panic", rec)
-				// Only attempt to write 500 if headers haven't been sent yet.
-				if lrw, ok := w.(*loggingResponseWriter); ok && lrw.statusCode == http.StatusOK {
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				} else {
-					slog.Error("panic after headers written, client may receive corrupt response")
-				}
+					// http.Error is safe to call even if headers were already sent —
+				// net/http silently ignores the superfluous WriteHeader call.
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
