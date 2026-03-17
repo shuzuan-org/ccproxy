@@ -143,16 +143,163 @@ When multi-account is active, check:
 - `retries` and `failovers` fields — non-zero means upstream errors triggered retry logic
 - `switch` in `selected account` — non-zero means initial selection was overridden
 
-### 6. Latency Profile
+### 6. User Experience & Latency
+
+A request goes through three measurable phases: **TTFB (first byte wait)** → **SSE streaming** → **completion**. Analyze each layer separately to identify where latency originates.
+
+#### 6a. Latency Layering
+
+Three log sources provide different latency views:
+
+| Log | Field | Measures |
+|-----|-------|----------|
+| `upstream success` | `elapsed` (ns) | TTFB — time from proxy sending request to receiving first upstream byte (model thinking time + network) |
+| `request completed` | `elapsed` (ns) | End-to-end — TTFB + full SSE stream read + token extraction |
+| `http request` | `elapsed` (Go duration string) | User-facing — includes TLS, auth, routing, proxy, SSE streaming |
+
+**SSE streaming duration** = `request completed` elapsed - `upstream success` elapsed (for same `request_id`).
+
+**Proxy overhead** = `http request` elapsed - `request completed` elapsed. Typically < 500ms (middleware stack: auth, rate limit, disguise, routing). If consistently > 1s, investigate middleware bottleneck.
+
+Compute p50/p90/p95/p99/max for each layer. Note: `http request` elapsed uses Go duration strings (e.g., `7.132916625s`, `129.359µs`) — parse appropriately. Filter `/v1/messages` with status 200 for meaningful latency analysis.
+
+#### 6b. TTFB (First Byte Latency)
+
+This is the most important user-perceived metric — how long until the user starts seeing output.
+
+**Expected by model**:
+- Opus: p50 = 2-4s, p90 = 5-8s (includes thinking time)
+- Sonnet: p50 = 1-2s, p90 = 3-5s
+- Haiku: p50 < 1s, p90 = 1-2s
+
+If TTFB is significantly higher than expected, check:
+- TLS handshake time (from `tls: handshake success` logs)
+- Throttle queue wait time
+- Budget delay (UtilizationDelay when utilization > 50%)
+
+#### 6c. SSE Streaming Duration & Output Throughput
+
+Compute output throughput: `output_tokens / (request_completed_elapsed / 1e9)` = tokens/sec.
+
+**Filter**: Only include requests with `output_tokens > 10` and elapsed > 0.5s to avoid skewing from tool-use or empty responses.
+
+**Expected**: Opus p50 ~25-35 tok/s, Sonnet ~50-80 tok/s. Low throughput (< 5 tok/s) on individual requests may indicate extended thinking blocks (not a proxy issue).
+
+Long tail latency (p99, max) is almost always driven by large output volume, not proxy issues. Correlate: requests with max elapsed should also have max `output_tokens`. If high latency occurs with low output tokens, investigate upstream or proxy issues.
+
+#### 6d. Token Usage & Prompt Caching
+
+From `request completed` logs, extract per-request token fields:
+
+| Field | Meaning |
+|-------|---------|
+| `input_tokens` | Non-cached input tokens processed |
+| `output_tokens` | Generated output tokens |
+| `cache_creation` | Tokens written to prompt cache |
+| `cache_read` | Tokens read from prompt cache (cache hit) |
+
+**Derived metrics**:
+- **Cache hit rate**: requests with `cache_read > 0` / total requests
+- **Cache read ratio**: `cache_read / (input_tokens + cache_creation + cache_read)` — proportion of total input served from cache
+- **Output distribution**: p50/p90/p99/max of `output_tokens` — explains latency tail
+
+**Healthy caching**: cache hit rate > 90%, cache read ratio > 80%. High cache_read with low input_tokens means system prompts and conversation history are being cached effectively, reducing both latency and cost.
+
+**Token-latency correlation**: Large `output_tokens` (> 1500) directly causes high end-to-end latency. Always present the top 3-5 largest requests with their output tokens alongside elapsed time to demonstrate this correlation.
+
+#### 6e. Admin & Non-Messages Endpoints
+
+Extract latency for non-`/v1/messages` paths from `http request` logs:
+
+| Endpoint | Expected |
+|----------|----------|
+| `/api/accounts` | < 1ms (in-memory lookup) |
+| `/admin/` | < 10ms (static HTML serving) |
+| `/v1/messages/count_tokens` | 200-500ms (upstream API call) |
+
+Flag if admin endpoints exceed 50ms — may indicate resource contention.
+
+#### 6f. Latency Percentiles (Legacy)
 
 From `request completed` logs, extract `elapsed` (nanoseconds), `model`, `status`:
 
 | Metric | How |
 |--------|-----|
-| Percentiles | Sort elapsed, compute p50/p90/p99 |
+| Percentiles | Sort elapsed, compute p50/p90/p95/p99 |
 | By model | Group by model — opus > sonnet > haiku is expected |
-| Long tail | max > 10s warrants investigation (upstream cold start?) |
+| Long tail | Almost always caused by large output_tokens, not proxy issues — verify correlation |
 | Failed requests | Non-200 status with high elapsed = upstream timeout |
+
+### 7. System Resources
+
+Extract `metrics system` logs (emitted every 5 min alongside other metrics):
+
+| Field | Meaning |
+|-------|---------|
+| `cpu_percent` | Process CPU usage (%) |
+| `goroutines` | Active goroutine count |
+| `heap_alloc_mb` | Go heap currently allocated |
+| `heap_sys_mb` | Go heap reserved from OS |
+| `gc_cycles` | Cumulative GC cycle count |
+| `gc_pause_ms` | Last GC pause duration |
+| `mem_total_mb` | System/container total memory |
+| `mem_used_mb` | System/container used memory |
+| `mem_percent` | Memory usage percentage |
+| `load_1` / `load_5` / `load_15` | System load averages |
+
+#### 7a. CPU Analysis
+
+Extract min/max `cpu_percent` across all snapshots. Correlate peaks with `requests_per_min` from metrics summary.
+
+**Healthy**: < 10% for low-traffic. Spikes correlate with request bursts.
+
+Note: `GOMAXPROCS=1: CPU quota undefined` in startup logs indicates container environment. CPU metrics are container-scoped.
+
+#### 7b. Go Runtime Health
+
+| Metric | Healthy | Warning |
+|--------|---------|---------|
+| Goroutines | Stable baseline (10-15 idle), rises with active requests, returns to baseline | Monotonically increasing = goroutine leak |
+| Heap alloc | Low (1-5 MB typical), fluctuates with request load | Monotonically increasing = memory leak |
+| Heap sys | Stable after warmup (~80 MB is normal Go runtime reservation) | Continuous growth = fragmentation |
+| GC pause | < 5 ms | > 10 ms may cause SSE stream stuttering |
+| GC cycles | Proportional to allocation rate | Excessive rate with low alloc = GC thrashing |
+
+**Goroutine leak detection**: Compare goroutine count at start vs end of log. Idle count should be similar. Each active request adds ~2-3 goroutines (handler + SSE reader). If idle count drifts upward, investigate unclosed connections.
+
+**Heap analysis**: `heap_alloc` is live objects; `heap_sys` is OS reservation. A large gap (e.g., alloc=2MB, sys=80MB) is normal — Go retains memory for future allocations. Only flag if `heap_sys` grows continuously.
+
+#### 7c. Memory: Understanding the Metrics
+
+**CRITICAL**: `mem_total_mb` / `mem_used_mb` / `mem_percent` from gopsutil reflect the **host or container-level** view depending on cgroup configuration:
+
+- In cgroup-limited containers: reads cgroup memory limit and usage
+- In containers WITHOUT cgroup memory limit: reads **host** `/proc/meminfo` — values represent the entire machine, not the container
+
+**How to tell which**: If `mem_total_mb` matches the VPS total RAM (e.g., 961 MB on a 1 GB VPS), it's reading the host. If it matches a specific Docker `--memory` limit, it's cgroup-scoped.
+
+**gopsutil `mem.Used` inflates real usage** — it includes:
+- Process RSS (actual process memory)
+- Page cache (file system cache, reclaimable by kernel)
+- Slab cache (partially reclaimable)
+
+To understand true memory usage, cross-reference with:
+1. `docker stats --no-stream` — cgroup actual memory, **most accurate for container usage** (excludes shared page cache)
+2. `ps aux --sort=-%mem` — per-process RSS (includes shared library double-counting across processes)
+3. `/proc/meminfo` — full breakdown: `AnonPages` (true process memory), `Cached+Buffers` (reclaimable), `MemAvailable` (actual headroom)
+
+**Key relationships**:
+- `docker stats` MEM < sum of `ps` RSS — because RSS double-counts shared libraries (libc, libssl, etc.)
+- `gopsutil mem_used` >> `docker stats` MEM — because gopsutil includes page cache and kernel memory
+- `MemAvailable` is the authoritative "how much memory is actually free" metric
+
+**Memory trend analysis**: A downward trend in `mem_used_mb` over time typically reflects page cache eviction, not memory being freed by processes. An upward trend may be cache warming, not a leak. Always check `heap_alloc_mb` for Go-specific memory trends.
+
+#### 7d. System Load
+
+`load_1/5/15` on a 1 vCPU machine: values > 1.0 mean CPU saturation. For ccproxy's typical workload (I/O-bound proxy), load should stay well under 0.5.
+
+Peak `load_1` > 0.5 with low `cpu_percent` suggests I/O wait (check `%iowait` via `mpstat`).
 
 ## Report Template
 
@@ -161,8 +308,9 @@ From `request completed` logs, extract `elapsed` (nanoseconds), `model`, `status
 3. **Throttle Assessment** — cold-window misfires count, genuine throttle events, queue health
 4. **Budget State** — usage trajectory, state transitions, precision check
 5. **Multi-Account Balance** — distribution, failover events (or note "single account — untested")
-6. **Latency** — percentiles by model, outliers
-7. **Recommendations** — prioritized (P0/P1/P2/P3) with specific action items
+6. **User Experience** — TTFB, streaming throughput, token usage, caching, latency layering
+7. **System Resources** — CPU, memory, Go runtime health
+8. **Recommendations** — prioritized (P0/P1/P2/P3) with specific action items
 
 ## Key Principles
 
@@ -175,3 +323,17 @@ From `request completed` logs, extract `elapsed` (nanoseconds), `model`, `status
 - Usage API integer-to-decimal mapping has consistent ±0.01 rounding delta (e.g., API `9` → header `0.08`), this is normal — only flag if delta > 0.02
 - Long usage API fetch gaps (e.g., 100m+) during active traffic are expected — `HasRecentData()` is satisfied by response headers. Only diagnose as a problem if error logs (`usage: token error`, `usage: fetch error`, `usage: API error`) appear during the gap
 - To diagnose fetch gaps: check for `budget: headers updated` during the gap period — if present, the gap is caused by header suppression (benign); if absent, investigate token/network errors
+- **Memory**: gopsutil `mem_used` is NOT process memory — it includes page cache and kernel caches. Use `docker stats` for true container memory, `AnonPages` from `/proc/meminfo` for true process memory across the host. Never report gopsutil mem_used as "process memory usage"
+- **RSS vs docker stats**: `ps` RSS double-counts shared libraries across processes. `docker stats` MEM is the accurate container-level figure. Example: Caddy 48MB + ccproxy 17MB RSS = 65MB, but docker stats shows 22MB — the delta is shared library pages counted by both processes
+- **Go heap_sys vs heap_alloc**: `heap_sys` (~80MB) is Go runtime's OS reservation, not actual usage. `heap_alloc` (1-5MB typical) is live objects. Do NOT report heap_sys as memory consumption
+- **Goroutine baseline**: 12-13 idle goroutines is normal for ccproxy (timers, health checks, budget fetcher, etc.). Only flag growth if idle count drifts upward over hours
+- **GC pause**: < 2ms is excellent for SSE streaming proxy. Only flag if consistently > 5ms
+- **Container vs host memory**: When `mem_total_mb` equals VPS total RAM, gopsutil is reading host meminfo, not cgroup — note this in the report to avoid confusion
+- **Latency layering**: Always decompose into TTFB + streaming + proxy overhead. Report each layer separately — do NOT just report a single "average latency" number. The user cares about "when do I start seeing output" (TTFB) and "how fast does output stream" (tok/s) separately
+- **TTFB is the key UX metric**: p50 TTFB for Opus ~3s, Sonnet ~1.5s, Haiku ~0.5s. Higher than expected → check TLS handshake, throttle queue, budget delay. Normal TTFB with high total latency → large output volume, not a proxy issue
+- **Tail latency attribution**: p99/max latency is almost always driven by large `output_tokens` (> 1500). Always correlate the slowest requests with their output token count before attributing latency to proxy issues
+- **Output throughput**: Opus ~25-35 tok/s, Sonnet ~50-80 tok/s at p50. Filter `output_tokens > 10 && elapsed > 0.5s` to avoid skewing. Extremely low tok/s (< 5) on individual requests typically means extended thinking, not degradation
+- **Proxy overhead**: Difference between `http request` elapsed and `request completed` elapsed. Should be < 500ms. This includes auth, rate limit, disguise, routing middleware. If > 1s, investigate middleware stack
+- **Prompt caching**: Cache hit rate > 90% and cache read ratio > 80% is healthy. High `cache_read` with low `input_tokens` means the system is working as intended — system prompts and conversation context are cached
+- **Token-latency correlation**: Present top 3-5 largest output requests alongside their elapsed time to demonstrate that tail latency = large output, not proxy degradation
+- **Admin endpoint latency**: `/api/accounts` should be < 1ms, `/admin/` < 10ms. These are in-memory operations — flag if > 50ms
