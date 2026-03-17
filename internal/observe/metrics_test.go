@@ -131,7 +131,7 @@ func TestMetrics_StartPeriodicLog(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Start with very short interval
-	m.StartPeriodicLog(ctx, 10*time.Millisecond, nil, nil)
+	m.StartPeriodicLog(ctx, 10*time.Millisecond, nil, nil, nil)
 
 	// Let it tick a couple times
 	time.Sleep(50 * time.Millisecond)
@@ -182,7 +182,7 @@ func TestStartPeriodicLogWithState(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.StartPeriodicLog(ctx, 50*time.Millisecond, provider, logger)
+	m.StartPeriodicLog(ctx, 50*time.Millisecond, provider, nil, logger)
 	time.Sleep(80 * time.Millisecond)
 	cancel()
 	time.Sleep(20 * time.Millisecond)

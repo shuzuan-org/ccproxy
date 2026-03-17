@@ -19,6 +19,18 @@ type StateProvider interface {
 	AccountStates() map[string]AccountState
 }
 
+// UpdateStatusProvider supplies update state for periodic logging.
+type UpdateStatusProvider interface {
+	Status() UpdateStatus
+}
+
+// UpdateStatus represents the current update state for logging.
+type UpdateStatus struct {
+	CurrentVersion string
+	LatestVersion  string
+	LastCheck      time.Time
+}
+
 // AccountState represents the runtime state of a single account.
 type AccountState struct {
 	Health         string
@@ -84,7 +96,7 @@ func (m *Metrics) Snapshot() map[string]int64 {
 // StartPeriodicLog starts a goroutine that logs a metrics snapshot every interval.
 // If state is non-nil, per-account state is also logged. If logger is nil, slog.Default() is used.
 // It stops when ctx is cancelled.
-func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, state StateProvider, logger *slog.Logger) {
+func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, state StateProvider, updateProv UpdateStatusProvider, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -141,6 +153,20 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 
 				// System resource metrics
 				logSystemMetrics(logger)
+
+				if updateProv != nil {
+					us := updateProv.Status()
+					attrs := []any{
+						"current_version", us.CurrentVersion,
+					}
+					if us.LatestVersion != "" {
+						attrs = append(attrs, "latest_version", us.LatestVersion)
+					}
+					if !us.LastCheck.IsZero() {
+						attrs = append(attrs, "last_check", us.LastCheck.Format(time.RFC3339))
+					}
+					logger.Info("update status", attrs...)
+				}
 			}
 		}
 	}()

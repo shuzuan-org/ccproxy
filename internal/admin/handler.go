@@ -13,6 +13,7 @@ import (
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
+	"github.com/binn/ccproxy/internal/updater"
 )
 
 //go:embed static
@@ -25,16 +26,18 @@ type Handler struct {
 	sessions *oauth.SessionStore
 	cfg      *config.Config
 	registry *config.AccountRegistry
+	updater  *updater.Updater
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.AccountRegistry) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.AccountRegistry, upd *updater.Updater) *Handler {
 	return &Handler{
 		balancer: balancer,
 		oauthMgr: oauthMgr,
 		sessions: sessions,
 		cfg:      cfg,
 		registry: registry,
+		updater:  upd,
 	}
 }
 

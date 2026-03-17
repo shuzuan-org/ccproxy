@@ -42,7 +42,7 @@ var rootCmd = &cobra.Command{
 			"api_keys", len(cfg.APIKeys),
 		)
 
-		srv, err := server.New(cfg)
+		srv, err := server.New(cfg, Version)
 		if err != nil {
 			return err
 		}

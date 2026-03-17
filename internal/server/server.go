@@ -17,6 +17,7 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 	"github.com/binn/ccproxy/internal/proxy"
 	"github.com/binn/ccproxy/internal/ratelimit"
+	"github.com/binn/ccproxy/internal/updater"
 )
 
 // Server holds the HTTP server and its dependencies.
@@ -25,11 +26,12 @@ type Server struct {
 	httpServer *http.Server
 	oauthMgr   *oauth.Manager
 	balancer   *loadbalancer.Balancer
+	updater    *updater.Updater
 	cancel     context.CancelFunc
 }
 
 // New constructs a fully wired Server from the given config.
-func New(cfg *config.Config) (*Server, error) {
+func New(cfg *config.Config, version string) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// 1. Create account registry from persistent storage.
@@ -109,8 +111,26 @@ func New(cfg *config.Config) (*Server, error) {
 	)
 	slog.Info("usage fetcher started")
 
-	// Start periodic metrics logging.
-	observe.Global.StartPeriodicLog(ctx, 5*time.Minute, balancer, nil)
+	// Create auto-updater.
+	var upd *updater.Updater
+	checkInterval, _ := time.ParseDuration(cfg.Server.UpdateCheckInterval)
+	if checkInterval == 0 {
+		checkInterval = time.Hour
+	}
+	upd = updater.New(updater.Config{
+		CurrentVersion: version,
+		Repo:           cfg.Server.UpdateRepo,
+		CheckInterval:  checkInterval,
+		AutoUpdate:     cfg.Server.IsAutoUpdateEnabled(),
+	})
+	go upd.Start(ctx)
+
+	// Start periodic metrics logging with update status.
+	var updateProv observe.UpdateStatusProvider
+	if upd != nil {
+		updateProv = &updateAdapter{upd: upd}
+	}
+	observe.Global.StartPeriodicLog(ctx, 5*time.Minute, balancer, updateProv, nil)
 
 	// 6. Register onChange callback to propagate dynamic account changes.
 	registry.SetOnChange(func(accounts []config.Account) {
@@ -124,7 +144,7 @@ func New(cfg *config.Config) (*Server, error) {
 	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
 	// 8. Create admin handler.
-	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry)
+	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry, upd)
 
 	// 9. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
@@ -148,6 +168,9 @@ func New(cfg *config.Config) (*Server, error) {
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))
 	mux.Handle("/api/oauth/refresh", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthRefresh))))
 	mux.Handle("/api/oauth/logout", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLogout))))
+	mux.Handle("/api/update/status", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateStatus))))
+	mux.Handle("/api/update/check", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateCheck))))
+	mux.Handle("/api/update/apply", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateApply))))
 	mux.Handle("/admin/", adminRL(adminAuth(http.StripPrefix("/admin", adminHandler.HandleDashboard()))))
 
 	// Health check — no auth required.
@@ -173,6 +196,7 @@ func New(cfg *config.Config) (*Server, error) {
 		httpServer: httpServer,
 		oauthMgr:   oauthMgr,
 		balancer:   balancer,
+		updater:    upd,
 		cancel:     cancel,
 	}, nil
 }
@@ -297,4 +321,18 @@ func (a *oauthTokenAdapter) GetValidToken(ctx context.Context, accountName strin
 		return "", err
 	}
 	return token.AccessToken, nil
+}
+
+// updateAdapter adapts *updater.Updater to observe.UpdateStatusProvider.
+type updateAdapter struct {
+	upd *updater.Updater
+}
+
+func (a *updateAdapter) Status() observe.UpdateStatus {
+	s := a.upd.Status()
+	return observe.UpdateStatus{
+		CurrentVersion: s.CurrentVersion,
+		LatestVersion:  s.LatestVersion,
+		LastCheck:      s.LastCheck,
+	}
 }
