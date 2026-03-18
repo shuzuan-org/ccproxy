@@ -282,13 +282,11 @@ UNIT
 
     run systemctl daemon-reload
     run systemctl enable ccproxy
+    run systemctl start ccproxy
 
-    info "systemd service installed and enabled."
+    info "systemd service installed, enabled, and started."
 
     if [ -z "$DOMAIN" ]; then
-        info ""
-        info "Start the service with:"
-        info "  systemctl start ccproxy"
         info ""
         info "View auto-generated credentials in the log:"
         info "  journalctl -u ccproxy -n 50"
