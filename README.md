@@ -39,14 +39,24 @@ docker run -d --name ccproxy --hostname ccproxy \
 
 ### Linux 一键安装
 
+完整 HTTPS 部署（自动安装 Caddy + 配置 Let's Encrypt 证书）：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
+  sudo sh -s -- --domain proxy.example.com
 ```
 
-带 systemd 服务安装（需要 root）：
+仅安装 ccproxy + systemd 服务（用户自行配置 HTTPS）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh -s -- --with-systemd
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
+  sudo sh -s -- --with-systemd
+```
+
+仅安装二进制：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
 ```
 
 ### 从源码构建
@@ -64,7 +74,7 @@ make build
 
 **添加账户：** 打开 `http://<host>:<port>/admin/`，使用"Add Claude"按钮。在仪表盘中通过 OAuth 登录流程认证每个账户。
 
-代理默认监听 `http://127.0.0.1:3000`（`config.toml.example` 中已设为 `0.0.0.0`）。将你的 Claude 兼容客户端指向此地址，使用生成的 API 密钥作为 Bearer token。
+代理默认监听 `http://127.0.0.1:3000`。如需对外暴露，将 `config.toml` 中的 `host` 改为 `"0.0.0.0"`（推荐通过反向代理如 Caddy/Nginx 转发）。将你的 Claude 兼容客户端指向此地址，使用生成的 API 密钥作为 Bearer token。
 
 ## 配置参考
 
@@ -106,7 +116,7 @@ make build
 
 ```toml
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 3000
 base_url = "https://api.anthropic.com"
 request_timeout = 600

@@ -94,7 +94,7 @@ func Load(path string) (*Config, error) {
 
 // defaultConfigContent is the template written when no config file exists.
 const defaultConfigContent = `[server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 3000
 `
 

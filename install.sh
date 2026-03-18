@@ -4,12 +4,14 @@ set -e
 # ccproxy install script
 # Usage: curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
 #   or:  curl -fsSL ... | sh -s -- --with-systemd --version 1.0.0
+#   or:  curl -fsSL ... | sudo sh -s -- --domain proxy.example.com
 
 REPO="shuzuan-org/ccproxy"
 INSTALL_DIR="/usr/local/bin"
 WITH_SYSTEMD=false
 DRY_RUN=false
 VERSION=""
+DOMAIN=""
 
 # ---- helpers ----
 
@@ -57,6 +59,11 @@ while [ $# -gt 0 ]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --domain)
+            DOMAIN="$2"
+            WITH_SYSTEMD=true
+            shift 2
+            ;;
         --with-systemd)
             WITH_SYSTEMD=true
             shift
@@ -72,6 +79,7 @@ ccproxy installer
 Usage: install.sh [OPTIONS]
 
 Options:
+  --domain DOMAIN       Full HTTPS deploy with Caddy (implies --with-systemd)
   --version VERSION     Install specific version (default: latest)
   --install-dir DIR     Binary install path (default: /usr/local/bin)
   --with-systemd        Create systemd service, user, and directories
@@ -184,6 +192,50 @@ run install -m 0755 "${TMPDIR}/ccproxy" "${INSTALL_DIR}/ccproxy"
 
 info "Installed: ${INSTALL_DIR}/ccproxy"
 
+# ---- caddy helpers ----
+
+install_caddy() {
+    if command -v caddy > /dev/null 2>&1; then
+        info "Caddy already installed, skipping."
+        return
+    fi
+
+    info "Installing Caddy via package manager..."
+    if command -v apt-get > /dev/null 2>&1; then
+        run apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | \
+            gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | \
+            tee /etc/apt/sources.list.d/caddy-stable.list
+        run apt-get update
+        run apt-get install -y caddy
+    elif command -v dnf > /dev/null 2>&1; then
+        run dnf install -y 'dnf-command(copr)'
+        run dnf copr enable -y @caddy/caddy
+        run dnf install -y caddy
+    else
+        err "unsupported package manager for Caddy (need apt-get or dnf)"
+    fi
+}
+
+setup_caddy() {
+    info "Configuring Caddy for ${DOMAIN}..."
+
+    # Caddy package creates /etc/caddy/ during install
+    CADDY_TMP=$(mktemp)
+    cat > "$CADDY_TMP" <<CADDYEOF
+${DOMAIN} {
+	reverse_proxy localhost:3000
+}
+CADDYEOF
+    run install -m 0644 "$CADDY_TMP" /etc/caddy/Caddyfile
+    rm -f "$CADDY_TMP"
+
+    run systemctl enable caddy
+    run systemctl restart caddy
+    info "Caddy configured: https://${DOMAIN} -> localhost:3000"
+}
+
 # ---- systemd setup (optional) ----
 
 if [ "$WITH_SYSTEMD" = true ]; then
@@ -230,11 +282,30 @@ UNIT
     run systemctl enable ccproxy
 
     info "systemd service installed and enabled."
+
+    if [ -z "$DOMAIN" ]; then
+        info ""
+        info "Start the service with:"
+        info "  systemctl start ccproxy"
+        info ""
+        info "View auto-generated credentials in the log:"
+        info "  journalctl -u ccproxy -n 50"
+    fi
+fi
+
+# ---- caddy setup (optional, requires --domain) ----
+
+if [ -n "$DOMAIN" ]; then
+    install_caddy
+    setup_caddy
+    run systemctl start ccproxy
     info ""
-    info "Start the service with:"
-    info "  systemctl start ccproxy"
+    info "ccproxy ${VERSION_NUM} deployed with HTTPS!"
+    info "  URL: https://${DOMAIN}"
+    info "  Caddy auto-obtains TLS cert from Let's Encrypt."
+    info "  Ensure DNS for ${DOMAIN} points to this server."
     info ""
-    info "View auto-generated credentials in the log:"
+    info "View auto-generated credentials:"
     info "  journalctl -u ccproxy -n 50"
 fi
 

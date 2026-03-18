@@ -58,7 +58,7 @@ func TestInsertAdminPassword_ReplaceEmpty(t *testing.T) {
 	t.Parallel()
 
 	content := `[server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 admin_password = ""
 port = 3000
 `
@@ -76,7 +76,7 @@ func TestInsertAdminPassword_AppendAfterServer(t *testing.T) {
 	t.Parallel()
 
 	content := `[server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 3000
 `
 	result := insertAdminPassword(content, "newpass123")
