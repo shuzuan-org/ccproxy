@@ -19,6 +19,7 @@ type Config struct {
 	Repo           string        // "owner/repo"
 	CheckInterval  time.Duration
 	AutoUpdate     bool
+	APIURL         string // GitHub Enterprise API base URL (empty = github.com)
 }
 
 // UpdateStatus represents the current update state.
@@ -228,7 +229,9 @@ func (u *Updater) findLatest(ctx context.Context) (*selfupdate.Release, *selfupd
 		u.mu.Unlock()
 	}()
 
-	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
+	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{
+		EnterpriseBaseURL: u.cfg.APIURL,
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create github source: %w", err)
 	}

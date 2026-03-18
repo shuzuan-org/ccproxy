@@ -29,6 +29,7 @@ type ServerConfig struct {
 	AutoUpdate          *bool  `toml:"auto_update"`           // nil = true (default); pointer to distinguish unset from false
 	UpdateCheckInterval string `toml:"update_check_interval"` // duration string, e.g. "1h", "30m"
 	UpdateRepo          string `toml:"update_repo"`           // GitHub owner/repo
+	UpdateAPIURL        string `toml:"update_api_url"`        // GitHub Enterprise API URL (default: github.com)
 }
 
 // IsAutoUpdateEnabled returns true when auto-update is enabled (default: true when AutoUpdate is nil).

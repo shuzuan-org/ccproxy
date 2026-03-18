@@ -36,6 +36,7 @@ var upgradeCmd = &cobra.Command{
 			Repo:           repo,
 			CheckInterval:  time.Hour, // unused for CLI
 			AutoUpdate:     false,     // unused for CLI
+			APIURL:         cfg.Server.UpdateAPIURL,
 		})
 
 		if Version == "dev" {

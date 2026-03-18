@@ -1,4 +1,4 @@
-.PHONY: build build-linux run test clean docker-build docker-run docker-push release
+.PHONY: build build-linux run test test-install test-upgrade clean docker-build docker-run docker-push release
 
 VERSION ?= dev
 LDFLAGS := -ldflags "-X github.com/binn/ccproxy/internal/cli.Version=$(VERSION) -s -w"
@@ -29,6 +29,12 @@ docker-push:
 		--build-arg VERSION=$(VERSION) \
 		-t saloolooo/ccproxy:$(VERSION) -t saloolooo/ccproxy:latest \
 		--push .
+
+test-install:
+	bash tests/install_integration_test.sh
+
+test-upgrade:
+	bash tests/upgrade_integration_test.sh
 
 release:
 	@if [ -z "$(VERSION)" ] || [ "$(VERSION)" = "dev" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
