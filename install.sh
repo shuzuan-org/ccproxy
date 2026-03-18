@@ -251,6 +251,8 @@ if [ "$WITH_SYSTEMD" = true ]; then
 
     # Create directories.
     run mkdir -p /etc/ccproxy
+    run chown ccproxy:ccproxy /etc/ccproxy
+    run chmod 0700 /etc/ccproxy
     run mkdir -p /var/lib/ccproxy
     run chown ccproxy:ccproxy /var/lib/ccproxy
     run chmod 0700 /var/lib/ccproxy
