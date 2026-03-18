@@ -153,7 +153,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Server.UpdateCheckInterval = "1h"
 	}
 	if cfg.Server.UpdateRepo == "" {
-		cfg.Server.UpdateRepo = "binn/ccproxy"
+		cfg.Server.UpdateRepo = "shuzuan-org/ccproxy"
 	}
 }
 

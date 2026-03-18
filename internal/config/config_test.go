@@ -432,8 +432,8 @@ func TestLoad_AutoUpdateDefaults(t *testing.T) {
 	if cfg.Server.UpdateCheckInterval != "1h" {
 		t.Errorf("UpdateCheckInterval default = %q, want 1h", cfg.Server.UpdateCheckInterval)
 	}
-	if cfg.Server.UpdateRepo != "binn/ccproxy" {
-		t.Errorf("UpdateRepo default = %q, want binn/ccproxy", cfg.Server.UpdateRepo)
+	if cfg.Server.UpdateRepo != "shuzuan-org/ccproxy" {
+		t.Errorf("UpdateRepo default = %q, want shuzuan-org/ccproxy", cfg.Server.UpdateRepo)
 	}
 }
 

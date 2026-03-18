@@ -27,7 +27,7 @@ checksum:
 
 release:
   github:
-    owner: binn
+    owner: shuzuan-org
     name: ccproxy
   draft: false
   prerelease: auto

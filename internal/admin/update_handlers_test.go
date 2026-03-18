@@ -15,7 +15,7 @@ import (
 func TestHandleUpdateStatus(t *testing.T) {
 	u := updater.New(updater.Config{
 		CurrentVersion: "1.0.0",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})

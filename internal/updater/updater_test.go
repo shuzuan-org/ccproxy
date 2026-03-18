@@ -11,7 +11,7 @@ import (
 func TestNew(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "1.0.0",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})
@@ -27,7 +27,7 @@ func TestNew(t *testing.T) {
 func TestNew_DevVersion(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "dev",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})
@@ -39,7 +39,7 @@ func TestNew_DevVersion(t *testing.T) {
 func TestUpdater_StatusFields(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "1.0.0",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     false,
 	})
@@ -53,7 +53,7 @@ func TestUpdater_StatusFields(t *testing.T) {
 func TestStart_DevVersion_ReturnsImmediately(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "dev",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})
@@ -78,7 +78,7 @@ func TestStart_DevVersion_ReturnsImmediately(t *testing.T) {
 func TestStart_DisabledByConfig_ReturnsImmediately(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "1.0.0",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     false,
 	})
@@ -103,7 +103,7 @@ func TestStart_DisabledByConfig_ReturnsImmediately(t *testing.T) {
 func TestStart_RespectsContextCancellation(t *testing.T) {
 	u := New(Config{
 		CurrentVersion: "1.0.0",
-		Repo:           "binn/ccproxy",
+		Repo:           "shuzuan-org/ccproxy",
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})

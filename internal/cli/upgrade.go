@@ -26,12 +26,12 @@ var upgradeCmd = &cobra.Command{
 		if err != nil {
 			slog.Warn("config load failed, using default repo", "error", err)
 			cfg = &config.Config{}
-			cfg.Server.UpdateRepo = "binn/ccproxy"
+			cfg.Server.UpdateRepo = "shuzuan-org/ccproxy"
 		}
 
 		repo := cfg.Server.UpdateRepo
 		if repo == "" {
-			repo = "binn/ccproxy"
+			repo = "shuzuan-org/ccproxy"
 		}
 
 		u := updater.New(updater.Config{
