@@ -12,14 +12,14 @@ mkdir -p /etc/caddy
 if [ -n "$DOMAIN" ]; then
   cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
-  reverse_proxy localhost:3000
+	reverse_proxy localhost:3000
 }
 EOF
   echo "Caddy: HTTPS mode for $DOMAIN"
 else
   cat > /etc/caddy/Caddyfile <<EOF
 :80 {
-  reverse_proxy localhost:3000
+	reverse_proxy localhost:3000
 }
 EOF
   echo "Caddy: HTTP-only mode (no DOMAIN set)"
