@@ -32,9 +32,9 @@ Options:
 ### Flow
 
 1. Parse arguments
-2. Check: must be Linux, must be root
+2. Check: must be Linux. Root is required if `--install-dir` needs elevated privileges (default `/usr/local/bin`) or `--with-systemd` is used
 3. Detect architecture: `uname -m` → `amd64` (x86_64) or `arm64` (aarch64)
-4. Resolve version: if `--version` not set, query GitHub API for latest release tag
+4. Resolve version: if `--version` not set, query GitHub API for latest release tag (e.g. `v1.2.3`). Strip the `v` prefix to get the version number (`1.2.3`) used in asset filenames, since GoReleaser's `{{ .Version }}` produces names without the `v` prefix
 5. Download `ccproxy_{version}_linux_{arch}.tar.gz` + `checksums.txt` to temp directory
 6. Verify SHA256 checksum
 7. Extract archive, install binary to `--install-dir` with mode 0755
@@ -61,7 +61,7 @@ Wants=network-online.target
 Type=simple
 User=ccproxy
 Group=ccproxy
-ExecStart=/usr/local/bin/ccproxy -c /etc/ccproxy/config.toml
+ExecStart=INSTALL_DIR/ccproxy -c /etc/ccproxy/config.toml  # INSTALL_DIR defaults to /usr/local/bin
 WorkingDirectory=/var/lib/ccproxy
 Restart=always
 RestartSec=5
@@ -79,7 +79,8 @@ WantedBy=multi-user.target
 - **Shell:** Pure POSIX sh (no bashism). Works on Ubuntu, CentOS, Debian, Alpine.
 - **Download:** `curl` preferred, fallback to `wget`
 - **Checksum:** `sha256sum` preferred, fallback to `shasum -a 256`
-- **Root required:** Installing to `/usr/local/bin` and systemd operations need root
+- **Root:** Required when `--install-dir` needs elevated privileges or `--with-systemd` is used. Non-root install to user-writable directories (e.g. `$HOME/bin`) is supported without `--with-systemd`
+- **systemd check:** `--with-systemd` verifies that `systemctl` exists before proceeding; exits with error if not found (covers Alpine/OpenRC environments)
 
 ### Error Handling
 
@@ -98,8 +99,11 @@ All references to `binn/ccproxy` as the GitHub repository (not the Go module pat
 | File | Field | Old | New |
 |------|-------|-----|-----|
 | `internal/config/config.go` | `UpdateRepo` default in `applyDefaults()` | `binn/ccproxy` | `shuzuan-org/ccproxy` |
-| `internal/cli/upgrade.go` | fallback repo value | `binn/ccproxy` | `shuzuan-org/ccproxy` |
+| `internal/cli/upgrade.go` | two fallback repo values | `binn/ccproxy` | `shuzuan-org/ccproxy` |
 | `.goreleaser.yml` | `release.github.owner` | `binn` | `shuzuan-org` |
 | `config.toml.example` | comment for `update_repo` | `binn/ccproxy` | `shuzuan-org/ccproxy` |
+| `internal/config/config_test.go` | test assertion for default repo | `binn/ccproxy` | `shuzuan-org/ccproxy` |
+| `internal/updater/updater_test.go` | test `Repo` field values | `binn/ccproxy` | `shuzuan-org/ccproxy` |
+| `internal/admin/update_handlers_test.go` | test `Repo` field value | `binn/ccproxy` | `shuzuan-org/ccproxy` |
 
 **Note:** The Go module path `github.com/binn/ccproxy` is NOT changed — that is a separate concern (Go module path ≠ GitHub hosting location).
