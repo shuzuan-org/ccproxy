@@ -30,9 +30,6 @@ var upgradeCmd = &cobra.Command{
 		}
 
 		repo := cfg.Server.UpdateRepo
-		if repo == "" {
-			repo = "shuzuan-org/ccproxy"
-		}
 
 		u := updater.New(updater.Config{
 			CurrentVersion: Version,
@@ -58,15 +55,17 @@ var upgradeCmd = &cobra.Command{
 
 		fmt.Printf("Latest version:  %s\n", latest)
 
-		if latest == Version && !force {
-			fmt.Println("Already up to date.")
+		if checkOnly {
+			if latest == Version {
+				fmt.Println("Already up to date.")
+			} else {
+				fmt.Printf("Update available: %s → %s\n", Version, latest)
+			}
 			return nil
 		}
 
-		if checkOnly {
-			if latest != Version {
-				fmt.Printf("Update available: %s → %s\n", Version, latest)
-			}
+		if latest == Version && !force {
+			fmt.Println("Already up to date.")
 			return nil
 		}
 

@@ -37,6 +37,18 @@ docker run -d --name ccproxy --hostname ccproxy \
 
 容器内置 Caddy 反向代理，自动处理 TLS 证书。配置文件和数据持久化在 `/data` 卷中。
 
+### Linux 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
+```
+
+带 systemd 服务安装（需要 root）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh -s -- --with-systemd
+```
+
 ### 从源码构建
 
 ```bash
@@ -52,7 +64,7 @@ make build
 
 **添加账户：** 打开 `http://<host>:<port>/admin/`，使用"Add Claude"按钮。在仪表盘中通过 OAuth 登录流程认证每个账户。
 
-代理默认监听 `http://0.0.0.0:3000`。将你的 Claude 兼容客户端指向此地址，使用生成的 API 密钥作为 Bearer token。
+代理默认监听 `http://127.0.0.1:3000`（`config.toml.example` 中已设为 `0.0.0.0`）。将你的 Claude 兼容客户端指向此地址，使用生成的 API 密钥作为 Bearer token。
 
 ## 配置参考
 
@@ -62,7 +74,7 @@ make build
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `host` | `0.0.0.0` | 监听地址 |
+| `host` | `127.0.0.1` | 监听地址 |
 | `port` | `3000` | 监听端口 |
 | `admin_password` | （自动生成） | `/admin/` 和 `/api/*` 路由的 Basic Auth 密码 |
 | `rate_limit` | `60` | 管理路由每 IP 每分钟最大请求数 |
@@ -70,6 +82,9 @@ make build
 | `request_timeout` | `600` | 上游请求超时（秒），对齐 Claude Code 的 X-Stainless-Timeout |
 | `max_concurrency` | `5` | 每账户并发硬上限（实际值由预算利用率动态调整） |
 | `log_level` | `info` | 日志级别（`debug`、`info`、`warn`、`error`） |
+| `auto_update` | `true` | 启用后台自动检查更新 |
+| `update_check_interval` | `1h` | 检查间隔（5m - 24h） |
+| `update_repo` | `shuzuan-org/ccproxy` | GitHub 仓库（用于自动更新） |
 
 ### `[[api_keys]]`
 
@@ -98,7 +113,7 @@ request_timeout = 600
 max_concurrency = 5
 
 [[api_keys]]
-key = "sk-ccproxy-001"
+key = "sk-your-api-key-here"
 name = "dev-team"
 enabled = true
 ```
@@ -108,6 +123,9 @@ enabled = true
 ```
 ccproxy                   启动代理服务器（前台运行）
 ccproxy version           打印版本号
+ccproxy upgrade           检查并应用更新
+ccproxy upgrade --check   仅检查，不应用
+ccproxy upgrade --force   强制重新安装当前版本
 ccproxy -c <path>         使用指定配置文件（默认：config.toml）
 ```
 
@@ -116,7 +134,7 @@ ccproxy -c <path>         使用指定配置文件（默认：config.toml）
 ```
 ccproxy（单二进制）
 ├── CLI 层 (cobra)
-│   └── start（根命令）、version
+│   └── start（根命令）、version、upgrade
 ├── HTTP 服务器 (net/http ServeMux)
 │   ├── /v1/messages         代理处理器（SSE 流式传输）
 │   ├── /admin/              内嵌 HTML 仪表盘
@@ -169,3 +187,6 @@ ccproxy（单二进制）
 | `POST /api/oauth/login/complete` | 用授权码完成 OAuth 登录 |
 | `POST /api/oauth/refresh` | 强制刷新账户令牌 |
 | `POST /api/oauth/logout` | 撤销并删除账户令牌 |
+| `GET /api/update/status` | 更新状态（当前版本、最新版本） |
+| `POST /api/update/check` | 立即检查更新 |
+| `POST /api/update/apply` | 应用更新并重启 |

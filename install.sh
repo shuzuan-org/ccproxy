@@ -102,9 +102,13 @@ esac
 
 # Check root when needed.
 if [ "$(id -u)" -ne 0 ]; then
-    # Check if install dir is writable.
-    if [ ! -w "$(dirname "$INSTALL_DIR")" ] && [ ! -w "$INSTALL_DIR" ]; then
-        err "cannot write to $INSTALL_DIR — run as root or use --install-dir"
+    # Check if install dir (or its parent) is writable.
+    if [ -d "$INSTALL_DIR" ]; then
+        if [ ! -w "$INSTALL_DIR" ]; then
+            err "cannot write to $INSTALL_DIR — run as root or use --install-dir"
+        fi
+    elif [ ! -w "$(dirname "$INSTALL_DIR")" ]; then
+        err "cannot create $INSTALL_DIR — run as root or use --install-dir"
     fi
     if [ "$WITH_SYSTEMD" = true ]; then
         err "--with-systemd requires root"
@@ -199,8 +203,9 @@ if [ "$WITH_SYSTEMD" = true ]; then
     run chown ccproxy:ccproxy /var/lib/ccproxy
     run chmod 0700 /var/lib/ccproxy
 
-    # Write systemd unit file (writing to /tmp is harmless even in dry-run).
-    cat > /tmp/ccproxy.service <<UNIT
+    # Write systemd unit file to a secure temp file.
+    UNIT_TMP=$(mktemp)
+    cat > "$UNIT_TMP" <<UNIT
 [Unit]
 Description=ccproxy - Claude API Proxy
 After=network-online.target
@@ -218,8 +223,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-    run install -m 0644 /tmp/ccproxy.service /etc/systemd/system/ccproxy.service
-    rm -f /tmp/ccproxy.service
+    run install -m 0644 "$UNIT_TMP" /etc/systemd/system/ccproxy.service
+    rm -f "$UNIT_TMP"
 
     run systemctl daemon-reload
     run systemctl enable ccproxy

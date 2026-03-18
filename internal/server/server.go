@@ -325,6 +325,9 @@ type updateAdapter struct {
 }
 
 func (a *updateAdapter) Status() observe.UpdateStatus {
+	if a.upd == nil {
+		return observe.UpdateStatus{}
+	}
 	s := a.upd.Status()
 	return observe.UpdateStatus{
 		CurrentVersion: s.CurrentVersion,

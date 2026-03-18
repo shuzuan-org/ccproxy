@@ -112,12 +112,12 @@ func TestAppendAPIKey(t *testing.T) {
 	content := `[server]
 admin_password = "test"
 `
-	k := APIKeyConfig{Key: "sk-ccproxy-abc123", Name: "default", Enabled: true}
+	k := APIKeyConfig{Key: "sk-abc123def456", Name: "default", Enabled: true}
 	result := appendAPIKey(content, k)
 	if !strings.Contains(result, "[[api_keys]]") {
 		t.Error("expected [[api_keys]] block")
 	}
-	if !strings.Contains(result, `key = "sk-ccproxy-abc123"`) {
+	if !strings.Contains(result, `key = "sk-abc123def456"`) {
 		t.Error("expected key value")
 	}
 	if !strings.Contains(result, `name = "default"`) {

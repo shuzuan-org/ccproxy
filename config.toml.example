@@ -13,7 +13,7 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 
 # API keys — leave this section empty or omit entirely to auto-generate on first start
 # [[api_keys]]
-# key = "sk-ccproxy-987313a7b186d14afe045aa16335b032"
+# key = "sk-987313a7b186d14afe045aa16335b032987313a7b186d14afe045aa16335b032"
 # name = "dev-team"
 # enabled = true
 

@@ -9,6 +9,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "1.0.0",
 		Repo:           "shuzuan-org/ccproxy",
@@ -25,6 +26,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestNew_DevVersion(t *testing.T) {
+	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "dev",
 		Repo:           "shuzuan-org/ccproxy",
@@ -37,6 +39,7 @@ func TestNew_DevVersion(t *testing.T) {
 }
 
 func TestUpdater_StatusFields(t *testing.T) {
+	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "1.0.0",
 		Repo:           "shuzuan-org/ccproxy",
@@ -51,6 +54,7 @@ func TestUpdater_StatusFields(t *testing.T) {
 }
 
 func TestStart_DevVersion_ReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "dev",
 		Repo:           "shuzuan-org/ccproxy",
@@ -76,6 +80,7 @@ func TestStart_DevVersion_ReturnsImmediately(t *testing.T) {
 }
 
 func TestStart_DisabledByConfig_ReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "1.0.0",
 		Repo:           "shuzuan-org/ccproxy",
@@ -101,6 +106,11 @@ func TestStart_DisabledByConfig_ReturnsImmediately(t *testing.T) {
 }
 
 func TestStart_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+	if New(Config{}).isDocker {
+		t.Skip("running in Docker, ticker loop exits early")
+	}
+
 	u := New(Config{
 		CurrentVersion: "1.0.0",
 		Repo:           "shuzuan-org/ccproxy",
@@ -124,4 +134,11 @@ func TestStart_RespectsContextCancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not respect context cancellation")
 	}
+}
+
+func TestIsDocker(t *testing.T) {
+	t.Parallel()
+	u := New(Config{CurrentVersion: "1.0.0"})
+	// Just verify it returns a bool without panicking.
+	_ = u.IsDocker()
 }

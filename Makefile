@@ -33,4 +33,4 @@ docker-push:
 release:
 	@if [ -z "$(VERSION)" ] || [ "$(VERSION)" = "dev" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
 	git tag -a v$(VERSION) -m "Release v$(VERSION)"
-	git push origin v$(VERSION)
+	git push origin v$(VERSION) || (echo "Push failed, removing local tag"; git tag -d v$(VERSION); exit 1)

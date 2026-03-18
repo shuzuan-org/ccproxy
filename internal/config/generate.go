@@ -40,7 +40,7 @@ func GenerateAdminPassword() string {
 	return string(b)
 }
 
-// GenerateAPIKey returns a key in the format "sk-ccproxy-<32 hex chars>".
+// GenerateAPIKey returns a key in the format "sk-<64 hex chars>".
 func GenerateAPIKey() string {
 	b := make([]byte, apiKeyHexLength/2)
 	if _, err := rand.Read(b); err != nil {

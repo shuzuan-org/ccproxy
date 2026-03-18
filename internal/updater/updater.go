@@ -154,8 +154,14 @@ func (u *Updater) Apply(ctx context.Context, force bool) (bool, string, error) {
 		return false, u.cfg.CurrentVersion, nil
 	}
 
-	if !force && release.LessOrEqual(u.cfg.CurrentVersion) {
-		return false, release.Version(), nil
+	if release.LessOrEqual(u.cfg.CurrentVersion) {
+		if !force {
+			return false, release.Version(), nil
+		}
+		// force=true: allow re-install of same version, but not downgrade.
+		if release.LessThan(u.cfg.CurrentVersion) {
+			return false, release.Version(), nil
+		}
 	}
 
 	exe, err := selfupdate.ExecutablePath()
@@ -199,6 +205,9 @@ func (u *Updater) checkAndApply(ctx context.Context) {
 			"to", newVersion,
 		)
 		u.Restart()
+		// Block until context is cancelled to prevent ticker from triggering
+		// another Apply during SIGTERM graceful shutdown.
+		<-ctx.Done()
 	}
 }
 
@@ -208,10 +217,14 @@ func (u *Updater) findLatest(ctx context.Context) (*selfupdate.Release, *selfupd
 	u.mu.Lock()
 	u.checking = true
 	u.mu.Unlock()
+
+	var succeeded bool
 	defer func() {
 		u.mu.Lock()
 		u.checking = false
-		u.lastCheck = time.Now()
+		if succeeded {
+			u.lastCheck = time.Now()
+		}
 		u.mu.Unlock()
 	}()
 
@@ -239,6 +252,7 @@ func (u *Updater) findLatest(ctx context.Context) (*selfupdate.Release, *selfupd
 		return nil, nil, fmt.Errorf("detect latest: %w", err)
 	}
 	if !found {
+		succeeded = true
 		return nil, nil, nil
 	}
 
@@ -246,5 +260,6 @@ func (u *Updater) findLatest(ctx context.Context) (*selfupdate.Release, *selfupd
 	u.latest = release.Version()
 	u.mu.Unlock()
 
+	succeeded = true
 	return release, upd, nil
 }

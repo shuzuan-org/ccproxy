@@ -69,6 +69,7 @@ func (h *Handler) HandleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"updated":     updated,
 		"new_version": newVer,
+		"restarting":  updated,
 	})
 
 	if updated {

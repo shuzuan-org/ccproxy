@@ -192,15 +192,13 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("at least one enabled api_key is required"))
 	}
 
-	if c.Server.UpdateCheckInterval != "" {
-		d, parseErr := time.ParseDuration(c.Server.UpdateCheckInterval)
-		if parseErr != nil {
-			errs = append(errs, fmt.Errorf("invalid update_check_interval %q: %w", c.Server.UpdateCheckInterval, parseErr))
-		} else if d < 5*time.Minute {
-			errs = append(errs, fmt.Errorf("update_check_interval must be >= 5m, got %s", d))
-		} else if d > 24*time.Hour {
-			errs = append(errs, fmt.Errorf("update_check_interval must be <= 24h, got %s", d))
-		}
+	d, parseErr := time.ParseDuration(c.Server.UpdateCheckInterval)
+	if parseErr != nil {
+		errs = append(errs, fmt.Errorf("invalid update_check_interval %q: %w", c.Server.UpdateCheckInterval, parseErr))
+	} else if d < 5*time.Minute {
+		errs = append(errs, fmt.Errorf("update_check_interval must be >= 5m, got %s", d))
+	} else if d > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("update_check_interval must be <= 24h, got %s", d))
 	}
 
 	if len(errs) > 0 {

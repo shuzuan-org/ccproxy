@@ -117,7 +117,8 @@ func TestValidate_NoEnabledAPIKeys(t *testing.T) {
 	// Test Validate() directly to bypass auto-generation in Load()
 	cfg := &Config{
 		Server: ServerConfig{
-			AdminPassword: "pass",
+			AdminPassword:       "pass",
+			UpdateCheckInterval: "1h",
 		},
 		APIKeys: []APIKeyConfig{
 			{Key: "sk-x", Name: "x", Enabled: false},
@@ -147,8 +148,8 @@ func TestLoadConfig_FileNotFound_CreatesDefault(t *testing.T) {
 	if len(cfg.APIKeys) == 0 {
 		t.Fatal("api_keys should have been auto-generated")
 	}
-	if !strings.HasPrefix(cfg.APIKeys[0].Key, "sk-ccproxy-") {
-		t.Errorf("api key %q missing prefix", cfg.APIKeys[0].Key)
+	if !strings.HasPrefix(cfg.APIKeys[0].Key, "sk-") {
+		t.Errorf("api key %q missing sk- prefix", cfg.APIKeys[0].Key)
 	}
 
 	// Default server settings from the generated template
@@ -223,8 +224,8 @@ admin_password = "pass"
 		t.Fatal("api_keys should have been auto-generated")
 	}
 	k := cfg.APIKeys[0]
-	if !strings.HasPrefix(k.Key, "sk-ccproxy-") {
-		t.Errorf("api key %q missing prefix", k.Key)
+	if !strings.HasPrefix(k.Key, "sk-") {
+		t.Errorf("api key %q missing sk- prefix", k.Key)
 	}
 	if k.Name != "default" {
 		t.Errorf("api key name = %q, want default", k.Name)
@@ -289,8 +290,8 @@ enabled = false
 		t.Fatalf("api_keys len = %d, want 2", len(cfg.APIKeys))
 	}
 	generated := cfg.APIKeys[1]
-	if !strings.HasPrefix(generated.Key, "sk-ccproxy-") {
-		t.Errorf("generated api key %q missing prefix", generated.Key)
+	if !strings.HasPrefix(generated.Key, "sk-") {
+		t.Errorf("generated api key %q missing sk- prefix", generated.Key)
 	}
 	if !generated.Enabled {
 		t.Error("generated api key should be enabled")
@@ -334,10 +335,11 @@ func TestValidate_PortRange(t *testing.T) {
 			t.Parallel()
 			cfg := &Config{
 				Server: ServerConfig{
-					AdminPassword:  "pass",
-					Port:           tc.port,
-					MaxConcurrency: 1,
-					RequestTimeout: 1,
+					AdminPassword:       "pass",
+					Port:                tc.port,
+					MaxConcurrency:      1,
+					RequestTimeout:      1,
+					UpdateCheckInterval: "1h",
 				},
 				APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 			}
@@ -353,10 +355,11 @@ func TestValidate_NegativeConcurrency(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{
 		Server: ServerConfig{
-			AdminPassword:  "pass",
-			Port:           3000,
-			MaxConcurrency: -1,
-			RequestTimeout: 1,
+			AdminPassword:       "pass",
+			Port:                3000,
+			MaxConcurrency:      -1,
+			RequestTimeout:      1,
+			UpdateCheckInterval: "1h",
 		},
 		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 	}
@@ -373,10 +376,11 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{
 		Server: ServerConfig{
-			AdminPassword:  "pass",
-			Port:           3000,
-			MaxConcurrency: 1,
-			RequestTimeout: -1,
+			AdminPassword:       "pass",
+			Port:                3000,
+			MaxConcurrency:      1,
+			RequestTimeout:      -1,
+			UpdateCheckInterval: "1h",
 		},
 		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 	}
