@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -221,8 +222,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Warn("request completed", summaryAttrs...)
 
-		// Step 6: Write 503 on retry exhaustion.
-		WriteError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("upstream unavailable: %s", err.Error()))
+		// Step 6: Map internal error to Anthropic-compatible response.
+		// No healthy accounts (all disabled/empty pool) → 503 api_error
+		// Accounts busy or upstream retries exhausted  → 529 overloaded_error
+		if errors.Is(err, loadbalancer.ErrNoHealthyAccounts) {
+			WriteError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
+		} else {
+			WriteError(w, 529, "overloaded_error", "Overloaded")
+		}
 		return
 	}
 

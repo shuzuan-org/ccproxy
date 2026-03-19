@@ -481,18 +481,16 @@ func TestIntegration_ErrorMapping(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	// Upstream 503 falls into RetryThenFailover. After exhausting retries with
-	// a single account, the proxy returns 503 (overloaded_error from
-	// proxy.WriteError after retry exhaustion).
-	// For a single-account setup with 503, the proxy will eventually respond
-	// with either 502 (mapped) or 503 (retry exhausted).
+	// a single account, the proxy returns 529 (overloaded_error matching
+	// Anthropic's official error format).
 	// We verify that the response is in Anthropic error format regardless.
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("expected 502 or 503, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != 529 {
+		t.Errorf("expected 502 or 529, got %d", resp.StatusCode)
 	}
 
 	var errResp map[string]interface{}

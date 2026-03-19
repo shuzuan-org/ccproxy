@@ -298,8 +298,9 @@ func TestHandler_AuthHeaderOAuth(t *testing.T) {
 //   - 500-504:                         RetryThenFailover — retry same, then blacklist
 //
 // With a single account, FailoverImmediate and RetryThenFailover errors exhaust
-// the account pool and result in a 503 from the handler. This is the expected
-// production behavior. The handler's MapUpstreamError logic is exercised for
+// the account pool and the handler returns 529 overloaded_error (matching
+// Anthropic's official error format). When no accounts exist at all, the
+// handler returns 503 api_error. The handler's MapUpstreamError logic is exercised for
 // ReturnToClient responses (400 range) that are forwarded directly.
 func TestHandler_UpstreamError(t *testing.T) {
 	t.Run("client_error_400_forwarded", func(t *testing.T) {
@@ -340,8 +341,8 @@ func TestHandler_UpstreamError(t *testing.T) {
 	})
 
 	// For failover errors (429/401/403/529), a single-account balancer exhausts
-	// all accounts and the handler returns 503.
-	t.Run("rate_limit_single_account_503", func(t *testing.T) {
+	// all accounts and the handler returns 529 overloaded_error.
+	t.Run("rate_limit_single_account_529", func(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(429)
 			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
@@ -361,9 +362,19 @@ func TestHandler_UpstreamError(t *testing.T) {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
 
-		// With one account exhausted, handler returns 503.
-		if rr.Code != http.StatusServiceUnavailable {
-			t.Errorf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+		// With one account exhausted, handler returns 529 overloaded.
+		if rr.Code != 529 {
+			t.Errorf("expected 529, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var errResp apierror.Response
+		if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("response not valid JSON: %v", err)
+		}
+		if errResp.Error.Type != "overloaded_error" {
+			t.Errorf("expected overloaded_error, got %q", errResp.Error.Type)
+		}
+		if errResp.Error.Message != "Overloaded" {
+			t.Errorf("expected message 'Overloaded', got %q", errResp.Error.Message)
 		}
 	})
 
@@ -396,7 +407,7 @@ func TestHandler_UpstreamError(t *testing.T) {
 	})
 }
 
-// TestHandler_NoHealthyAccounts verifies 503 when balancer has no accounts.
+// TestHandler_NoHealthyAccounts verifies 503 api_error when balancer has no accounts.
 func TestHandler_NoHealthyAccounts(t *testing.T) {
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer([]config.AccountConfig{}, tracker)
@@ -412,6 +423,16 @@ func TestHandler_NoHealthyAccounts(t *testing.T) {
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var errResp apierror.Response
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if errResp.Error.Type != "api_error" {
+		t.Errorf("expected api_error, got %q", errResp.Error.Type)
+	}
+	if errResp.Error.Message != "No available accounts" {
+		t.Errorf("expected message 'No available accounts', got %q", errResp.Error.Message)
 	}
 }
 
