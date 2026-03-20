@@ -7,6 +7,64 @@ import (
 	"time"
 )
 
+func TestAccountHealth_IsBanned(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{name: "platform forbidden", reason: PlatformBanReasonForbidden, want: true},
+		{name: "oauth not allowed", reason: PlatformBanReasonOAuthNotAllowed, want: true},
+		{name: "organization disabled", reason: PlatformBanReasonOrganizationDisabled, want: true},
+		{name: "legacy forbidden", reason: legacyBanReasonForbidden, want: true},
+		{name: "consecutive 401", reason: "consecutive_401", want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewAccountHealth("test")
+			h.Disable(tt.reason)
+
+			if got := h.IsBanned(); got != tt.want {
+				t.Fatalf("IsBanned() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAccountHealth_BanReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{name: "platform forbidden", reason: PlatformBanReasonForbidden, want: PlatformBanReasonForbidden},
+		{name: "oauth not allowed", reason: PlatformBanReasonOAuthNotAllowed, want: PlatformBanReasonOAuthNotAllowed},
+		{name: "organization disabled", reason: PlatformBanReasonOrganizationDisabled, want: PlatformBanReasonOrganizationDisabled},
+		{name: "legacy forbidden", reason: legacyBanReasonForbidden, want: PlatformBanReasonForbidden},
+		{name: "consecutive 401", reason: "consecutive_401", want: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewAccountHealth("test")
+			h.Disable(tt.reason)
+
+			if got := h.BanReason(); got != tt.want {
+				t.Fatalf("BanReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCooldown_429WithRetryAfter(t *testing.T) {
 	t.Parallel()
 	h := NewAccountHealth("test")

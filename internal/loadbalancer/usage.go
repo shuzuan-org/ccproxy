@@ -40,13 +40,13 @@ type usageCacheEntry struct {
 }
 
 const (
-	usageCacheTTL      = 3 * time.Minute
-	usageErrorCacheTTL = 1 * time.Minute
-	usageCheckInterval = 3 * time.Minute
+	usageCacheTTL       = 3 * time.Minute
+	usageErrorCacheTTL  = 1 * time.Minute
+	usageCheckInterval  = 3 * time.Minute
 	usageStaleThreshold = 5 * time.Minute
-	usageMaxJitter     = 800 * time.Millisecond
-	usageAPIURL        = "https://api.anthropic.com/api/oauth/usage"
-	usageAPIBeta       = "oauth-2025-04-20"
+	usageMaxJitter      = 800 * time.Millisecond
+	usageAPIURL         = "https://api.anthropic.com/api/oauth/usage"
+	usageAPIBeta        = "oauth-2025-04-20"
 )
 
 // UsageFetcher periodically fetches usage data from the Anthropic API
@@ -55,6 +55,7 @@ type UsageFetcher struct {
 	tokenProvider OAuthTokenProvider
 	httpClient    *http.Client
 	userAgent     string
+	onPlatformBan func(accountName, reason string)
 	mu            sync.RWMutex
 	cache         map[string]*usageCacheEntry
 	inflight      singleflight.Group
@@ -70,6 +71,13 @@ func NewUsageFetcher(tokenProvider OAuthTokenProvider, userAgent string) *UsageF
 		userAgent: userAgent,
 		cache:     make(map[string]*usageCacheEntry),
 	}
+}
+
+// SetOnPlatformBan sets a callback for platform-ban detection.
+func (uf *UsageFetcher) SetOnPlatformBan(fn func(accountName, reason string)) {
+	uf.mu.Lock()
+	defer uf.mu.Unlock()
+	uf.onPlatformBan = fn
 }
 
 // FetchIfNeeded checks if the budget has stale data and fetches if necessary.
@@ -162,6 +170,14 @@ func (uf *UsageFetcher) doFetch(ctx context.Context, accountName, apiURL string)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			if reason, banned := DetectPlatformBan(resp.StatusCode, body); banned {
+				uf.mu.RLock()
+				onPlatformBan := uf.onPlatformBan
+				uf.mu.RUnlock()
+				if onPlatformBan != nil {
+					onPlatformBan(accountName, reason)
+				}
+			}
 			observe.Logger(ctx).Warn("usage: API error", "account", accountName, "status", resp.StatusCode, "body", string(body))
 			uf.cacheError(accountName)
 			return nil, fmt.Errorf("usage API returned %d", resp.StatusCode)

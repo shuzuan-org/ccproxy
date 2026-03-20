@@ -467,3 +467,32 @@ func TestBalancer_BudgetStateFiltering(t *testing.T) {
 	}
 	result.Release()
 }
+
+
+func TestBalancer_AccountStates(t *testing.T) {
+	b := newTestBalancer([]config.AccountConfig{
+		makeAccount("healthy", 2),
+		makeAccount("cooldown", 2),
+		makeAccount("disabled", 2),
+		makeAccount("banned", 2),
+	})
+
+	b.GetHealth("cooldown").SetCooldown(time.Minute, "rate_limited")
+	b.GetHealth("disabled").Disable("consecutive_401")
+	b.GetHealth("banned").Disable(PlatformBanReasonOrganizationDisabled)
+
+	states := b.AccountStates()
+
+	if got := states["healthy"].Health; got != "healthy" {
+		t.Fatalf("healthy state = %q, want healthy", got)
+	}
+	if got := states["cooldown"].Health; got != "cooldown" {
+		t.Fatalf("cooldown state = %q, want cooldown", got)
+	}
+	if got := states["disabled"].Health; got != "disabled" {
+		t.Fatalf("disabled state = %q, want disabled", got)
+	}
+	if got := states["banned"].Health; got != "banned" {
+		t.Fatalf("banned state = %q, want banned", got)
+	}
+}

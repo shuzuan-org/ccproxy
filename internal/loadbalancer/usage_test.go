@@ -3,11 +3,14 @@ package loadbalancer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/binn/ccproxy/internal/config"
 )
 
 type mockTokenProvider struct {
@@ -137,5 +140,125 @@ func TestUsageFetcher_FetchIfNeeded_RecentData(t *testing.T) {
 	result := uf.FetchIfNeeded(context.Background(), "inst1", budget)
 	if result != nil {
 		t.Error("expected nil result when budget has recent data")
+	}
+}
+
+func TestUsageFetcher_BansAccount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantReason string
+	}{
+		{name: "403 body", statusCode: http.StatusForbidden, body: `{"error":{"message":"forbidden"}}`, wantReason: PlatformBanReasonForbidden},
+		{name: "oauth not allowed", statusCode: http.StatusForbidden, body: `{"error":{"message":"OAuth authentication is currently not allowed for this organization."}}`, wantReason: PlatformBanReasonOAuthNotAllowed},
+		{name: "organization disabled", statusCode: http.StatusForbidden, body: `{"error":{"message":"organization disabled"}}`, wantReason: PlatformBanReasonOrganizationDisabled},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var bannedAccount, bannedReason string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			uf := NewUsageFetcher(&mockTokenProvider{token: "tok"}, "")
+			uf.httpClient = server.Client()
+			uf.SetOnPlatformBan(func(accountName, reason string) {
+				bannedAccount = accountName
+				bannedReason = reason
+			})
+
+			resp := uf.fetchFromURL(context.Background(), "acct1", server.URL)
+			if resp != nil {
+				t.Fatal("expected nil response on API error")
+			}
+			if bannedAccount != "acct1" {
+				t.Fatalf("expected banned account acct1, got %q", bannedAccount)
+			}
+			if bannedReason != tt.wantReason {
+				t.Fatalf("expected ban reason %q, got %q", tt.wantReason, bannedReason)
+			}
+		})
+	}
+}
+
+func TestUsageFetcher_DoesNotBan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		provider   *mockTokenProvider
+	}{
+		{name: "401", statusCode: http.StatusUnauthorized, body: `{"error":{"message":"unauthorized"}}`, provider: &mockTokenProvider{token: "tok"}},
+		{name: "429", statusCode: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`, provider: &mockTokenProvider{token: "tok"}},
+		{name: "529", statusCode: 529, body: `{"error":{"message":"overloaded"}}`, provider: &mockTokenProvider{token: "tok"}},
+		{name: "network error", provider: &mockTokenProvider{err: errors.New("token unavailable")}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			called := false
+			uf := NewUsageFetcher(tt.provider, "")
+			uf.SetOnPlatformBan(func(accountName, reason string) {
+				called = true
+			})
+
+			if tt.provider.err == nil {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tt.statusCode)
+					_, _ = w.Write([]byte(tt.body))
+				}))
+				defer server.Close()
+				uf.httpClient = server.Client()
+				_ = uf.fetchFromURL(context.Background(), "acct1", server.URL)
+			} else {
+				_ = uf.fetchFromURL(context.Background(), "acct1", "http://example.invalid")
+			}
+
+			if called {
+				t.Fatal("expected no ban callback")
+			}
+		})
+	}
+}
+
+func TestBalancer_SetUsageFetcherWiresPlatformBan(t *testing.T) {
+	t.Parallel()
+
+	b := NewBalancer([]config.AccountConfig{{Name: "acct1", MaxConcurrency: 1, Enabled: true}}, NewConcurrencyTracker())
+	uf := NewUsageFetcher(&mockTokenProvider{token: "tok"}, "")
+	b.SetUsageFetcher(uf)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"organization disabled"}}`))
+	}))
+	defer server.Close()
+	uf.httpClient = server.Client()
+
+	_ = uf.fetchFromURL(context.Background(), "acct1", server.URL)
+
+	h := b.GetHealth("acct1")
+	if h == nil {
+		t.Fatal("expected health tracker")
+	}
+	if !h.IsBanned() {
+		t.Fatal("expected account to be marked banned")
+	}
+	if got := h.BanReason(); got != PlatformBanReasonOrganizationDisabled {
+		t.Fatalf("expected ban reason %q, got %q", PlatformBanReasonOrganizationDisabled, got)
 	}
 }

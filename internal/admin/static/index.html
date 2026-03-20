@@ -224,13 +224,14 @@
           <tr>
             <th>Name</th>
             <th>Proxy</th>
+            <th>Account Status</th>
             <th>Token Status</th>
             <th>Expires At</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="accounts-body">
-          <tr class="empty-row"><td colspan="5">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="6">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -276,6 +277,20 @@
     return '<span class="chip ' + (map[status] || 'chip-muted') + '">' + esc(status || '—') + '</span>';
   }
 
+  function accountStatusChip(acct) {
+    const status = acct.health || 'healthy';
+    const map = {
+      'banned': { cls: 'chip-danger', label: 'Banned' },
+      'cooldown': { cls: 'chip-warn', label: 'Cooling down' },
+      'healthy': { cls: 'chip-success', label: 'Healthy' },
+      'disabled': { cls: 'chip-muted', label: 'Disabled' },
+    };
+    const meta = map[status] || map['disabled'];
+    const reason = acct.ban_reason || acct.disabled_reason || '';
+    const title = reason ? ' title="' + esc(reason) + '"' : '';
+    return '<span class="chip ' + meta.cls + '"' + title + '>' + meta.label + '</span>';
+  }
+
   function fmtExpiry(iso) {
     if (!iso) return '—';
     const d = new Date(iso);
@@ -288,7 +303,7 @@
     document.getElementById('account-count').textContent = data.length + ' accounts';
     const tbody = document.getElementById('accounts-body');
     if (!data.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No OAuth accounts configured</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No OAuth accounts configured</td></tr>';
       return;
     }
     tbody.innerHTML = '';
@@ -317,6 +332,11 @@
         return function() { editProxy(name, td); };
       })(acct.name, tdProxy));
       tr.appendChild(tdProxy);
+
+      // Account status cell
+      var tdAccountStatus = document.createElement('td');
+      tdAccountStatus.innerHTML = accountStatusChip(acct);
+      tr.appendChild(tdAccountStatus);
 
       // Token status cell
       var tdStatus = document.createElement('td');
@@ -587,6 +607,7 @@
     tr.innerHTML =
       '<td><input class="inline-name-input" type="text" placeholder="Account name…" /></td>' +
       '<td><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
+      '<td><span class="chip chip-muted">—</span></td>' +
       '<td><span class="chip chip-muted">—</span></td>' +
       '<td>—</td>' +
       '<td><div class="actions">' +

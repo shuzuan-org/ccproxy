@@ -92,6 +92,107 @@ func TestHandleAccounts_NoToken(t *testing.T) {
 	}
 }
 
+func TestHandleAccounts_IncludesHealthState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		disableReason      string
+		setCooldown        bool
+		wantHealth         string
+		wantBanned         bool
+		wantBanReason      string
+		wantDisabledReason string
+	}{
+		{
+			name:               "banned",
+			disableReason:      loadbalancer.PlatformBanReasonOrganizationDisabled,
+			wantHealth:         "banned",
+			wantBanned:         true,
+			wantBanReason:      loadbalancer.PlatformBanReasonOrganizationDisabled,
+			wantDisabledReason: loadbalancer.PlatformBanReasonOrganizationDisabled,
+		},
+		{
+			name:               "disabled",
+			disableReason:      "consecutive_401",
+			wantHealth:         "disabled",
+			wantBanned:         false,
+			wantDisabledReason: "consecutive_401",
+		},
+		{
+			name:       "cooldown",
+			setCooldown: true,
+			wantHealth: "cooldown",
+			wantBanned: false,
+		},
+		{
+			name:       "healthy",
+			wantHealth: "healthy",
+			wantBanned: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			tok := oauth.OAuthToken{
+				AccessToken: "test",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}
+			if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+
+			health := h.balancer.GetHealth("test-oauth")
+			if health == nil {
+				t.Fatal("expected health tracker")
+			}
+			if tt.disableReason != "" {
+				health.Disable(tt.disableReason)
+			}
+			if tt.setCooldown {
+				health.SetCooldown(time.Minute, "rate_limited")
+			}
+
+			req := httptest.NewRequest("GET", "/api/accounts", nil)
+			w := httptest.NewRecorder()
+			h.HandleAccounts(w, req)
+
+			if w.Code != 200 {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+
+			var states []AccountState
+			if err := json.NewDecoder(w.Body).Decode(&states); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(states) != 1 {
+				t.Fatalf("len = %d, want 1", len(states))
+			}
+
+			got := states[0]
+			if got.TokenStatus != "valid" {
+				t.Fatalf("token_status = %q, want valid", got.TokenStatus)
+			}
+			if got.Health != tt.wantHealth {
+				t.Fatalf("health = %q, want %q", got.Health, tt.wantHealth)
+			}
+			if got.Banned != tt.wantBanned {
+				t.Fatalf("banned = %v, want %v", got.Banned, tt.wantBanned)
+			}
+			if got.BanReason != tt.wantBanReason {
+				t.Fatalf("ban_reason = %q, want %q", got.BanReason, tt.wantBanReason)
+			}
+			if got.DisabledReason != tt.wantDisabledReason {
+				t.Fatalf("disabled_reason = %q, want %q", got.DisabledReason, tt.wantDisabledReason)
+			}
+		})
+	}
+}
+
 func TestHandleOAuthLoginStart(t *testing.T) {
 	h := newTestHandler(t)
 

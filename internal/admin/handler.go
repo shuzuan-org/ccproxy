@@ -81,6 +81,10 @@ type AccountState struct {
 	Proxy          string  `json:"proxy,omitempty"`
 	TokenStatus    string  `json:"token_status,omitempty"`
 	TokenExpiresAt *string `json:"token_expires_at,omitempty"`
+	Health         string  `json:"health,omitempty"`
+	Banned         bool    `json:"banned"`
+	BanReason      string  `json:"ban_reason,omitempty"`
+	DisabledReason string  `json:"disabled_reason,omitempty"`
 }
 
 // tokenStatus returns a human-readable status for an OAuth token.
@@ -120,6 +124,20 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 			MaxConcurrency: maxConcurrency,
 			Enabled:        entry.Enabled,
 			Proxy:          entry.Proxy,
+		}
+
+		if health := h.balancer.GetHealth(entry.Name); health != nil {
+			state.Health = "healthy"
+			if health.IsBanned() {
+				state.Health = "banned"
+			} else if health.IsDisabled() {
+				state.Health = "disabled"
+			} else if !health.IsAvailable() {
+				state.Health = "cooldown"
+			}
+			state.Banned = health.IsBanned()
+			state.BanReason = health.BanReason()
+			state.DisabledReason = health.DisabledReason()
 		}
 
 		// Add token info

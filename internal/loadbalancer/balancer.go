@@ -74,6 +74,13 @@ func filterEnabled(accounts []config.AccountConfig) []config.AccountConfig {
 // SetUsageFetcher injects the usage fetcher after construction.
 func (b *Balancer) SetUsageFetcher(f *UsageFetcher) {
 	b.usageFetcher = f
+	if f != nil {
+		f.SetOnPlatformBan(func(accountName, reason string) {
+			if h := b.GetHealth(accountName); h != nil {
+				h.Disable(reason)
+			}
+		})
+	}
 }
 
 // accountCandidate holds a candidate account for selection.
@@ -461,7 +468,9 @@ func (b *Balancer) AccountStates() map[string]observe.AccountState {
 			MaxConcurrency: acct.MaxConcurrency,
 		}
 		if h, ok := b.health[name]; ok {
-			if h.IsDisabled() {
+			if h.IsBanned() {
+				state.Health = "banned"
+			} else if h.IsDisabled() {
 				state.Health = "disabled"
 			} else if !h.IsAvailable() {
 				state.Health = "cooldown"

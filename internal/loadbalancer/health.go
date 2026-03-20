@@ -146,7 +146,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 
 	case 403:
 		observe.Logger(ctx).Error("account forbidden, disabling", "account", h.Name)
-		h.Disable("forbidden")
+		h.Disable(legacyBanReasonForbidden)
 
 	case 400:
 		// 400 with "organization disabled" text handled by caller via body check
@@ -303,6 +303,30 @@ func (h *AccountHealth) DisabledReason() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.disabledReason
+}
+
+// IsBanned returns whether the account was disabled due to a platform ban.
+func (h *AccountHealth) IsBanned() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return IsPlatformBanReason(h.disabledReason)
+}
+
+// BanReason returns the normalized platform ban reason.
+func (h *AccountHealth) BanReason() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	switch h.disabledReason {
+	case legacyBanReasonForbidden:
+		return PlatformBanReasonForbidden
+	case PlatformBanReasonForbidden,
+		PlatformBanReasonOAuthNotAllowed,
+		PlatformBanReasonOrganizationDisabled:
+		return h.disabledReason
+	default:
+		return ""
+	}
 }
 
 // LatencyEMA returns the slow EMA latency in microseconds.

@@ -154,6 +154,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Read 400 body to check for signature error.
 			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
+			if reason, banned := loadbalancer.DetectPlatformBan(statusCode, errBody); banned {
+				if health := h.balancer.GetHealth(acct.Name); health != nil {
+					health.Disable(reason)
+				}
+			}
 			if readErr != nil {
 				return &http.Response{
 					StatusCode: 400,
@@ -256,6 +261,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 9: Handle error responses from upstream.
 	if resp.StatusCode >= 400 {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+		if reason, banned := loadbalancer.DetectPlatformBan(resp.StatusCode, upstreamBody); banned {
+			if health := h.balancer.GetHealth(result.AccountName); health != nil {
+				health.Disable(reason)
+			}
+		}
 		proxyStatus, errBody := MapUpstreamError(resp.StatusCode, upstreamBody)
 
 		log.Warn("upstream error response",

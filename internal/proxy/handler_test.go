@@ -482,3 +482,98 @@ func TestHandler_SessionKeyFromMetadata(t *testing.T) {
 		t.Errorf("expected upstream to be called 2 times, got %d", callCount)
 	}
 }
+
+
+func TestHandler_BansAccount(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantReason string
+	}{
+		{name: "upstream 403", statusCode: http.StatusForbidden, body: `{"type":"error","error":{"type":"forbidden_error","message":"forbidden"}}`, wantReason: loadbalancer.PlatformBanReasonForbidden},
+		{name: "oauth not allowed", statusCode: http.StatusBadRequest, body: `{"type":"error","error":{"type":"invalid_request_error","message":"OAuth authentication is currently not allowed for this organization."}}`, wantReason: loadbalancer.PlatformBanReasonOAuthNotAllowed},
+		{name: "organization disabled", statusCode: http.StatusBadRequest, body: `{"type":"error","error":{"type":"invalid_request_error","message":"organization disabled"}}`, wantReason: loadbalancer.PlatformBanReasonOrganizationDisabled},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer upstream.Close()
+
+			acct := buildOAuthAccount(upstream.URL)
+			balancer := buildBalancer(acct)
+			oauthMgr := buildOAuthManager(t, "fake-token")
+			h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+
+			body := standardRequestBody("claude-3-5-sonnet-20241022", false)
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req = setAuthInfo(req, "default")
+
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			health := balancer.GetHealth("test-oauth")
+			if health == nil {
+				t.Fatal("expected health tracker")
+			}
+			if !health.IsBanned() {
+				t.Fatal("expected account to be marked banned")
+			}
+			if got := health.BanReason(); got != tt.wantReason {
+				t.Fatalf("expected ban reason %q, got %q", tt.wantReason, got)
+			}
+		})
+	}
+}
+
+func TestHandler_DoesNotBan(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "401", statusCode: http.StatusUnauthorized, body: `{"type":"error","error":{"type":"authentication_error","message":"unauthorized"}}`},
+		{name: "429", statusCode: http.StatusTooManyRequests, body: `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`},
+		{name: "529", statusCode: 529, body: `{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer upstream.Close()
+
+			acct := buildOAuthAccount(upstream.URL)
+			balancer := buildBalancer(acct)
+			oauthMgr := buildOAuthManager(t, "fake-token")
+			h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr)
+
+			body := standardRequestBody("claude-3-5-sonnet-20241022", false)
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req = setAuthInfo(req, "default")
+
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			health := balancer.GetHealth("test-oauth")
+			if health == nil {
+				t.Fatal("expected health tracker")
+			}
+			if health.IsBanned() {
+				t.Fatalf("expected account not to be marked banned, got %q", health.BanReason())
+			}
+		})
+	}
+}
