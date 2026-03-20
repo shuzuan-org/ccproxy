@@ -78,11 +78,14 @@ ccproxy installer
 
 Usage: install.sh [OPTIONS]
 
+Default behavior installs the ccproxy binary only.
+Use --with-systemd for a managed service, or --domain for systemd + Caddy HTTPS.
+
 Options:
-  --domain DOMAIN       Full HTTPS deploy with Caddy (implies --with-systemd)
   --version VERSION     Install specific version (default: latest)
   --install-dir DIR     Binary install path (default: /usr/local/bin)
-  --with-systemd        Create systemd service, user, and directories
+  --with-systemd        Install binary plus systemd service, user, and directories
+  --domain DOMAIN       Install binary + systemd, then configure Caddy HTTPS
   --dry-run             Print actions without executing
   --help                Show this help
 USAGE

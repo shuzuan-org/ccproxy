@@ -14,7 +14,39 @@
 
 ## 快速开始
 
-### Docker（推荐）
+部署方式选择：
+- CLI 一键部署适合大多数 VPS / 个人自托管用户。
+- Docker 适合已有容器环境或临时体验。
+- 源码构建适合开发调试。
+
+### 推荐：CLI 一键部署（Linux）
+
+这是默认推荐路径：单二进制配合安装脚本即可完成部署，适合长期运行的宿主机场景。
+可按需接入 systemd、Caddy HTTPS，后续也便于使用内置升级能力维护。
+
+完整 HTTPS 部署（自动安装 Caddy + 配置 Let's Encrypt 证书）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
+  sudo sh -s -- --domain proxy.example.com
+```
+
+仅安装 ccproxy + systemd 服务（用户自行配置 HTTPS）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
+  sudo sh -s -- --with-systemd
+```
+
+仅安装二进制：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
+```
+
+### Docker（可选）
+
+适合已有 Docker 环境、容器化维护或快速试用；如果是在宿主机长期部署，优先使用上面的 CLI 方式。
 
 一行命令启动：
 
@@ -36,28 +68,6 @@ docker run -d --name ccproxy --hostname ccproxy \
 > **注意：** `--hostname ccproxy` 是必需的——OAuth 令牌加密密钥从主机名派生，缺少固定主机名会导致容器重建后令牌失效。
 
 容器内置 Caddy 反向代理，自动处理 TLS 证书。配置文件和数据持久化在 `/data` 卷中。
-
-### Linux 一键安装
-
-完整 HTTPS 部署（自动安装 Caddy + 配置 Let's Encrypt 证书）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
-  sudo sh -s -- --domain proxy.example.com
-```
-
-仅安装 ccproxy + systemd 服务（用户自行配置 HTTPS）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | \
-  sudo sh -s -- --with-systemd
-```
-
-仅安装二进制：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
-```
 
 ### 从源码构建
 
