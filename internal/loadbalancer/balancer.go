@@ -191,10 +191,11 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 			continue
 		}
 
-		// Check budget state — skip Blocked and StickyOnly accounts
+		// Check budget state — skip Blocked accounts
+		// StickyOnly accounts are skipped only when active sessions >= max concurrency
 		if h != nil && h.budget != nil {
 			state := h.budget.State()
-			if state == StateBlocked || state == StateStickyOnly {
+			if state == StateBlocked {
 				observe.Logger(ctx).Debug("balancer: account filtered",
 					"account", acct.Name,
 					"reason", state.String(),
@@ -202,7 +203,20 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 				filteredBudget++
 				continue
 			}
-		}
+			if state == StateStickyOnly {
+                activeCount := b.activeStickySessionCount(acct.Name)
+                if activeCount >= acct.MaxConcurrency {
+                    observe.Logger(ctx).Debug("balancer: account filtered",
+                        "account", acct.Name,
+                        "reason", "sticky_only at session limit",
+                        "active_sessions", activeCount,
+                        "max_concurrency", acct.MaxConcurrency,
+                    )
+                    filteredBudget++
+                    continue
+                }
+            }
+        }
 
 		effectiveMax := acct.MaxConcurrency
 		if h != nil {
@@ -503,6 +517,20 @@ func (b *Balancer) ActiveSessions() int {
 	count := 0
 	b.sessions.Range(func(_, _ interface{}) bool {
 		count++
+		return true
+	})
+	return count
+}
+
+// activeStickySessionCount returns the count of active sticky sessions for an account.
+// A session is considered active if it was used within the sessionTTL window.
+func (b *Balancer) activeStickySessionCount(accountName string) int {
+	count := 0
+	b.sessions.Range(func(key, value interface{}) bool {
+		info := value.(*SessionInfo)
+		if info.AccountName == accountName && time.Since(info.LastRequest) < sessionTTL {
+			count++
+		}
 		return true
 	})
 	return count

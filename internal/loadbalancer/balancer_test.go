@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -464,6 +465,119 @@ func TestBalancer_BudgetStateFiltering(t *testing.T) {
 	}
 	if result.Account.Name != "low-util" {
 		t.Errorf("expected low-util (high-util is blocked), got %s", result.Account.Name)
+	}
+	result.Release()
+}
+
+// TestBalancer_StickyOnlyWithoutActiveSessions tests that a sticky_only account
+// can accept new sessions when it has no active sticky sessions.
+// This prevents accounts from being "starved" when all old sessions expire.
+func TestBalancer_StickyOnlyWithoutActiveSessions(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("sticky-only", 5),
+	}
+	b := newTestBalancer(accounts)
+
+	// Set utilization to trigger sticky_only state (90% <= util < 95%)
+	h := b.GetHealth("sticky-only")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
+
+	if state := h.Budget().State(); state != StateStickyOnly {
+		t.Fatalf("expected sticky_only state, got %v", state)
+	}
+
+	// Account should be selectable because there are no active sticky sessions
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Name != "sticky-only" {
+		t.Errorf("expected sticky-only account to be selected (no active sessions), got %s", result.Account.Name)
+	}
+	result.Release()
+}
+
+// TestBalancer_StickyOnlyBelowSessionLimit tests that a sticky_only account
+// can accept new sessions when active sessions < max concurrency.
+func TestBalancer_StickyOnlyBelowSessionLimit(t *testing.T) {
+	accounts := []config.AccountConfig{
+		{Name: "sticky-only", MaxConcurrency: 3, Enabled: true},
+		makeAccount("normal", 5),
+	}
+	b := newTestBalancer(accounts)
+
+	// Set utilization to trigger sticky_only state
+	h := b.GetHealth("sticky-only")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
+
+	if state := h.Budget().State(); state != StateStickyOnly {
+		t.Fatalf("expected sticky_only state, got %v", state)
+	}
+
+	// Create 2 active sticky sessions (< MaxConcurrency of 3)
+	for i := 0; i < 2; i++ {
+		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), map[string]bool{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error creating session %d: %v", i, err)
+		}
+		result.Release()
+	}
+
+	// Account should still be selectable because active sessions (2) < max (3)
+	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// sticky-only should still be available since we haven't hit the limit
+	if result.Account.Name != "sticky-only" && result.Account.Name != "normal" {
+		t.Errorf("expected sticky-only or normal, got %s", result.Account.Name)
+	}
+	result.Release()
+}
+
+// TestBalancer_StickyOnlyAtSessionLimit tests that a sticky_only account
+// is skipped when active sessions >= max concurrency.
+func TestBalancer_StickyOnlyAtSessionLimit(t *testing.T) {
+	accounts := []config.AccountConfig{
+		{Name: "sticky-only", MaxConcurrency: 2, Enabled: true},
+		makeAccount("normal", 5),
+	}
+	b := newTestBalancer(accounts)
+
+	// Set utilization to trigger sticky_only state
+	h := b.GetHealth("sticky-only")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
+
+	if state := h.Budget().State(); state != StateStickyOnly {
+		t.Fatalf("expected sticky_only state, got %v", state)
+	}
+
+	// Create MaxConcurrency (2) active sticky sessions
+	for i := 0; i < 2; i++ {
+		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), map[string]bool{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error creating session %d: %v", i, err)
+		}
+		result.Release()
+	}
+
+	// Now sticky-only should be filtered (active sessions >= max)
+	// New sessions must go to normal account
+	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Name != "normal" {
+		t.Errorf("expected normal account (sticky-only at limit), got %s", result.Account.Name)
 	}
 	result.Release()
 }

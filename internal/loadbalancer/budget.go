@@ -36,8 +36,8 @@ func (s SchedulingState) String() string {
 }
 
 const (
-	defaultNormalThreshold  = 0.60 // below this → Normal
-	defaultDangerThreshold  = 0.80 // at or above this → Blocked; between normal and danger → StickyOnly
+	defaultNormalThreshold  = 0.90 // below this → Normal
+	defaultDangerThreshold  = 0.95 // at or above this → Blocked; between normal and danger → StickyOnly
 	penaltyStep             = 0.03 // per consecutive true 429
 	penaltyMax              = 0.15 // maximum penalty shift
 	penaltyRecoveryInterval = 5 * time.Minute

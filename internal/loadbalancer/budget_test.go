@@ -72,14 +72,14 @@ func TestBudgetController_StateThresholds(t *testing.T) {
 		expected SchedulingState
 	}{
 		{"low utilization", 0.20, 0.10, 0, StateNormal},
-		{"at normal threshold", 0.60, 0.10, 0, StateStickyOnly},
-		{"between thresholds", 0.70, 0.10, 0, StateStickyOnly},
-		{"at danger threshold", 0.80, 0.10, 0, StateBlocked},
-		{"high utilization", 0.95, 0.10, 0, StateBlocked},
-		{"7d drives state", 0.10, 0.85, 0, StateBlocked},
-		{"penalty shifts threshold down", 0.55, 0.10, 0.06, StateStickyOnly}, // 0.60-0.06=0.54, 0.55>=0.54
-		{"penalty makes blocked", 0.70, 0.10, 0.12, StateBlocked},           // 0.80-0.12=0.68, 0.70>=0.68
-		{"just below normal", 0.59, 0.10, 0, StateNormal},
+		{"at normal threshold", 0.90, 0.10, 0, StateStickyOnly},
+		{"between thresholds", 0.92, 0.10, 0, StateStickyOnly},
+		{"at danger threshold", 0.95, 0.10, 0, StateBlocked},
+		{"high utilization", 0.98, 0.10, 0, StateBlocked},
+		{"7d drives state", 0.10, 0.96, 0, StateBlocked},
+		{"penalty shifts threshold down", 0.85, 0.10, 0.06, StateStickyOnly}, // 0.90-0.06=0.84, 0.85>=0.84
+		{"penalty makes blocked", 0.90, 0.10, 0.10, StateBlocked},            // 0.95-0.10=0.85, 0.90>=0.85
+		{"just below normal", 0.89, 0.10, 0, StateNormal},
 	}
 
 	for _, tt := range tests {
