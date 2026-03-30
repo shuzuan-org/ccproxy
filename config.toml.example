@@ -11,6 +11,7 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 # update_check_interval = "1h" # check interval, min 5m, max 24h (default: 1h)
 # update_repo = "shuzuan-org/ccproxy" # GitHub owner/repo for update source
 # update_api_url = ""  # GitHub Enterprise API URL (default: github.com)
+# update_channel = "stable"   # Release channel: "stable" (default) or "beta" (includes pre-releases)
 
 # API keys — leave this section empty or omit entirely to auto-generate on first start
 # [[api_keys]]

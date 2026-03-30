@@ -21,7 +21,7 @@ var claudeCodePromptPrefixes = []string{
 	"You are Claude Code, Anthropic's official CLI for Claude",
 	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
 	"You are a Claude agent, built on Anthropic's Claude Agent SDK",
-	"You are a file search specialist for Claude Code",
+	"You are a file search specialist for Claude Code, Anthropic's official CLI for Claude.",
 	"You are a helpful AI assistant tasked with summarizing conversations",
 	"You are an agent for Claude Code",
 	"You are an interactive CLI tool that helps users",
@@ -35,9 +35,25 @@ type detectorRequest struct {
 	MaxTokens int         `json:"max_tokens"`
 	Stream    bool        `json:"stream"`
 	Metadata  struct {
-		UserID string `json:"user_id"`
+		UserIDRaw json.RawMessage `json:"user_id"`
 	} `json:"metadata"`
 	System interface{} `json:"system"`
+}
+
+// validUserIDRaw returns true if the raw user_id JSON value represents a valid
+// user_id in either the old string format or the new JSON object format (CLI >= 2.1.78).
+func validUserIDRaw(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	// Try string format first
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return metadataRegex.MatchString(s)
+	}
+	// Try JSON object format (CLI >= 2.1.78)
+	parsed := ParseUserID(string(raw))
+	return parsed != nil
 }
 
 // IsClaudeCodeClient checks if the request appears to be from a real Claude Code client.
@@ -83,7 +99,7 @@ func IsClaudeCodeClient(headers http.Header, body []byte, path string) bool {
 	// Messages path: strict multi-signal validation (need >=2 of 5)
 	xApp := headers.Get("X-App") == "cli"
 	hasBeta := strings.Contains(headers.Get("Anthropic-Beta"), BetaClaudeCode)
-	hasUserID := metadataRegex.MatchString(req.Metadata.UserID)
+	hasUserID := validUserIDRaw(req.Metadata.UserIDRaw)
 	hasSystemPrompt := checkSystemPromptFromParsed(req.System)
 	hasAnthropicVersion := headers.Get("Anthropic-Version") != ""
 

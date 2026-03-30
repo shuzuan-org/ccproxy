@@ -4,8 +4,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // GenerateClientID generates a random 64-character hex string (32 bytes).
@@ -44,34 +47,31 @@ var userIDFormatA = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account__session
 var userIDFormatB = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([\w-]+)_session_([\w-]+)$`)
 
 // RewriteUserID deterministically rewrites a client's user_id to prevent
-// Anthropic from correlating different proxy users. The clientID portion is
-// replaced with sha256(accountSeed + originalClientID)[:32] (64 hex chars),
-// and the session UUID is re-derived via generateSessionUUID(accountSeed + originalSession).
-//
-// If the original user_id does not match any known format, falls back to GenerateUserID.
-func RewriteUserID(originalUserID, accountSeed string) string {
-	// Try format A: user_{hex}_account__session_{uuid}
-	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
-		clientHex := m[1]
-		sessionUUID := m[2]
-		newClient := deterministicClientID(accountSeed, clientHex)
-		newSession := generateSessionUUID(accountSeed + sessionUUID)
-		return fmt.Sprintf("user_%s_account__session_%s", newClient, newSession)
+// Anthropic from correlating different proxy users.
+// Falls back to GenerateUserID when the original cannot be parsed.
+func RewriteUserID(originalUserID, accountSeed, uaVersion string) string {
+	parsed := ParseUserID(originalUserID)
+	if parsed == nil {
+		return GenerateUserID(accountSeed, uaVersion)
 	}
 
-	// Try format B: user_{hex}_account_{uuid}_session_{uuid}
-	if m := userIDFormatB.FindStringSubmatch(originalUserID); m != nil {
-		clientHex := m[1]
-		accountUUID := m[2]
-		sessionUUID := m[3]
-		newClient := deterministicClientID(accountSeed, clientHex)
-		newAccount := generateSessionUUID(accountSeed + accountUUID)
-		newSession := generateSessionUUID(accountSeed + sessionUUID)
+	newClient := deterministicClientID(accountSeed, parsed.DeviceID)
+	newSession := generateSessionUUID(accountSeed + parsed.SessionID)
+
+	if parsed.IsNewFormat || isNewMetadataFormatVersion(uaVersion) {
+		obj := userIDJSON{DeviceID: newClient, SessionID: newSession}
+		if parsed.AccountUUID != "" {
+			obj.AccountUUID = generateSessionUUID(accountSeed + parsed.AccountUUID)
+		}
+		b, _ := json.Marshal(obj)
+		return string(b)
+	}
+
+	if parsed.AccountUUID != "" {
+		newAccount := generateSessionUUID(accountSeed + parsed.AccountUUID)
 		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, newSession)
 	}
-
-	// Fallback: unknown format, generate fresh
-	return GenerateUserID(accountSeed)
+	return fmt.Sprintf("user_%s_account__session_%s", newClient, newSession)
 }
 
 // deterministicClientID derives a 64-char hex string from seed + originalClientID.
@@ -80,41 +80,54 @@ func deterministicClientID(accountSeed, originalClientID string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// RewriteUserIDWithMasking works like RewriteUserID but replaces the session UUID
-// portion with the provided maskedSessionUUID to ensure all requests through the
-// same account share a consistent session identity.
-func RewriteUserIDWithMasking(originalUserID, accountSeed, maskedSessionUUID string) string {
-	// Try format A: user_{hex}_account__session_{uuid}
-	if m := userIDFormatA.FindStringSubmatch(originalUserID); m != nil {
-		clientHex := m[1]
-		newClient := deterministicClientID(accountSeed, clientHex)
-		return fmt.Sprintf("user_%s_account__session_%s", newClient, maskedSessionUUID)
+// RewriteUserIDWithMasking rewrites a client's user_id to prevent Anthropic from
+// correlating different proxy users, replacing the session portion with maskedSessionUUID.
+// Output format follows the input format, unless uaVersion >= 2.1.78 forces JSON.
+// Falls back to a deterministic generated ID if the original cannot be parsed.
+func RewriteUserIDWithMasking(originalUserID, accountSeed, maskedSessionUUID, uaVersion string) string {
+	parsed := ParseUserID(originalUserID)
+
+	useJSON := isNewMetadataFormatVersion(uaVersion)
+
+	if parsed == nil {
+		// Unknown format: generate deterministic client ID and use masked session
+		clientID := deterministicClientID(accountSeed, "default-client")
+		if accountSeed == "" {
+			clientID = GenerateClientID()
+		}
+		if useJSON {
+			obj := userIDJSON{DeviceID: clientID, SessionID: maskedSessionUUID}
+			b, _ := json.Marshal(obj)
+			return string(b)
+		}
+		return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
 	}
 
-	// Try format B: user_{hex}_account_{uuid}_session_{uuid}
-	if m := userIDFormatB.FindStringSubmatch(originalUserID); m != nil {
-		clientHex := m[1]
-		accountUUID := m[2]
-		newClient := deterministicClientID(accountSeed, clientHex)
-		newAccount := generateSessionUUID(accountSeed + accountUUID)
+	newClient := deterministicClientID(accountSeed, parsed.DeviceID)
+
+	if parsed.IsNewFormat || useJSON {
+		obj := userIDJSON{DeviceID: newClient, SessionID: maskedSessionUUID}
+		if parsed.AccountUUID != "" {
+			obj.AccountUUID = generateSessionUUID(accountSeed + parsed.AccountUUID)
+		}
+		b, _ := json.Marshal(obj)
+		return string(b)
+	}
+
+	// Legacy string formats
+	if parsed.AccountUUID != "" {
+		newAccount := generateSessionUUID(accountSeed + parsed.AccountUUID)
 		return fmt.Sprintf("user_%s_account_%s_session_%s", newClient, newAccount, maskedSessionUUID)
 	}
-
-	// Fallback: unknown format, derive deterministic clientID from seed
-	var clientID string
-	if accountSeed != "" {
-		clientID = deterministicClientID(accountSeed, "default-client")
-	} else {
-		clientID = GenerateClientID()
-	}
-	return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
+	return fmt.Sprintf("user_%s_account__session_%s", newClient, maskedSessionUUID)
 }
 
-// GenerateUserID creates a metadata.user_id in Claude Code format.
-// Format: user_{64hex}_account__session_{uuid}
-// When sessionSeed is provided, both clientID and sessionUUID are derived
-// deterministically so the same seed produces a stable identity.
-func GenerateUserID(sessionSeed string) string {
+// GenerateUserID creates a metadata.user_id value.
+// For uaVersion >= 2.1.78 it uses the new JSON object format; otherwise the
+// legacy "user_{hex}_account__session_{uuid}" string format.
+// When sessionSeed is provided, the clientID and sessionUUID are derived
+// deterministically so the same seed always produces the same identity.
+func GenerateUserID(sessionSeed, uaVersion string) string {
 	var clientID string
 	if sessionSeed != "" {
 		clientID = deterministicClientID(sessionSeed, "default-client")
@@ -122,5 +135,92 @@ func GenerateUserID(sessionSeed string) string {
 		clientID = GenerateClientID()
 	}
 	sessionUUID := generateSessionUUID(sessionSeed)
+
+	if isNewMetadataFormatVersion(uaVersion) {
+		obj := userIDJSON{DeviceID: clientID, SessionID: sessionUUID}
+		b, _ := json.Marshal(obj)
+		return string(b)
+	}
 	return fmt.Sprintf("user_%s_account__session_%s", clientID, sessionUUID)
+}
+
+// NewMetadataFormatMinVersion is the minimum Claude CLI version that uses the
+// JSON object format for metadata.user_id instead of the legacy string format.
+const NewMetadataFormatMinVersion = "2.1.78"
+
+// userIDJSON is the new metadata.user_id format used by Claude CLI >= 2.1.78.
+type userIDJSON struct {
+	DeviceID    string `json:"device_id"`
+	AccountUUID string `json:"account_uuid,omitempty"`
+	SessionID   string `json:"session_id"`
+}
+
+// ParsedUserID holds the decoded fields from either metadata.user_id format.
+type ParsedUserID struct {
+	DeviceID    string
+	AccountUUID string // empty when absent
+	SessionID   string
+	IsNewFormat bool // true if the original was JSON object format
+}
+
+// ParseUserID parses both the legacy string format and the new JSON object format.
+// Returns nil when the input does not match either known format.
+func ParseUserID(rawID string) *ParsedUserID {
+	rawID = strings.TrimSpace(rawID)
+	if rawID == "" {
+		return nil
+	}
+	// New format: JSON object {"device_id":"...","session_id":"..."}
+	if strings.HasPrefix(rawID, "{") {
+		var obj userIDJSON
+		if err := json.Unmarshal([]byte(rawID), &obj); err == nil && obj.DeviceID != "" && obj.SessionID != "" {
+			return &ParsedUserID{
+				DeviceID:    obj.DeviceID,
+				AccountUUID: obj.AccountUUID,
+				SessionID:   obj.SessionID,
+				IsNewFormat: true,
+			}
+		}
+		return nil
+	}
+	// Legacy format A: user_{64hex}_account__session_{uuid}
+	if m := userIDFormatA.FindStringSubmatch(rawID); m != nil {
+		return &ParsedUserID{DeviceID: m[1], SessionID: m[2]}
+	}
+	// Legacy format B: user_{64hex}_account_{uuid}_session_{uuid}
+	if m := userIDFormatB.FindStringSubmatch(rawID); m != nil {
+		return &ParsedUserID{DeviceID: m[1], AccountUUID: m[2], SessionID: m[3]}
+	}
+	return nil
+}
+
+// compareVersions compares two semver strings of the form "X.Y.Z".
+// Returns -1, 0, or 1 like strings.Compare.
+func compareVersions(a, b string) int {
+	partsA := strings.SplitN(a, ".", 3)
+	partsB := strings.SplitN(b, ".", 3)
+	for i := 0; i < 3; i++ {
+		var na, nb int
+		if i < len(partsA) {
+			na, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			nb, _ = strconv.Atoi(partsB[i])
+		}
+		if na < nb {
+			return -1
+		}
+		if na > nb {
+			return 1
+		}
+	}
+	return 0
+}
+
+// isNewMetadataFormatVersion returns true when uaVersion >= NewMetadataFormatMinVersion.
+func isNewMetadataFormatVersion(uaVersion string) bool {
+	if uaVersion == "" {
+		return false
+	}
+	return compareVersions(uaVersion, NewMetadataFormatMinVersion) >= 0
 }

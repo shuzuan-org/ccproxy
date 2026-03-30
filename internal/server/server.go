@@ -122,6 +122,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		CheckInterval:  checkInterval,
 		AutoUpdate:     cfg.Server.IsAutoUpdateEnabled(),
 		APIURL:         cfg.Server.UpdateAPIURL,
+		Channel:        cfg.Server.UpdateChannel,
 	})
 	go upd.Start(ctx)
 

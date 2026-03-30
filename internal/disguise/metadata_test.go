@@ -29,15 +29,15 @@ func TestGenerateClientID_Uniqueness(t *testing.T) {
 }
 
 func TestGenerateUserID_Format(t *testing.T) {
-	uid := GenerateUserID("")
+	uid := GenerateUserID("", "")
 	if !userIDPattern.MatchString(uid) {
 		t.Errorf("user ID does not match expected format: %q", uid)
 	}
 }
 
 func TestGenerateUserID_SameSeedSameSessionUUID(t *testing.T) {
-	uid1 := GenerateUserID("my-session-seed")
-	uid2 := GenerateUserID("my-session-seed")
+	uid1 := GenerateUserID("my-session-seed", "")
+	uid2 := GenerateUserID("my-session-seed", "")
 
 	// Extract session UUID part (after last "_session_").
 	extractSession := func(uid string) string {
@@ -56,8 +56,8 @@ func TestGenerateUserID_SameSeedSameSessionUUID(t *testing.T) {
 }
 
 func TestGenerateUserID_DifferentSeedDifferentSessionUUID(t *testing.T) {
-	uid1 := GenerateUserID("seed-alpha")
-	uid2 := GenerateUserID("seed-beta")
+	uid1 := GenerateUserID("seed-alpha", "")
+	uid2 := GenerateUserID("seed-beta", "")
 
 	extractSession := func(uid string) string {
 		idx := regexp.MustCompile(`_account__session_`).FindStringIndex(uid)
@@ -78,7 +78,7 @@ func TestGenerateUserID_DifferentSeedDifferentSessionUUID(t *testing.T) {
 
 func TestRewriteUserID_FormatA(t *testing.T) {
 	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
-	result := RewriteUserID(original, "my-account-seed")
+	result := RewriteUserID(original, "my-account-seed", "")
 
 	if !userIDPattern.MatchString(result) {
 		t.Errorf("rewritten user_id does not match format A: %q", result)
@@ -90,7 +90,7 @@ func TestRewriteUserID_FormatA(t *testing.T) {
 
 func TestRewriteUserID_FormatB(t *testing.T) {
 	original := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid-123_session_sess-uuid-456"
-	result := RewriteUserID(original, "my-account-seed")
+	result := RewriteUserID(original, "my-account-seed", "")
 
 	// Format B: user_{hex}_account_{uuid}_session_{uuid}
 	formatB := regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account_[\w-]+_session_[\w-]+$`)
@@ -104,8 +104,8 @@ func TestRewriteUserID_FormatB(t *testing.T) {
 
 func TestRewriteUserID_Deterministic(t *testing.T) {
 	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
-	r1 := RewriteUserID(original, "seed-x")
-	r2 := RewriteUserID(original, "seed-x")
+	r1 := RewriteUserID(original, "seed-x", "")
+	r2 := RewriteUserID(original, "seed-x", "")
 	if r1 != r2 {
 		t.Errorf("expected deterministic output, got %q vs %q", r1, r2)
 	}
@@ -113,15 +113,15 @@ func TestRewriteUserID_Deterministic(t *testing.T) {
 
 func TestRewriteUserID_DifferentSeedsDifferentOutput(t *testing.T) {
 	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
-	r1 := RewriteUserID(original, "seed-a")
-	r2 := RewriteUserID(original, "seed-b")
+	r1 := RewriteUserID(original, "seed-a", "")
+	r2 := RewriteUserID(original, "seed-b", "")
 	if r1 == r2 {
 		t.Errorf("expected different output for different seeds, got same: %q", r1)
 	}
 }
 
 func TestRewriteUserID_UnknownFormat_Fallback(t *testing.T) {
-	result := RewriteUserID("some-random-user-id", "seed")
+	result := RewriteUserID("some-random-user-id", "seed", "")
 	if !userIDPattern.MatchString(result) {
 		t.Errorf("fallback user_id does not match expected format: %q", result)
 	}
@@ -133,7 +133,7 @@ func TestRewriteUserIDWithMasking_FormatA(t *testing.T) {
 	t.Parallel()
 	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
 	masked := "masked-uuid-1234"
-	result := RewriteUserIDWithMasking(original, "my-seed", masked)
+	result := RewriteUserIDWithMasking(original, "my-seed", masked, "")
 
 	if !strings.Contains(result, masked) {
 		t.Errorf("expected masked session UUID %q in result %q", masked, result)
@@ -147,7 +147,7 @@ func TestRewriteUserIDWithMasking_FormatB(t *testing.T) {
 	t.Parallel()
 	original := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid-123_session_sess-uuid-456"
 	masked := "masked-uuid-5678"
-	result := RewriteUserIDWithMasking(original, "my-seed", masked)
+	result := RewriteUserIDWithMasking(original, "my-seed", masked, "")
 
 	if !strings.Contains(result, masked) {
 		t.Errorf("expected masked session UUID %q in result %q", masked, result)
@@ -157,7 +157,7 @@ func TestRewriteUserIDWithMasking_FormatB(t *testing.T) {
 func TestRewriteUserIDWithMasking_UnknownFormat(t *testing.T) {
 	t.Parallel()
 	masked := "masked-uuid-9999"
-	result := RewriteUserIDWithMasking("random-id", "seed", masked)
+	result := RewriteUserIDWithMasking("random-id", "seed", masked, "")
 
 	if !strings.Contains(result, masked) {
 		t.Errorf("expected masked session UUID %q in fallback result %q", masked, result)
@@ -189,5 +189,187 @@ func TestDenormalizeModelID_Unknown(t *testing.T) {
 	got := DenormalizeModelID("claude-opus-4-6")
 	if got != "claude-opus-4-6" {
 		t.Errorf("expected unchanged claude-opus-4-6, got %q", got)
+	}
+}
+
+// --- ParseUserID tests ---
+
+func TestParseUserID_OldFormatA(t *testing.T) {
+	t.Parallel()
+	raw := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for format A")
+	}
+	if p.DeviceID != strings.Repeat("ab", 32) {
+		t.Errorf("unexpected DeviceID: %q", p.DeviceID)
+	}
+	if p.SessionID != "abc-123-def" {
+		t.Errorf("unexpected SessionID: %q", p.SessionID)
+	}
+	if p.IsNewFormat {
+		t.Error("expected IsNewFormat=false for old format A")
+	}
+}
+
+func TestParseUserID_OldFormatB(t *testing.T) {
+	t.Parallel()
+	raw := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid_session_sess-uuid"
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for format B")
+	}
+	if p.AccountUUID != "acc-uuid" {
+		t.Errorf("unexpected AccountUUID: %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_NewJSONFormat(t *testing.T) {
+	t.Parallel()
+	raw := `{"device_id":"` + strings.Repeat("ab", 32) + `","account_uuid":"acc-uuid","session_id":"sess-uuid"}`
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for JSON format")
+	}
+	if !p.IsNewFormat {
+		t.Error("expected IsNewFormat=true")
+	}
+	if p.DeviceID != strings.Repeat("ab", 32) {
+		t.Errorf("unexpected DeviceID: %q", p.DeviceID)
+	}
+	if p.SessionID != "sess-uuid" {
+		t.Errorf("unexpected SessionID: %q", p.SessionID)
+	}
+	if p.AccountUUID != "acc-uuid" {
+		t.Errorf("unexpected AccountUUID: %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_NewJSONFormat_NoAccountUUID(t *testing.T) {
+	t.Parallel()
+	raw := `{"device_id":"` + strings.Repeat("ef", 32) + `","session_id":"sess-abc"}`
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID")
+	}
+	if p.AccountUUID != "" {
+		t.Errorf("expected empty AccountUUID, got %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_Invalid(t *testing.T) {
+	t.Parallel()
+	if ParseUserID("random-garbage") != nil {
+		t.Error("expected nil for unrecognized format")
+	}
+	if ParseUserID("") != nil {
+		t.Error("expected nil for empty string")
+	}
+}
+
+func TestParseUserID_JSONMissingDeviceID(t *testing.T) {
+	t.Parallel()
+	raw := `{"session_id":"sess-uuid"}`
+	if ParseUserID(raw) != nil {
+		t.Error("expected nil when device_id missing")
+	}
+}
+
+// --- compareVersions tests ---
+
+func TestCompareVersions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"2.1.78", "2.1.78", 0},
+		{"2.1.79", "2.1.78", 1},
+		{"2.1.77", "2.1.78", -1},
+		{"2.2.0", "2.1.78", 1},
+		{"3.0.0", "2.1.78", 1},
+		{"1.9.99", "2.0.0", -1},
+	}
+	for _, tt := range tests {
+		got := compareVersions(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// --- GenerateUserID with uaVersion ---
+
+func TestGenerateUserID_OldFormat_LowVersion(t *testing.T) {
+	t.Parallel()
+	uid := GenerateUserID("seed", "2.1.22")
+	if !userIDPattern.MatchString(uid) {
+		t.Errorf("expected old string format for version 2.1.22, got %q", uid)
+	}
+}
+
+func TestGenerateUserID_OldFormat_EmptyVersion(t *testing.T) {
+	t.Parallel()
+	uid := GenerateUserID("seed", "")
+	if !userIDPattern.MatchString(uid) {
+		t.Errorf("expected old string format for empty version, got %q", uid)
+	}
+}
+
+func TestGenerateUserID_NewFormat_HighVersion(t *testing.T) {
+	t.Parallel()
+	uid := GenerateUserID("seed", "2.1.78")
+	if !strings.HasPrefix(uid, "{") {
+		t.Errorf("expected JSON format for version 2.1.78, got %q", uid)
+	}
+	p := ParseUserID(uid)
+	if p == nil || !p.IsNewFormat {
+		t.Errorf("expected parseable JSON format, got %q", uid)
+	}
+}
+
+func TestGenerateUserID_NewFormat_Deterministic(t *testing.T) {
+	t.Parallel()
+	uid1 := GenerateUserID("seed-x", "2.1.78")
+	uid2 := GenerateUserID("seed-x", "2.1.78")
+	if uid1 != uid2 {
+		t.Errorf("expected deterministic output, got %q vs %q", uid1, uid2)
+	}
+}
+
+// --- RewriteUserIDWithMasking with uaVersion ---
+
+func TestRewriteUserIDWithMasking_OldFormatA_PreservesFormat(t *testing.T) {
+	t.Parallel()
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_old-sess"
+	result := RewriteUserIDWithMasking(original, "seed", "masked-uuid", "2.1.22")
+	if !strings.Contains(result, "masked-uuid") {
+		t.Errorf("expected masked UUID in result, got %q", result)
+	}
+	if strings.HasPrefix(result, "{") {
+		t.Errorf("expected old string format, got JSON: %q", result)
+	}
+}
+
+func TestRewriteUserIDWithMasking_NewFormatInput_OutputsJSON(t *testing.T) {
+	t.Parallel()
+	original := `{"device_id":"` + strings.Repeat("ab", 32) + `","session_id":"old-sess"}`
+	result := RewriteUserIDWithMasking(original, "seed", "masked-uuid", "2.1.78")
+	if !strings.HasPrefix(result, "{") {
+		t.Errorf("expected JSON output for JSON input, got %q", result)
+	}
+	p := ParseUserID(result)
+	if p == nil || p.SessionID != "masked-uuid" {
+		t.Errorf("expected session_id=masked-uuid in result, got %q", result)
+	}
+}
+
+func TestRewriteUserIDWithMasking_OldInputHighVersion_OutputsJSON(t *testing.T) {
+	t.Parallel()
+	// When uaVersion says new format but input is old, still output JSON (version takes precedence)
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_old-sess"
+	result := RewriteUserIDWithMasking(original, "seed", "masked-uuid", "2.1.78")
+	if !strings.HasPrefix(result, "{") {
+		t.Errorf("expected JSON output for high version, got %q", result)
 	}
 }

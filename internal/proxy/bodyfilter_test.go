@@ -348,6 +348,73 @@ func TestFilterThinkingBlocks_NoContextManagement(t *testing.T) {
 	}
 }
 
+func TestFilterThinkingBlocks_EmptyThinkingBlockSkipped(t *testing.T) {
+	t.Parallel()
+	// Empty thinking block should be skipped, not converted to {"type":"text","text":""}
+	input := `{"messages":[{"role":"assistant","content":[
+        {"type":"thinking","thinking":""},
+        {"type":"text","text":"Hello"}
+    ]}]}`
+	result := FilterThinkingBlocks([]byte(input))
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	messages := parsed["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	// Should only have the "Hello" text block, not an empty text block
+	if len(content) != 1 {
+		t.Errorf("expected 1 content block, got %d: %v", len(content), content)
+	}
+	block := content[0].(map[string]any)
+	if block["text"] != "Hello" {
+		t.Errorf("expected 'Hello', got %v", block["text"])
+	}
+}
+
+func TestStripEmptyTextBlocks(t *testing.T) {
+	t.Parallel()
+	// A request with empty text blocks in the original content should have them stripped
+	input := `{"messages":[{"role":"user","content":[
+        {"type":"text","text":""},
+        {"type":"text","text":"Hello"},
+        {"type":"text","text":""}
+    ]}]}`
+	result := FilterThinkingBlocks([]byte(input))
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	messages := parsed["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	if len(content) != 1 {
+		t.Errorf("expected 1 content block after stripping empties, got %d: %v", len(content), content)
+	}
+}
+
+func TestStripEmptyTextBlocks_AllEmptyGetsPlaceholder(t *testing.T) {
+	t.Parallel()
+	// If ALL blocks are empty/filtered, placeholder is inserted
+	input := `{"messages":[{"role":"assistant","content":[
+        {"type":"thinking","thinking":""},
+        {"type":"redacted_thinking","data":"xyz"}
+    ]}]}`
+	result := FilterThinkingBlocks([]byte(input))
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	messages := parsed["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	if len(content) != 1 {
+		t.Errorf("expected placeholder block, got %d blocks", len(content))
+	}
+	block := content[0].(map[string]any)
+	if block["text"] != "(content removed)" {
+		t.Errorf("expected placeholder, got %v", block["text"])
+	}
+}
+
 func TestFilterSignatureSensitiveBlocks(t *testing.T) {
 	t.Parallel()
 

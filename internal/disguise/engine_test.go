@@ -559,6 +559,54 @@ func TestEngineApply_SystemStringConvertedToArray(t *testing.T) {
 	}
 }
 
+// TestEngineApply_ArraySystemNoDuplicatePrefix verifies that when system is already an
+// array, the Claude Code prompt is prepended as block 0 but the original blocks are
+// NOT prefixed again (regression test for double-injection bug).
+func TestEngineApply_ArraySystemNoDuplicatePrefix(t *testing.T) {
+	e := newTestEngine(t)
+	origReq, upstreamReq := newTestRequestPair(t)
+
+	originalText := "You are a helpful assistant."
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"system": []interface{}{
+			map[string]interface{}{"type": "text", "text": originalText},
+		},
+		"messages": []interface{}{},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+
+	if !applied {
+		t.Fatal("expected disguise to be applied")
+	}
+
+	parsed := parseBody(t, outBody)
+	arr, ok := parsed["system"].([]interface{})
+	if !ok {
+		t.Fatalf("expected system to be array, got %T", parsed["system"])
+	}
+
+	if len(arr) != 2 {
+		t.Fatalf("expected exactly 2 system blocks, got %d", len(arr))
+	}
+
+	// Block 0: injected Claude Code prompt
+	first := arr[0].(map[string]interface{})
+	if first["text"] != claudeCodeSystemPrompt {
+		t.Errorf("expected block 0 to be Claude Code prompt, got %q", first["text"])
+	}
+
+	// Block 1: original text, NOT prefixed with Claude Code banner
+	second := arr[1].(map[string]interface{})
+	if second["text"] != originalText {
+		t.Errorf("expected block 1 to be original text %q, got %q", originalText, second["text"])
+	}
+	if strings.Contains(second["text"].(string), "You are Claude Code") {
+		t.Errorf("block 1 should not contain Claude Code prefix, got %q", second["text"])
+	}
+}
+
 // TestEngineApply_InjectsEmptyTools verifies that an empty tools array is injected
 // when the request body has no tools field.
 func TestEngineApply_InjectsEmptyTools(t *testing.T) {

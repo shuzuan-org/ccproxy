@@ -20,6 +20,7 @@ type Config struct {
 	CheckInterval  time.Duration
 	AutoUpdate     bool
 	APIURL         string // GitHub Enterprise API base URL (empty = github.com)
+	Channel        string // "stable" | "beta"; empty defaults to stable behaviour
 }
 
 // UpdateStatus represents the current update state.
@@ -28,6 +29,7 @@ type UpdateStatus struct {
 	LatestVersion  string    `json:"latest_version"`
 	LastCheck      time.Time `json:"last_check"`
 	AutoUpdate     bool      `json:"auto_update"`
+	Channel        string    `json:"channel"`
 	Checking       bool      `json:"checking"`
 	Updating       bool      `json:"updating"`
 }
@@ -72,6 +74,7 @@ func (u *Updater) Status() UpdateStatus {
 		LatestVersion:  u.latest,
 		LastCheck:      u.lastCheck,
 		AutoUpdate:     u.cfg.AutoUpdate,
+		Channel:        u.cfg.Channel,
 		Checking:       u.checking,
 		Updating:       u.updating,
 	}
@@ -237,8 +240,9 @@ func (u *Updater) findLatest(ctx context.Context) (*selfupdate.Release, *selfupd
 	}
 
 	upd, err := selfupdate.NewUpdater(selfupdate.Config{
-		Source:    source,
-		Validator: &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
+		Source:     source,
+		Validator:  &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
+		Prerelease: u.cfg.Channel == "beta",
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create updater: %w", err)

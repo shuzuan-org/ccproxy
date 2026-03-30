@@ -3,6 +3,7 @@ package disguise
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -214,6 +215,28 @@ func TestDiceCoefficient_SimilarStrings(t *testing.T) {
 	}
 }
 
+func TestIsClaudeCodeClient_JSONFormatUserID(t *testing.T) {
+	t.Parallel()
+	// CLI >= 2.1.78 sends user_id as JSON object
+	body := []byte(`{
+        "model": "claude-opus-4-5",
+        "max_tokens": 100,
+        "stream": true,
+        "metadata": {
+            "user_id": {"device_id": "aabbcc", "session_id": "550e8400-e29b-41d4-a716-446655440000"}
+        },
+        "system": "You are Claude Code, Anthropic's official CLI for Claude, version 2.0"
+    }`)
+	headers := http.Header{
+		"User-Agent":        []string{"claude-cli/2.1.78 (darwin)"},
+		"Anthropic-Version": []string{"2023-06-01"},
+	}
+	result := IsClaudeCodeClient(headers, body, "/v1/messages")
+	if !result {
+		t.Error("expected JSON-format user_id to be recognized as CC client")
+	}
+}
+
 func TestIsClaudeCodeClient_ArraySystemWithBillingHeader(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
@@ -235,5 +258,69 @@ func TestIsClaudeCodeClient_ArraySystemWithBillingHeader(t *testing.T) {
 	// Should detect: X-App(1) + Anthropic-Version(1) + user_id(1) + system_prompt(1) = 4 of 5
 	if !IsClaudeCodeClient(headers, body, messagesPath) {
 		t.Error("expected true for array system with billing header prefix block and CC prompt in later block")
+	}
+}
+
+func TestValidUserIDRaw(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want bool
+	}{
+		{
+			name: "nil raw",
+			raw:  nil,
+			want: false,
+		},
+		{
+			name: "empty raw",
+			raw:  json.RawMessage{},
+			want: false,
+		},
+		{
+			name: "JSON null",
+			raw:  json.RawMessage(`null`),
+			want: false,
+		},
+		{
+			name: "JSON number",
+			raw:  json.RawMessage(`42`),
+			want: false,
+		},
+		{
+			name: "valid old format A string",
+			raw:  json.RawMessage(`"user_` + strings.Repeat("a", 64) + `_account__session_550e8400-e29b-41d4-a716-446655440000"`),
+			want: true,
+		},
+		{
+			name: "valid new JSON format",
+			raw:  json.RawMessage(`{"device_id":"abc123","session_id":"550e8400-e29b-41d4-a716-446655440000"}`),
+			want: true,
+		},
+		{
+			name: "JSON object missing device_id",
+			raw:  json.RawMessage(`{"session_id":"550e8400-e29b-41d4-a716-446655440000"}`),
+			want: false,
+		},
+		{
+			name: "JSON object missing session_id",
+			raw:  json.RawMessage(`{"device_id":"abc123"}`),
+			want: false,
+		},
+		{
+			name: "invalid string format",
+			raw:  json.RawMessage(`"not-a-user-id"`),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := validUserIDRaw(tc.raw)
+			if got != tc.want {
+				t.Errorf("validUserIDRaw(%q) = %v, want %v", string(tc.raw), got, tc.want)
+			}
+		})
 	}
 }

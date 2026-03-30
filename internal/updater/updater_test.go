@@ -142,3 +142,38 @@ func TestIsDocker(t *testing.T) {
 	// Just verify it returns a bool without panicking.
 	_ = u.IsDocker()
 }
+
+func TestStatus_ChannelUnset(t *testing.T) {
+	t.Parallel()
+	u := New(Config{
+		CurrentVersion: "1.0.0",
+		Repo:           "shuzuan-org/ccproxy",
+		CheckInterval:  time.Hour,
+		AutoUpdate:     true,
+	})
+	assert.Equal(t, "", u.Status().Channel) // Channel is empty when Config.Channel is not set; config layer fills "stable" before passing to New()
+}
+
+func TestStatus_ChannelStable(t *testing.T) {
+	t.Parallel()
+	u := New(Config{
+		CurrentVersion: "1.0.0",
+		Repo:           "shuzuan-org/ccproxy",
+		CheckInterval:  time.Hour,
+		AutoUpdate:     true,
+		Channel:        "stable",
+	})
+	assert.Equal(t, "stable", u.Status().Channel)
+}
+
+func TestStatus_ChannelBeta(t *testing.T) {
+	t.Parallel()
+	u := New(Config{
+		CurrentVersion: "1.0.0",
+		Repo:           "shuzuan-org/ccproxy",
+		CheckInterval:  time.Hour,
+		AutoUpdate:     true,
+		Channel:        "beta",
+	})
+	assert.Equal(t, "beta", u.Status().Channel)
+}

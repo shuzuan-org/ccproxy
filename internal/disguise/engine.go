@@ -4,13 +4,27 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/binn/ccproxy/internal/observe"
 )
+
+var uaVersionRegex = regexp.MustCompile(`^claude-cli/(\d+\.\d+\.\d+)`)
+
+// extractUAVersion extracts the version string from a Claude CLI User-Agent.
+// Returns "" if the UA does not match the expected pattern.
+func extractUAVersion(ua string) string {
+	m := uaVersionRegex.FindStringSubmatch(ua)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
 
 // Engine orchestrates the multi-layer Claude CLI impersonation.
 type Engine struct {
@@ -61,7 +75,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		e.fingerprints.LearnFromHeaders(accountName, origReq.Header)
 
 		// Real CC client via OAuth: lightweight processing only.
-		// 1. Supplement oauth beta header (preserve client's existing betas)
+		// 1. Parse body first — filtering and user_id rewriting both require parsed state.
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return body, true
+		}
+
+		// 2. Supplement oauth beta header (preserve client's existing betas)
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
 		newBeta := SupplementBetaHeader(clientBeta)
 		upstreamReq.Header.Set("Anthropic-Beta", newBeta)
@@ -72,12 +92,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 				"after", newBeta,
 			)
 		}
-
-		// 2. Rewrite metadata.user_id with session masking to prevent cross-user correlation
-		var parsed map[string]interface{}
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			return body, true
-		}
+		// 3. Rewrite metadata.user_id with session masking to prevent cross-user correlation
 		metadata, ok := parsed["metadata"].(map[string]interface{})
 		if !ok {
 			metadata = make(map[string]interface{})
@@ -86,16 +101,29 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		filterSystemBlocksByPrefix(parsed)
 
 		maskedSession := e.sessions.Get(accountName)
-		originalUserID, _ := metadata["user_id"].(string)
-		if originalUserID != "" {
-			metadata["user_id"] = RewriteUserIDWithMasking(originalUserID, sessionSeed, maskedSession)
-		} else {
-			metadata["user_id"] = GenerateUserID(sessionSeed)
+		uaVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
+		originalUserIDRaw := metadata["user_id"]
+		// user_id may be a string (old format) or map[string]interface{} (new JSON format >= 2.1.78)
+		var originalUserIDStr string
+		switch v := originalUserIDRaw.(type) {
+		case string:
+			originalUserIDStr = v
+		case map[string]interface{}:
+			// JSON object format: re-marshal to string for ParseUserID
+			if b, err := json.Marshal(v); err == nil {
+				originalUserIDStr = string(b)
+			}
 		}
+		if originalUserIDStr != "" {
+			metadata["user_id"] = RewriteUserIDWithMasking(originalUserIDStr, sessionSeed, maskedSession, uaVersion)
+		} else {
+			metadata["user_id"] = GenerateUserID(sessionSeed, uaVersion)
+		}
+		newUserIDStr := fmt.Sprintf("%v", metadata["user_id"])
 		observe.Logger(ctx).Debug("disguise: user_id rewritten (CC pass-through)",
 			"account", accountName,
-			"before", truncateUserID(originalUserID),
-			"after", truncateUserID(metadata["user_id"].(string)),
+			"before", truncateUserID(originalUserIDStr),
+			"after", truncateUserID(newUserIDStr),
 		)
 		parsed["metadata"] = metadata
 		if result, err := json.Marshal(parsed); err == nil {
@@ -205,9 +233,24 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	maskedSession := e.sessions.Get(accountName)
 	originalUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
-		originalUserID, _ = meta["user_id"].(string)
+		switch v := meta["user_id"].(type) {
+		case string:
+			originalUserID = v
+		case map[string]interface{}:
+			if b, err := json.Marshal(v); err == nil {
+				originalUserID = string(b)
+			}
+		}
 	}
-	injectMetadataUserIDInPlace(parsed, sessionSeed, maskedSession)
+	// For non-CC path, use the fingerprint UA version to determine user_id format.
+	// Default fingerprint is claude-cli/2.1.22, so old format is used by default.
+	fpUAVersion := ""
+	if fp != nil {
+		fpUAVersion = extractUAVersion(fp.UserAgent)
+	} else {
+		fpUAVersion = extractUAVersion(DefaultHeaders["User-Agent"])
+	}
+	injectMetadataUserIDInPlace(parsed, sessionSeed, maskedSession, fpUAVersion)
 	newUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
 		newUserID, _ = meta["user_id"].(string)
@@ -400,7 +443,8 @@ func sanitizeSystemTextInPlace(parsed map[string]interface{}) {
 			}
 			for _, r := range openCodeReplacements {
 				if strings.Contains(text, r[0]) {
-					m["text"] = strings.ReplaceAll(text, r[0], r[1])
+					text = strings.ReplaceAll(text, r[0], r[1])
+					m["text"] = text
 				}
 			}
 		}
@@ -445,20 +489,10 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 	case []interface{}:
 		newSystem = make([]interface{}, 0, len(system)+1)
 		newSystem = append(newSystem, claudeCodeBlock)
-		prefixedNext := false
 		for _, item := range system {
 			if m, ok := item.(map[string]interface{}); ok {
 				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) == claudeCodePrefix {
 					continue // skip duplicate Claude Code block
-				}
-				// Prefix the first subsequent text block once
-				if !prefixedNext {
-					if blockType, _ := m["type"].(string); blockType == "text" {
-						if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" && !strings.HasPrefix(text, claudeCodePrefix) {
-							m["text"] = claudeCodePrefix + "\n\n" + text
-							prefixedNext = true
-						}
-					}
 				}
 			}
 			newSystem = append(newSystem, item)
@@ -470,20 +504,33 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 	parsed["system"] = newSystem
 }
 
-// injectMetadataUserIDInPlace sets metadata.user_id in parsed map in-place.
-func injectMetadataUserIDInPlace(parsed map[string]interface{}, sessionSeed string, maskedSessionUUID string) {
+func injectMetadataUserIDInPlace(parsed map[string]interface{}, sessionSeed string, maskedSessionUUID string, uaVersion string) {
 	metadata, ok := parsed["metadata"].(map[string]interface{})
 	if !ok {
 		metadata = make(map[string]interface{})
 	}
-	userID := GenerateUserID(sessionSeed)
-	// Replace the session UUID portion with the masked session UUID
-	if maskedSessionUUID != "" {
-		parts := strings.SplitN(userID, "_account__session_", 2)
-		if len(parts) == 2 {
-			userID = parts[0] + "_account__session_" + maskedSessionUUID
-		}
+
+	var clientID string
+	if sessionSeed != "" {
+		clientID = deterministicClientID(sessionSeed, "default-client")
+	} else {
+		clientID = GenerateClientID()
 	}
+
+	sessionID := maskedSessionUUID
+	if sessionID == "" {
+		sessionID = generateSessionUUID(sessionSeed)
+	}
+
+	var userID string
+	if isNewMetadataFormatVersion(uaVersion) {
+		obj := userIDJSON{DeviceID: clientID, SessionID: sessionID}
+		b, _ := json.Marshal(obj)
+		userID = string(b)
+	} else {
+		userID = fmt.Sprintf("user_%s_account__session_%s", clientID, sessionID)
+	}
+
 	metadata["user_id"] = userID
 	parsed["metadata"] = metadata
 }
