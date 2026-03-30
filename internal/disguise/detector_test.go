@@ -214,6 +214,28 @@ func TestDiceCoefficient_SimilarStrings(t *testing.T) {
 	}
 }
 
+func TestIsClaudeCodeClient_JSONFormatUserID(t *testing.T) {
+	t.Parallel()
+	// CLI >= 2.1.78 sends user_id as JSON object
+	body := []byte(`{
+        "model": "claude-opus-4-5",
+        "max_tokens": 100,
+        "stream": true,
+        "metadata": {
+            "user_id": {"device_id": "aabbcc", "session_id": "550e8400-e29b-41d4-a716-446655440000"}
+        },
+        "system": "You are Claude Code, Anthropic's official CLI for Claude, version 2.0"
+    }`)
+	headers := http.Header{
+		"User-Agent":        []string{"claude-cli/2.1.78 (darwin)"},
+		"Anthropic-Version": []string{"2023-06-01"},
+	}
+	result := IsClaudeCodeClient(headers, body, "/v1/messages")
+	if !result {
+		t.Error("expected JSON-format user_id to be recognized as CC client")
+	}
+}
+
 func TestIsClaudeCodeClient_ArraySystemWithBillingHeader(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
