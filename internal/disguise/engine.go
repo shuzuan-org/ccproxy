@@ -232,7 +232,14 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	maskedSession := e.sessions.Get(accountName)
 	originalUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
-		originalUserID, _ = meta["user_id"].(string)
+		switch v := meta["user_id"].(type) {
+		case string:
+			originalUserID = v
+		case map[string]interface{}:
+			if b, err := json.Marshal(v); err == nil {
+				originalUserID = string(b)
+			}
+		}
 	}
 	// For non-CC path, use the fingerprint UA version to determine user_id format.
 	// Default fingerprint is claude-cli/2.1.22, so old format is used by default.
