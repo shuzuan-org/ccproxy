@@ -84,7 +84,8 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		// 2. Supplement oauth beta header (preserve client's existing betas)
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
 		newBeta := SupplementBetaHeader(clientBeta)
-		upstreamReq.Header.Set("Anthropic-Beta", newBeta)
+		delete(upstreamReq.Header, "Anthropic-Beta")
+		upstreamReq.Header["anthropic-beta"] = []string{newBeta}
 		if clientBeta != newBeta {
 			observe.Logger(ctx).Debug("disguise: beta header supplemented",
 				"account", accountName,
@@ -199,7 +200,8 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			newBeta = BetaClaudeCode + "," + newBeta
 		}
 	}
-	upstreamReq.Header.Set("Anthropic-Beta", newBeta)
+	delete(upstreamReq.Header, "Anthropic-Beta")
+	upstreamReq.Header["anthropic-beta"] = []string{newBeta}
 	observe.Logger(ctx).Debug("disguise: [layer 3] beta header set",
 		"account", accountName,
 		"model", model,

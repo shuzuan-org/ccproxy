@@ -193,7 +193,7 @@ L3 Score — 负载感知选择 + 预算状态过滤
 4. **Messages 路径**：需要 5 个信号中的 ≥2 个：
    - `X-App: cli`
    - `Anthropic-Beta` 包含 `claude-code`
-   - `metadata.user_id` 匹配 `user_{hex64}_account_{uuid?}_session_{uuid}` 格式
+   - `metadata.user_id` 匹配 `user_{hex64}_account_{uuid?}_session_{uuid}` 格式（CLI<2.1.78 的字符串格式，或 CLI≥2.1.78 的 JSON 对象格式 `{"user":..., "account":..., "session":...}`）
    - 系统提示词前缀匹配或 Dice 系数 ≥ 0.5
    - `Anthropic-Version` 头非空
 
@@ -201,7 +201,7 @@ L3 Score — 负载感知选择 + 预算状态过滤
 
 | 层 | 文件 | 功能 |
 |----|------|------|
-| 1 | `tls/fingerprint.go` | TLS 指纹伪造（Node.js 20.x + OpenSSL 3.x） |
+| 1 | `tls/fingerprint.go` | TLS 指纹伪造（Node.js 24.x） |
 | 2 | `headers.go` | HTTP 头替换：User-Agent, X-Stainless-*, X-App（每账号指纹） |
 | 3 | `beta.go` | anthropic-beta 令牌组合（7 个常量，按模型和工具场景组合） |
 | 4 | `engine.go` | 系统提示词注入 Claude Code 身份声明 |
@@ -270,7 +270,7 @@ ExchangeAndSave()             StartAutoRefresh (5 min tick)
 ### 4. TLS 指纹伪造 (internal/tls)
 
 - 使用 `refraction-networking/utls` 库
-- 模拟 Node.js 20.x + OpenSSL 3.x 的 TLS ClientHello
+- 模拟 Node.js 24.x 的 TLS ClientHello（17 个 cipher suites，含 ECH 扩展）
 - 特征：
   - TLS 1.2/1.3 双版本支持
   - X25519 + P-256/384/521 曲线
@@ -305,6 +305,15 @@ ensureConfigFile() → 不存在则创建默认配置
 TOML 配置在启动时一次性加载，变更需要重启生效。
 
 动态变更通过管理面板实现：账号的增删通过 `AccountRegistry` + `onChange` 回调即时生效，无需重启。
+
+#### 自动升级相关配置
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `auto_update` | `true` | 启用后台定期检查更新（Docker 环境自动禁用） |
+| `update_check_interval` | `1h` | 检查间隔（5m - 24h） |
+| `update_channel` | `stable` | 更新渠道：`stable` 仅接收正式版，`beta` 也接收 GitHub pre-release 版本 |
+| `update_repo` | `shuzuan-org/ccproxy` | 检查更新的 GitHub 仓库 |
 
 ### 6. 可观测性 (internal/observe)
 

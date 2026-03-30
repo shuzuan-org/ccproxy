@@ -28,16 +28,23 @@ func ApplyHeaders(req *http.Request, isStream bool, fp *Fingerprint) {
 			req.Header.Set(k, v)
 		}
 	}
-	// Fixed headers (same for all accounts)
+	// Fixed headers (same for all accounts).
+	// X-Stainless-* are Title-Case per the Stainless SDK wire format.
 	req.Header.Set("X-Stainless-Lang", "js")
 	req.Header.Set("X-Stainless-Runtime", "node")
 	req.Header.Set("X-Stainless-Retry-Count", "0")
 	req.Header.Set("X-Stainless-Timeout", "600")
-	req.Header.Set("X-App", "cli")
-	req.Header.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Anthropic-Version", "2023-06-01")
+	// Anthropic SDK and x-app headers are lowercase on the wire (aligned with
+	// real Claude CLI traffic capture; see sub2api header_util.go wire casing).
+	delete(req.Header, "X-App")
+	req.Header["x-app"] = []string{"cli"}
+	delete(req.Header, "Anthropic-Dangerous-Direct-Browser-Access")
+	req.Header["anthropic-dangerous-direct-browser-access"] = []string{"true"}
+	delete(req.Header, "Anthropic-Version")
+	req.Header["anthropic-version"] = []string{"2023-06-01"}
 	if isStream {
-		req.Header.Set("X-Stainless-Helper-Method", "stream")
+		delete(req.Header, "X-Stainless-Helper-Method")
+		req.Header["x-stainless-helper-method"] = []string{"stream"}
 	}
 }

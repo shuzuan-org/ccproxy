@@ -104,6 +104,7 @@ make build
 | `log_level` | `info` | 日志级别（`debug`、`info`、`warn`、`error`） |
 | `auto_update` | `true` | 启用后台自动检查更新 |
 | `update_check_interval` | `1h` | 检查间隔（5m - 24h） |
+| `update_channel` | `stable` | 更新渠道：`stable` 仅接收正式版，`beta` 也接收预发布版 |
 | `update_repo` | `shuzuan-org/ccproxy` | GitHub 仓库（用于自动更新） |
 
 ### `[[api_keys]]`

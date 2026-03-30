@@ -73,8 +73,8 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	if ua := upstreamReq.Header.Get("User-Agent"); !strings.HasPrefix(ua, "claude-cli/") {
 		t.Errorf("expected claude-cli User-Agent, got %q", ua)
 	}
-	if upstreamReq.Header.Get("X-App") != "cli" {
-		t.Errorf("expected X-App=cli, got %q", upstreamReq.Header.Get("X-App"))
+	if upstreamReq.Header["x-app"] == nil || upstreamReq.Header["x-app"][0] != "cli" {
+		t.Errorf("expected x-app=cli, got %q", upstreamReq.Header["x-app"])
 	}
 	if upstreamReq.Header.Get("X-Stainless-Lang") != "js" {
 		t.Errorf("expected X-Stainless-Lang=js, got %q", upstreamReq.Header.Get("X-Stainless-Lang"))
@@ -84,8 +84,8 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 	}
 
 	// Layer 3: anthropic-beta header (non-Haiku without tools → MessageBetaHeaderNoTools)
-	beta := upstreamReq.Header.Get("Anthropic-Beta")
-	if beta != MessageBetaHeaderNoTools {
+	beta := upstreamReq.Header["anthropic-beta"]
+	if len(beta) == 0 || beta[0] != MessageBetaHeaderNoTools {
 		t.Errorf("expected anthropic-beta=%q, got %q", MessageBetaHeaderNoTools, beta)
 	}
 
@@ -138,8 +138,8 @@ func TestEngineApply_OAuthNonClaudeCode_WithTools(t *testing.T) {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	beta := upstreamReq.Header.Get("Anthropic-Beta")
-	if beta != DefaultBetaHeader {
+	beta := upstreamReq.Header["anthropic-beta"]
+	if len(beta) == 0 || beta[0] != DefaultBetaHeader {
 		t.Errorf("expected beta=%q for request with tools, got %q", DefaultBetaHeader, beta)
 	}
 }
@@ -181,7 +181,11 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 	}
 
 	// Beta header: should have oauth token supplemented
-	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	betaVals := upstreamReq.Header["anthropic-beta"]
+	beta := ""
+	if len(betaVals) > 0 {
+		beta = betaVals[0]
+	}
 	if !strings.Contains(beta, BetaOAuth) {
 		t.Errorf("expected beta to contain %q, got %q", BetaOAuth, beta)
 	}
@@ -426,9 +430,12 @@ func TestEngineApply_StreamHeader(t *testing.T) {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	helperMethod := upstreamReq.Header.Get("X-Stainless-Helper-Method")
+	helperMethod := ""
+	if v := upstreamReq.Header["x-stainless-helper-method"]; len(v) > 0 {
+		helperMethod = v[0]
+	}
 	if helperMethod != "stream" {
-		t.Errorf("expected X-Stainless-Helper-Method=stream for streaming request, got %q", helperMethod)
+		t.Errorf("expected x-stainless-helper-method=stream for streaming request, got %q", helperMethod)
 	}
 }
 
@@ -1003,7 +1010,10 @@ func TestEngineApply_CountTokensBeta(t *testing.T) {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	beta := ""
+	if v := upstreamReq.Header["anthropic-beta"]; len(v) > 0 {
+		beta = v[0]
+	}
 	if !strings.Contains(beta, BetaTokenCounting) {
 		t.Errorf("expected beta to contain %q for count_tokens, got %q", BetaTokenCounting, beta)
 	}
@@ -1031,7 +1041,10 @@ func TestEngineApply_MergesClientBetas(t *testing.T) {
 		t.Fatal("expected disguise to be applied")
 	}
 
-	beta := upstreamReq.Header.Get("Anthropic-Beta")
+	beta := ""
+	if v := upstreamReq.Header["anthropic-beta"]; len(v) > 0 {
+		beta = v[0]
+	}
 	// Client betas should be preserved
 	if !strings.Contains(beta, BetaContext1M) {
 		t.Errorf("expected beta to contain client %q, got %q", BetaContext1M, beta)

@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+// rawHeader reads a header by its exact wire-format key (bypassing Go's
+// canonical key normalisation, which would miss lowercase keys like "x-app").
+func rawHeader(h http.Header, key string) string {
+	if v := h[key]; len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
 func TestApplyHeaders_AllDefaultHeaders(t *testing.T) {
 	t.Parallel()
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", nil)
@@ -18,14 +27,18 @@ func TestApplyHeaders_AllDefaultHeaders(t *testing.T) {
 	if got := req.Header.Get("X-Stainless-Runtime"); got != "node" {
 		t.Errorf("X-Stainless-Runtime: expected %q, got %q", "node", got)
 	}
-	if got := req.Header.Get("X-App"); got != "cli" {
-		t.Errorf("X-App: expected %q, got %q", "cli", got)
+	// Lowercase wire-format headers
+	if got := rawHeader(req.Header, "x-app"); got != "cli" {
+		t.Errorf("x-app: expected %q, got %q", "cli", got)
 	}
 	if got := req.Header.Get("Accept"); got != "application/json" {
 		t.Errorf("Accept: expected application/json, got %q", got)
 	}
-	if got := req.Header.Get("Anthropic-Version"); got != "2023-06-01" {
-		t.Errorf("Anthropic-Version: expected 2023-06-01, got %q", got)
+	if got := rawHeader(req.Header, "anthropic-version"); got != "2023-06-01" {
+		t.Errorf("anthropic-version: expected 2023-06-01, got %q", got)
+	}
+	if got := rawHeader(req.Header, "anthropic-dangerous-direct-browser-access"); got != "true" {
+		t.Errorf("anthropic-dangerous-direct-browser-access: expected %q, got %q", "true", got)
 	}
 
 	// With nil fingerprint, should use default headers.
@@ -78,8 +91,8 @@ func TestApplyHeaders_StreamAddsHelperMethod(t *testing.T) {
 	req.Header = http.Header{}
 	ApplyHeaders(req, true, nil)
 
-	if got := req.Header.Get("X-Stainless-Helper-Method"); got != "stream" {
-		t.Errorf("expected X-Stainless-Helper-Method=stream, got %q", got)
+	if got := rawHeader(req.Header, "x-stainless-helper-method"); got != "stream" {
+		t.Errorf("expected x-stainless-helper-method=stream, got %q", got)
 	}
 }
 
@@ -89,8 +102,8 @@ func TestApplyHeaders_NoStreamNoHelperMethod(t *testing.T) {
 	req.Header = http.Header{}
 	ApplyHeaders(req, false, nil)
 
-	if got := req.Header.Get("X-Stainless-Helper-Method"); got != "" {
-		t.Errorf("expected X-Stainless-Helper-Method to be absent, got %q", got)
+	if got := rawHeader(req.Header, "x-stainless-helper-method"); got != "" {
+		t.Errorf("expected x-stainless-helper-method to be absent, got %q", got)
 	}
 }
 

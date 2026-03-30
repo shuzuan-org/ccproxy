@@ -464,8 +464,8 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 	if upstreamReq.Header.Get("User-Agent") == "" {
 		t.Error("expected User-Agent to be set after disguise")
 	}
-	if upstreamReq.Header.Get("X-App") != "cli" {
-		t.Errorf("expected X-App: cli, got %q", upstreamReq.Header.Get("X-App"))
+	if upstreamReq.Header["x-app"] == nil || upstreamReq.Header["x-app"][0] != "cli" {
+		t.Errorf("expected x-app: cli, got %q", upstreamReq.Header["x-app"])
 	}
 }
 
