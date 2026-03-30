@@ -47,10 +47,8 @@ func TestClaudeCLIv2Spec_FreshPerCall(t *testing.T) {
 
 func TestClaudeCLIv2Spec_CipherSuiteCount(t *testing.T) {
 	spec := claudeCLIv2Spec()
-	// Full Node.js 20.x + OpenSSL 3.x profile: 59 cipher suites covering
-	// TLS 1.3, ECDHE, DHE, DHE-DSS, AES-CCM, ARIA, legacy RSA, and SCSV.
-	if got := len(spec.CipherSuites); got != 59 {
-		t.Errorf("expected 59 cipher suites, got %d", got)
+	if got := len(spec.CipherSuites); got != 17 {
+		t.Errorf("expected 17 cipher suites, got %d", got)
 	}
 }
 
@@ -134,6 +132,10 @@ func ja3Hash(spec *utls.ClientHelloSpec) string {
 		switch e := ext.(type) {
 		case *utls.SNIExtension:
 			extIDs = append(extIDs, "0")
+		case *utls.GREASEEncryptedClientHelloExtension:
+			extIDs = append(extIDs, "65037")
+		case *utls.StatusRequestExtension:
+			extIDs = append(extIDs, "5")
 		case *utls.SupportedPointsExtension:
 			extIDs = append(extIDs, "11")
 			for _, p := range e.SupportedPoints {
@@ -150,10 +152,14 @@ func ja3Hash(spec *utls.ClientHelloSpec) string {
 			extIDs = append(extIDs, "16")
 		case *utls.ExtendedMasterSecretExtension:
 			extIDs = append(extIDs, "23")
+		case *utls.RenegotiationInfoExtension:
+			extIDs = append(extIDs, "65281")
 		case *utls.GenericExtension:
 			extIDs = append(extIDs, strconv.Itoa(int(e.Id)))
 		case *utls.SignatureAlgorithmsExtension:
 			extIDs = append(extIDs, "13")
+		case *utls.SCTExtension:
+			extIDs = append(extIDs, "18")
 		case *utls.SupportedVersionsExtension:
 			extIDs = append(extIDs, "43")
 		case *utls.PSKKeyExchangeModesExtension:
@@ -179,14 +185,76 @@ func ja3Hash(spec *utls.ClientHelloSpec) string {
 
 func TestClaudeCLIv2Spec_JA3Hash(t *testing.T) {
 	t.Parallel()
-	// Lock down the JA3 fingerprint so accidental spec changes are caught.
-	// Captured from real Claude CLI v2 (Node.js 20.x + OpenSSL 3.x).
-	const expectedJA3 = "1a28e69016765d92e3b381168d68922c"
+	const expectedJA3 = "44f88fca027f27bab4bb08d4af15f23e"
 
 	spec := claudeCLIv2Spec()
 	got := ja3Hash(spec)
 	if got != expectedJA3 {
 		t.Errorf("JA3 hash mismatch:\n  got:  %s\n  want: %s", got, expectedJA3)
+	}
+}
+
+func TestClaudeCLIv2Spec_DefaultALPN(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			if len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
+				t.Fatalf("unexpected ALPN protocols: %#v", alpn.AlpnProtocols)
+			}
+			return
+		}
+	}
+	t.Fatal("expected ALPNExtension")
+}
+
+func TestClaudeCLIv2Spec_DefaultSupportedVersions(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	for _, ext := range spec.Extensions {
+		if versions, ok := ext.(*utls.SupportedVersionsExtension); ok {
+			want := []uint16{utls.VersionTLS13, utls.VersionTLS12}
+			if len(versions.Versions) != len(want) {
+				t.Fatalf("supported versions len=%d want=%d", len(versions.Versions), len(want))
+			}
+			for i := range want {
+				if versions.Versions[i] != want[i] {
+					t.Fatalf("supported version[%d]=0x%04x want 0x%04x", i, versions.Versions[i], want[i])
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("expected SupportedVersionsExtension")
+}
+
+func TestClaudeCLIv2Spec_DefaultKeyShare(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	for _, ext := range spec.Extensions {
+		if ks, ok := ext.(*utls.KeyShareExtension); ok {
+			if len(ks.KeyShares) != 1 || ks.KeyShares[0].Group != utls.X25519 {
+				t.Fatalf("unexpected key shares: %#v", ks.KeyShares)
+			}
+			return
+		}
+	}
+	t.Fatal("expected KeyShareExtension")
+}
+
+func TestClaudeCLIv2Spec_DefaultIncludesECH(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	for _, ext := range spec.Extensions {
+		if _, ok := ext.(*utls.GREASEEncryptedClientHelloExtension); ok {
+			return
+		}
+	}
+	t.Fatal("expected GREASEEncryptedClientHelloExtension")
+}
+
+func TestClaudeCLIv2Spec_DefaultHasNoGREASEBookends(t *testing.T) {
+	spec := claudeCLIv2Spec()
+	for _, ext := range spec.Extensions {
+		if _, ok := ext.(*utls.UtlsGREASEExtension); ok {
+			t.Fatal("did not expect UtlsGREASEExtension in default spec")
+		}
 	}
 }
 
