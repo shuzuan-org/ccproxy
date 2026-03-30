@@ -4,8 +4,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // GenerateClientID generates a random 64-character hex string (32 bytes).
@@ -123,4 +126,85 @@ func GenerateUserID(sessionSeed string) string {
 	}
 	sessionUUID := generateSessionUUID(sessionSeed)
 	return fmt.Sprintf("user_%s_account__session_%s", clientID, sessionUUID)
+}
+
+// NewMetadataFormatMinVersion is the minimum Claude CLI version that uses the
+// JSON object format for metadata.user_id instead of the legacy string format.
+const NewMetadataFormatMinVersion = "2.1.78"
+
+// userIDJSON is the new metadata.user_id format used by Claude CLI >= 2.1.78.
+type userIDJSON struct {
+	DeviceID    string `json:"device_id"`
+	AccountUUID string `json:"account_uuid,omitempty"`
+	SessionID   string `json:"session_id"`
+}
+
+// ParsedUserID holds the decoded fields from either metadata.user_id format.
+type ParsedUserID struct {
+	DeviceID    string
+	AccountUUID string // empty when absent
+	SessionID   string
+	IsNewFormat bool // true if the original was JSON object format
+}
+
+// ParseUserID parses both the legacy string format and the new JSON object format.
+// Returns nil when the input does not match either known format.
+func ParseUserID(rawID string) *ParsedUserID {
+	rawID = strings.TrimSpace(rawID)
+	if rawID == "" {
+		return nil
+	}
+	// New format: JSON object {"device_id":"...","session_id":"..."}
+	if strings.HasPrefix(rawID, "{") {
+		var obj userIDJSON
+		if err := json.Unmarshal([]byte(rawID), &obj); err == nil && obj.DeviceID != "" && obj.SessionID != "" {
+			return &ParsedUserID{
+				DeviceID:    obj.DeviceID,
+				AccountUUID: obj.AccountUUID,
+				SessionID:   obj.SessionID,
+				IsNewFormat: true,
+			}
+		}
+		return nil
+	}
+	// Legacy format A: user_{64hex}_account__session_{uuid}
+	if m := userIDFormatA.FindStringSubmatch(rawID); m != nil {
+		return &ParsedUserID{DeviceID: m[1], SessionID: m[2]}
+	}
+	// Legacy format B: user_{64hex}_account_{uuid}_session_{uuid}
+	if m := userIDFormatB.FindStringSubmatch(rawID); m != nil {
+		return &ParsedUserID{DeviceID: m[1], AccountUUID: m[2], SessionID: m[3]}
+	}
+	return nil
+}
+
+// compareVersions compares two semver strings of the form "X.Y.Z".
+// Returns -1, 0, or 1 like strings.Compare.
+func compareVersions(a, b string) int {
+	partsA := strings.SplitN(a, ".", 3)
+	partsB := strings.SplitN(b, ".", 3)
+	for i := 0; i < 3; i++ {
+		var na, nb int
+		if i < len(partsA) {
+			na, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			nb, _ = strconv.Atoi(partsB[i])
+		}
+		if na < nb {
+			return -1
+		}
+		if na > nb {
+			return 1
+		}
+	}
+	return 0
+}
+
+// isNewMetadataFormatVersion returns true when uaVersion >= NewMetadataFormatMinVersion.
+func isNewMetadataFormatVersion(uaVersion string) bool {
+	if uaVersion == "" {
+		return false
+	}
+	return compareVersions(uaVersion, NewMetadataFormatMinVersion) >= 0
 }

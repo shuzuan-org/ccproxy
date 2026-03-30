@@ -191,3 +191,109 @@ func TestDenormalizeModelID_Unknown(t *testing.T) {
 		t.Errorf("expected unchanged claude-opus-4-6, got %q", got)
 	}
 }
+
+// --- ParseUserID tests ---
+
+func TestParseUserID_OldFormatA(t *testing.T) {
+	t.Parallel()
+	raw := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for format A")
+	}
+	if p.DeviceID != strings.Repeat("ab", 32) {
+		t.Errorf("unexpected DeviceID: %q", p.DeviceID)
+	}
+	if p.SessionID != "abc-123-def" {
+		t.Errorf("unexpected SessionID: %q", p.SessionID)
+	}
+	if p.IsNewFormat {
+		t.Error("expected IsNewFormat=false for old format A")
+	}
+}
+
+func TestParseUserID_OldFormatB(t *testing.T) {
+	t.Parallel()
+	raw := "user_" + strings.Repeat("cd", 32) + "_account_acc-uuid_session_sess-uuid"
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for format B")
+	}
+	if p.AccountUUID != "acc-uuid" {
+		t.Errorf("unexpected AccountUUID: %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_NewJSONFormat(t *testing.T) {
+	t.Parallel()
+	raw := `{"device_id":"` + strings.Repeat("ab", 32) + `","account_uuid":"acc-uuid","session_id":"sess-uuid"}`
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID for JSON format")
+	}
+	if !p.IsNewFormat {
+		t.Error("expected IsNewFormat=true")
+	}
+	if p.DeviceID != strings.Repeat("ab", 32) {
+		t.Errorf("unexpected DeviceID: %q", p.DeviceID)
+	}
+	if p.SessionID != "sess-uuid" {
+		t.Errorf("unexpected SessionID: %q", p.SessionID)
+	}
+	if p.AccountUUID != "acc-uuid" {
+		t.Errorf("unexpected AccountUUID: %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_NewJSONFormat_NoAccountUUID(t *testing.T) {
+	t.Parallel()
+	raw := `{"device_id":"` + strings.Repeat("ef", 32) + `","session_id":"sess-abc"}`
+	p := ParseUserID(raw)
+	if p == nil {
+		t.Fatal("expected non-nil ParsedUserID")
+	}
+	if p.AccountUUID != "" {
+		t.Errorf("expected empty AccountUUID, got %q", p.AccountUUID)
+	}
+}
+
+func TestParseUserID_Invalid(t *testing.T) {
+	t.Parallel()
+	if ParseUserID("random-garbage") != nil {
+		t.Error("expected nil for unrecognized format")
+	}
+	if ParseUserID("") != nil {
+		t.Error("expected nil for empty string")
+	}
+}
+
+func TestParseUserID_JSONMissingDeviceID(t *testing.T) {
+	t.Parallel()
+	raw := `{"session_id":"sess-uuid"}`
+	if ParseUserID(raw) != nil {
+		t.Error("expected nil when device_id missing")
+	}
+}
+
+// --- compareVersions tests ---
+
+func TestCompareVersions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"2.1.78", "2.1.78", 0},
+		{"2.1.79", "2.1.78", 1},
+		{"2.1.77", "2.1.78", -1},
+		{"2.2.0", "2.1.78", 1},
+		{"3.0.0", "2.1.78", 1},
+		{"1.9.99", "2.0.0", -1},
+	}
+	for _, tt := range tests {
+		got := compareVersions(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
