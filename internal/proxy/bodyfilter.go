@@ -96,7 +96,15 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 			continue
 		}
 
-		msgMap["content"] = contentFilter(content)
+		filtered := contentFilter(content)
+		filtered = stripEmptyTextBlocks(filtered)
+		if len(filtered) == 0 {
+			filtered = []any{map[string]any{
+				"type": "text",
+				"text": "(content removed)",
+			}}
+		}
+		msgMap["content"] = filtered
 		messages[i] = msgMap
 	}
 
@@ -127,6 +135,11 @@ func filterThinkingFromContent(content []any) []any {
 			if text == "" {
 				text, _ = blockMap["text"].(string)
 			}
+			if text == "" {
+				// Skip: don't create empty text blocks (Anthropic rejects them)
+				removed++
+				continue
+			}
 			result = append(result, map[string]any{
 				"type": "text",
 				"text": text,
@@ -146,11 +159,25 @@ func filterThinkingFromContent(content []any) []any {
 		)
 	}
 
-	if len(result) == 0 {
-		result = append(result, map[string]any{
-			"type": "text",
-			"text": "(content removed)",
-		})
+	return result
+}
+
+// stripEmptyTextBlocks removes text blocks with empty content.
+// Anthropic rejects empty text blocks with a 400 error.
+func stripEmptyTextBlocks(content []any) []any {
+	result := make([]any, 0, len(content))
+	for _, block := range content {
+		blockMap, ok := block.(map[string]any)
+		if !ok {
+			result = append(result, block)
+			continue
+		}
+		if blockMap["type"] == "text" {
+			if text, _ := blockMap["text"].(string); text == "" {
+				continue
+			}
+		}
+		result = append(result, block)
 	}
 	return result
 }
