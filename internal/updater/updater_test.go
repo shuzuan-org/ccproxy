@@ -143,7 +143,7 @@ func TestIsDocker(t *testing.T) {
 	_ = u.IsDocker()
 }
 
-func TestStatus_ChannelDefault(t *testing.T) {
+func TestStatus_ChannelUnset(t *testing.T) {
 	t.Parallel()
 	u := New(Config{
 		CurrentVersion: "1.0.0",
@@ -151,7 +151,7 @@ func TestStatus_ChannelDefault(t *testing.T) {
 		CheckInterval:  time.Hour,
 		AutoUpdate:     true,
 	})
-	assert.Equal(t, "", u.Status().Channel) // empty when not set
+	assert.Equal(t, "", u.Status().Channel) // Channel is empty when Config.Channel is not set; config layer fills "stable" before passing to New()
 }
 
 func TestStatus_ChannelStable(t *testing.T) {
