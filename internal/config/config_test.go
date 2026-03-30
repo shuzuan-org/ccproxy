@@ -475,6 +475,7 @@ func TestLoad_UpdateCheckIntervalValidation(t *testing.T) {
 }
 
 func TestApplyDefaults_UpdateChannel(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{}
 	cfg.applyDefaults()
 	if cfg.Server.UpdateChannel != "stable" {
@@ -483,6 +484,7 @@ func TestApplyDefaults_UpdateChannel(t *testing.T) {
 }
 
 func TestApplyDefaults_UpdateChannel_PreservesExisting(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{Server: ServerConfig{UpdateChannel: "beta"}}
 	cfg.applyDefaults()
 	if cfg.Server.UpdateChannel != "beta" {
@@ -508,6 +510,7 @@ func baseValidConfig() *Config {
 }
 
 func TestValidate_UpdateChannel_Invalid(t *testing.T) {
+	t.Parallel()
 	cfg := baseValidConfig()
 	cfg.Server.UpdateChannel = "nightly"
 	err := cfg.Validate()
@@ -520,6 +523,7 @@ func TestValidate_UpdateChannel_Invalid(t *testing.T) {
 }
 
 func TestValidate_UpdateChannel_Beta(t *testing.T) {
+	t.Parallel()
 	cfg := baseValidConfig()
 	cfg.Server.UpdateChannel = "beta"
 	if err := cfg.Validate(); err != nil {
@@ -528,6 +532,7 @@ func TestValidate_UpdateChannel_Beta(t *testing.T) {
 }
 
 func TestValidate_UpdateChannel_Stable(t *testing.T) {
+	t.Parallel()
 	cfg := baseValidConfig()
 	cfg.Server.UpdateChannel = "stable"
 	if err := cfg.Validate(); err != nil {
