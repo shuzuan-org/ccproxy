@@ -3,6 +3,7 @@ package disguise
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -257,5 +258,69 @@ func TestIsClaudeCodeClient_ArraySystemWithBillingHeader(t *testing.T) {
 	// Should detect: X-App(1) + Anthropic-Version(1) + user_id(1) + system_prompt(1) = 4 of 5
 	if !IsClaudeCodeClient(headers, body, messagesPath) {
 		t.Error("expected true for array system with billing header prefix block and CC prompt in later block")
+	}
+}
+
+func TestValidUserIDRaw(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want bool
+	}{
+		{
+			name: "nil raw",
+			raw:  nil,
+			want: false,
+		},
+		{
+			name: "empty raw",
+			raw:  json.RawMessage{},
+			want: false,
+		},
+		{
+			name: "JSON null",
+			raw:  json.RawMessage(`null`),
+			want: false,
+		},
+		{
+			name: "JSON number",
+			raw:  json.RawMessage(`42`),
+			want: false,
+		},
+		{
+			name: "valid old format A string",
+			raw:  json.RawMessage(`"user_` + strings.Repeat("a", 64) + `_account__session_550e8400-e29b-41d4-a716-446655440000"`),
+			want: true,
+		},
+		{
+			name: "valid new JSON format",
+			raw:  json.RawMessage(`{"device_id":"abc123","session_id":"550e8400-e29b-41d4-a716-446655440000"}`),
+			want: true,
+		},
+		{
+			name: "JSON object missing device_id",
+			raw:  json.RawMessage(`{"session_id":"550e8400-e29b-41d4-a716-446655440000"}`),
+			want: false,
+		},
+		{
+			name: "JSON object missing session_id",
+			raw:  json.RawMessage(`{"device_id":"abc123"}`),
+			want: false,
+		},
+		{
+			name: "invalid string format",
+			raw:  json.RawMessage(`"not-a-user-id"`),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := validUserIDRaw(tc.raw)
+			if got != tc.want {
+				t.Errorf("validUserIDRaw(%q) = %v, want %v", string(tc.raw), got, tc.want)
+			}
+		})
 	}
 }
