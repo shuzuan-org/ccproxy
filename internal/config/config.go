@@ -30,6 +30,7 @@ type ServerConfig struct {
 	UpdateCheckInterval string `toml:"update_check_interval"` // duration string, e.g. "1h", "30m"
 	UpdateRepo          string `toml:"update_repo"`           // GitHub owner/repo
 	UpdateAPIURL        string `toml:"update_api_url"`        // GitHub Enterprise API URL (default: github.com)
+	UpdateChannel       string `toml:"update_channel"`        // "stable" (default) or "beta"
 }
 
 // IsAutoUpdateEnabled returns true when auto-update is enabled (default: true when AutoUpdate is nil).
@@ -75,7 +76,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
-	applyDefaults(cfg)
+	cfg.applyDefaults()
 
 	// Initialize logging early so all subsequent log output uses the configured format/level.
 	SetupLogging(cfg)
@@ -123,7 +124,7 @@ func ensureConfigFile(path string) error {
 }
 
 // applyDefaults fills in zero-value fields with sensible defaults.
-func applyDefaults(cfg *Config) {
+func (cfg *Config) applyDefaults() {
 	// Server defaults
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "127.0.0.1"
@@ -155,6 +156,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Server.UpdateRepo == "" {
 		cfg.Server.UpdateRepo = "shuzuan-org/ccproxy"
+	}
+	if cfg.Server.UpdateChannel == "" {
+		cfg.Server.UpdateChannel = "stable"
 	}
 }
 
@@ -200,6 +204,10 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("update_check_interval must be >= 5m, got %s", d))
 	} else if d > 24*time.Hour {
 		errs = append(errs, fmt.Errorf("update_check_interval must be <= 24h, got %s", d))
+	}
+
+	if c.Server.UpdateChannel != "stable" && c.Server.UpdateChannel != "beta" {
+		errs = append(errs, fmt.Errorf("update_channel must be \"stable\" or \"beta\", got %q", c.Server.UpdateChannel))
 	}
 
 	if len(errs) > 0 {

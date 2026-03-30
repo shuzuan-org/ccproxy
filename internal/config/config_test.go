@@ -119,6 +119,7 @@ func TestValidate_NoEnabledAPIKeys(t *testing.T) {
 		Server: ServerConfig{
 			AdminPassword:       "pass",
 			UpdateCheckInterval: "1h",
+			UpdateChannel:       "stable",
 		},
 		APIKeys: []APIKeyConfig{
 			{Key: "sk-x", Name: "x", Enabled: false},
@@ -340,6 +341,7 @@ func TestValidate_PortRange(t *testing.T) {
 					MaxConcurrency:      1,
 					RequestTimeout:      1,
 					UpdateCheckInterval: "1h",
+					UpdateChannel:       "stable",
 				},
 				APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 			}
@@ -360,6 +362,7 @@ func TestValidate_NegativeConcurrency(t *testing.T) {
 			MaxConcurrency:      -1,
 			RequestTimeout:      1,
 			UpdateCheckInterval: "1h",
+			UpdateChannel:       "stable",
 		},
 		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 	}
@@ -381,6 +384,7 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 			MaxConcurrency:      1,
 			RequestTimeout:      -1,
 			UpdateCheckInterval: "1h",
+			UpdateChannel:       "stable",
 		},
 		APIKeys: []APIKeyConfig{{Key: "sk-x", Enabled: true}},
 	}
@@ -467,6 +471,67 @@ func TestLoad_UpdateCheckIntervalValidation(t *testing.T) {
 				t.Errorf("unexpected error for interval %q: %v", tt.interval, err)
 			}
 		})
+	}
+}
+
+func TestApplyDefaults_UpdateChannel(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+	if cfg.Server.UpdateChannel != "stable" {
+		t.Errorf("expected default UpdateChannel \"stable\", got %q", cfg.Server.UpdateChannel)
+	}
+}
+
+func TestApplyDefaults_UpdateChannel_PreservesExisting(t *testing.T) {
+	cfg := &Config{Server: ServerConfig{UpdateChannel: "beta"}}
+	cfg.applyDefaults()
+	if cfg.Server.UpdateChannel != "beta" {
+		t.Errorf("expected UpdateChannel \"beta\" preserved, got %q", cfg.Server.UpdateChannel)
+	}
+}
+
+// baseValidConfig returns a minimal valid Config for Validate() tests.
+func baseValidConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			AdminPassword:       "secret",
+			Port:                3000,
+			MaxConcurrency:      1,
+			RequestTimeout:      1,
+			UpdateCheckInterval: "1h",
+			UpdateChannel:       "stable",
+		},
+		APIKeys: []APIKeyConfig{
+			{Key: "sk-test", Name: "test", Enabled: true},
+		},
+	}
+}
+
+func TestValidate_UpdateChannel_Invalid(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.Server.UpdateChannel = "nightly"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid update_channel, got nil")
+	}
+	if !strings.Contains(err.Error(), "update_channel") {
+		t.Errorf("error %q should mention update_channel", err.Error())
+	}
+}
+
+func TestValidate_UpdateChannel_Beta(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.Server.UpdateChannel = "beta"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no error for channel \"beta\", got %v", err)
+	}
+}
+
+func TestValidate_UpdateChannel_Stable(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.Server.UpdateChannel = "stable"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no error for channel \"stable\", got %v", err)
 	}
 }
 
