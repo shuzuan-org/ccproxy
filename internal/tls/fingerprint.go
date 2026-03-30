@@ -30,7 +30,7 @@ func ProxyURLFromContext(ctx context.Context) string {
 }
 
 // NewTransport creates an HTTP transport that uses utls to mimic
-// Claude CLI's TLS fingerprint (Node.js 20.x + OpenSSL 3.x).
+// Claude CLI's TLS fingerprint (Node.js 24.x).
 // Connections are pooled per proxy URL for efficient reuse.
 func NewTransport() http.RoundTripper {
 	return &fingerprintTransport{
@@ -152,231 +152,75 @@ func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error
 	return conn, nil
 }
 
-// Cipher suite IDs not built into utls — defined via FakeCipherSuite.
-// These match the full Node.js 20.x + OpenSSL 3.x cipher list.
-const (
-	cipher_DHE_RSA_AES_256_GCM_SHA384         = 0x009f
-	cipher_DHE_RSA_CHACHA20_POLY1305_SHA256   = 0xccaa
-	cipher_DHE_RSA_AES_128_GCM_SHA256         = 0x009e
-	cipher_DHE_RSA_AES_256_CBC_SHA256         = 0x006b
-	cipher_DHE_RSA_AES_128_CBC_SHA256         = 0x0067
-	cipher_DHE_RSA_AES_256_CBC_SHA            = 0x0039
-	cipher_DHE_RSA_AES_128_CBC_SHA            = 0x0033
-	cipher_DHE_DSS_AES_256_GCM_SHA384        = 0x00a3
-	cipher_DHE_DSS_AES_128_GCM_SHA256        = 0x00a2
-	cipher_DHE_DSS_AES_256_CBC_SHA256        = 0x006a
-	cipher_DHE_DSS_AES_128_CBC_SHA256        = 0x0040
-	cipher_DHE_DSS_AES_256_CBC_SHA           = 0x0038
-	cipher_DHE_DSS_AES_128_CBC_SHA           = 0x0032
-	cipher_ECDHE_ECDSA_AES_256_CBC_SHA384    = 0xc024
-	cipher_ECDHE_ECDSA_AES_128_CBC_SHA256    = 0xc023
-	cipher_ECDHE_RSA_AES_256_CBC_SHA384      = 0xc028
-	cipher_ECDHE_RSA_AES_128_CBC_SHA256      = 0xc027
-	cipher_RSA_AES_256_GCM_SHA384            = 0x009d
-	cipher_RSA_AES_128_GCM_SHA256            = 0x009c
-	cipher_RSA_AES_256_CBC_SHA256            = 0x003d
-	cipher_RSA_AES_128_CBC_SHA256            = 0x003c
-	cipher_RSA_AES_256_CBC_SHA               = 0x0035
-	cipher_RSA_AES_128_CBC_SHA               = 0x002f
-	cipher_ECDHE_ECDSA_AES_128_CCM          = 0xc0ac
-	cipher_ECDHE_ECDSA_AES_128_CCM_8        = 0xc0ae
-	cipher_ECDHE_ECDSA_AES_256_CCM          = 0xc0ad
-	cipher_ECDHE_ECDSA_AES_256_CCM_8        = 0xc0af
-	cipher_DHE_RSA_AES_128_CCM              = 0xc09e
-	cipher_DHE_RSA_AES_128_CCM_8            = 0xc0a2
-	cipher_DHE_RSA_AES_256_CCM              = 0xc09f
-	cipher_DHE_RSA_AES_256_CCM_8            = 0xc0a3
-	// ARIA GCM cipher suites (RFC 6209)
-	cipher_ECDHE_ECDSA_ARIA_128_GCM = 0xc05c
-	cipher_ECDHE_ECDSA_ARIA_256_GCM = 0xc05d
-	cipher_ECDHE_RSA_ARIA_128_GCM   = 0xc060
-	cipher_ECDHE_RSA_ARIA_256_GCM   = 0xc061
-	cipher_DHE_RSA_ARIA_128_GCM     = 0xc052
-	cipher_DHE_RSA_ARIA_256_GCM     = 0xc053
-	cipher_DHE_DSS_ARIA_128_GCM     = 0xc056
-	cipher_DHE_DSS_ARIA_256_GCM     = 0xc057
-	cipher_RSA_ARIA_128_GCM         = 0xc050
-	cipher_RSA_ARIA_256_GCM         = 0xc051
-	// RSA AES-CCM cipher suites (RFC 6655)
-	cipher_RSA_AES_256_CCM_8 = 0xc0a1
-	cipher_RSA_AES_256_CCM   = 0xc09d
-	cipher_RSA_AES_128_CCM_8 = 0xc0a0
-	cipher_RSA_AES_128_CCM   = 0xc09c
-	// Renegotiation indication (RFC 5746)
-	cipher_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
-
-	// ffdhe named groups (RFC 7919)
-	ffdhe2048 utls.CurveID = 0x0100
-	ffdhe3072 utls.CurveID = 0x0101
-	ffdhe4096 utls.CurveID = 0x0102
-	ffdhe6144 utls.CurveID = 0x0103
-	ffdhe8192 utls.CurveID = 0x0104
+var (
+	defaultCipherSuites = []uint16{
+		0x1301,
+		0x1302,
+		0x1303,
+		0xc02b,
+		0xc02f,
+		0xc02c,
+		0xc030,
+		0xcca9,
+		0xcca8,
+		0xc009,
+		0xc013,
+		0xc00a,
+		0xc014,
+		0x009c,
+		0x009d,
+		0x002f,
+		0x0035,
+	}
+	defaultCurves = []utls.CurveID{utls.X25519, utls.CurveP256, utls.CurveP384}
+	defaultPointFormats = []uint16{0}
+	defaultSignatureAlgorithms = []utls.SignatureScheme{
+		0x0403,
+		0x0804,
+		0x0401,
+		0x0503,
+		0x0805,
+		0x0501,
+		0x0806,
+		0x0601,
+		0x0201,
+	}
 )
 
+func toUint8s(vals []uint16) []uint8 {
+	out := make([]uint8, len(vals))
+	for i, v := range vals {
+		out[i] = uint8(v)
+	}
+	return out
+}
+
+func buildDefaultExtensions() []utls.TLSExtension {
+	keyShares := []utls.KeyShare{{Group: utls.X25519}}
+	return []utls.TLSExtension{
+		&utls.SNIExtension{},
+		&utls.GREASEEncryptedClientHelloExtension{},
+		&utls.ExtendedMasterSecretExtension{},
+		&utls.RenegotiationInfoExtension{},
+		&utls.SupportedCurvesExtension{Curves: append([]utls.CurveID(nil), defaultCurves...)},
+		&utls.SupportedPointsExtension{SupportedPoints: toUint8s(defaultPointFormats)},
+		&utls.SessionTicketExtension{},
+		&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
+		&utls.StatusRequestExtension{},
+		&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: append([]utls.SignatureScheme(nil), defaultSignatureAlgorithms...)},
+		&utls.SCTExtension{},
+		&utls.KeyShareExtension{KeyShares: keyShares},
+		&utls.PSKKeyExchangeModesExtension{Modes: []uint8{uint8(utls.PskModeDHE)}},
+		&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+	}
+}
+
 func claudeCLIv2Spec() *utls.ClientHelloSpec {
-	// Full Claude CLI v2 TLS profile — captured from Node.js 20.x + OpenSSL 3.x.
-	// 59 cipher suites in OpenSSL priority order. Order is critical for JA3 matching.
-	// Expected JA3 hash: 1a28e69016765d92e3b381168d68922c
 	return &utls.ClientHelloSpec{
-		TLSVersMin: utls.VersionTLS10,
-		TLSVersMax: utls.VersionTLS13,
-		CipherSuites: []uint16{
-			// TLS 1.3 (MUST be first)
-			utls.TLS_AES_256_GCM_SHA384,       // 0x1302
-			utls.TLS_CHACHA20_POLY1305_SHA256,  // 0x1303
-			utls.TLS_AES_128_GCM_SHA256,        // 0x1301
-
-			// ECDHE + AES-GCM
-			utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,    // 0xc02f
-			utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,  // 0xc02b
-			utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,    // 0xc030
-			utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,  // 0xc02c
-
-			// DHE + AES-GCM
-			cipher_DHE_RSA_AES_128_GCM_SHA256,  // 0x009e
-
-			// ECDHE/DHE + AES-CBC-SHA256/384
-			cipher_ECDHE_RSA_AES_128_CBC_SHA256,   // 0xc027
-			cipher_DHE_RSA_AES_128_CBC_SHA256,     // 0x0067
-			cipher_ECDHE_RSA_AES_256_CBC_SHA384,   // 0xc028
-			cipher_DHE_RSA_AES_256_CBC_SHA256,     // 0x006b
-
-			// DHE-DSS/RSA + AES-GCM
-			cipher_DHE_DSS_AES_256_GCM_SHA384,  // 0x00a3
-			cipher_DHE_RSA_AES_256_GCM_SHA384,  // 0x009f
-
-			// ChaCha20-Poly1305
-			utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,  // 0xcca9
-			utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,    // 0xcca8
-			cipher_DHE_RSA_CHACHA20_POLY1305_SHA256,       // 0xccaa
-
-			// AES-CCM (256-bit)
-			cipher_ECDHE_ECDSA_AES_256_CCM_8,  // 0xc0af
-			cipher_ECDHE_ECDSA_AES_256_CCM,    // 0xc0ad
-			cipher_DHE_RSA_AES_256_CCM_8,      // 0xc0a3
-			cipher_DHE_RSA_AES_256_CCM,        // 0xc09f
-
-			// ARIA (256-bit)
-			cipher_ECDHE_ECDSA_ARIA_256_GCM,  // 0xc05d
-			cipher_ECDHE_RSA_ARIA_256_GCM,    // 0xc061
-			cipher_DHE_DSS_ARIA_256_GCM,      // 0xc057
-			cipher_DHE_RSA_ARIA_256_GCM,      // 0xc053
-
-			// DHE-DSS + AES-GCM (128-bit)
-			cipher_DHE_DSS_AES_128_GCM_SHA256,  // 0x00a2
-
-			// AES-CCM (128-bit)
-			cipher_ECDHE_ECDSA_AES_128_CCM_8,  // 0xc0ae
-			cipher_ECDHE_ECDSA_AES_128_CCM,    // 0xc0ac
-			cipher_DHE_RSA_AES_128_CCM_8,      // 0xc0a2
-			cipher_DHE_RSA_AES_128_CCM,        // 0xc09e
-
-			// ARIA (128-bit)
-			cipher_ECDHE_ECDSA_ARIA_128_GCM,  // 0xc05c
-			cipher_ECDHE_RSA_ARIA_128_GCM,    // 0xc060
-			cipher_DHE_DSS_ARIA_128_GCM,      // 0xc056
-			cipher_DHE_RSA_ARIA_128_GCM,      // 0xc052
-
-			// ECDHE/DHE + AES-CBC-SHA384/256 (more)
-			cipher_ECDHE_ECDSA_AES_256_CBC_SHA384,  // 0xc024
-			cipher_DHE_DSS_AES_256_CBC_SHA256,      // 0x006a
-			cipher_ECDHE_ECDSA_AES_128_CBC_SHA256,  // 0xc023
-			cipher_DHE_DSS_AES_128_CBC_SHA256,      // 0x0040
-
-			// ECDHE/DHE + AES-CBC-SHA (legacy)
-			utls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,  // 0xc00a
-			utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,    // 0xc014
-			cipher_DHE_RSA_AES_256_CBC_SHA,              // 0x0039
-			cipher_DHE_DSS_AES_256_CBC_SHA,              // 0x0038
-			utls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,  // 0xc009
-			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,    // 0xc013
-			cipher_DHE_RSA_AES_128_CBC_SHA,              // 0x0033
-			cipher_DHE_DSS_AES_128_CBC_SHA,              // 0x0032
-
-			// RSA + AES-GCM/CCM/ARIA (non-PFS, 256-bit)
-			cipher_RSA_AES_256_GCM_SHA384,  // 0x009d
-			cipher_RSA_AES_256_CCM_8,       // 0xc0a1
-			cipher_RSA_AES_256_CCM,         // 0xc09d
-			cipher_RSA_ARIA_256_GCM,        // 0xc051
-
-			// RSA + AES-GCM/CCM/ARIA (non-PFS, 128-bit)
-			cipher_RSA_AES_128_GCM_SHA256,  // 0x009c
-			cipher_RSA_AES_128_CCM_8,       // 0xc0a0
-			cipher_RSA_AES_128_CCM,         // 0xc09c
-			cipher_RSA_ARIA_128_GCM,        // 0xc050
-
-			// RSA + AES-CBC (non-PFS, legacy)
-			cipher_RSA_AES_256_CBC_SHA256,  // 0x003d
-			cipher_RSA_AES_128_CBC_SHA256,  // 0x003c
-			cipher_RSA_AES_256_CBC_SHA,     // 0x0035
-			cipher_RSA_AES_128_CBC_SHA,     // 0x002f
-
-			// Renegotiation indication
-			cipher_EMPTY_RENEGOTIATION_INFO_SCSV,  // 0x00ff
-		},
-		Extensions: []utls.TLSExtension{
-			&utls.SNIExtension{},
-			&utls.SupportedPointsExtension{
-				SupportedPoints: []byte{
-					0, // uncompressed
-					1, // ansiX962_compressed_prime
-					2, // ansiX962_compressed_char2
-				},
-			},
-			&utls.SupportedCurvesExtension{
-				Curves: []utls.CurveID{
-					utls.X25519,          // 0x001d
-					utls.CurveP256,       // 0x0017
-					utls.CurveID(0x001e), // x448
-					utls.CurveP521,       // 0x0019
-					utls.CurveP384,       // 0x0018
-					ffdhe2048,
-					ffdhe3072,
-					ffdhe4096,
-					ffdhe6144,
-					ffdhe8192,
-				},
-			},
-			&utls.SessionTicketExtension{},
-			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
-			&utls.GenericExtension{Id: 22}, // encrypt_then_mac
-			&utls.ExtendedMasterSecretExtension{},
-			&utls.SignatureAlgorithmsExtension{
-				SupportedSignatureAlgorithms: []utls.SignatureScheme{
-					0x0403, // ecdsa_secp256r1_sha256
-					0x0503, // ecdsa_secp384r1_sha384
-					0x0603, // ecdsa_secp521r1_sha512
-					0x0807, // ed25519
-					0x0808, // ed448
-					0x0809, // rsa_pss_pss_sha256
-					0x080a, // rsa_pss_pss_sha384
-					0x080b, // rsa_pss_pss_sha512
-					0x0804, // rsa_pss_rsae_sha256
-					0x0805, // rsa_pss_rsae_sha384
-					0x0806, // rsa_pss_rsae_sha512
-					0x0401, // rsa_pkcs1_sha256
-					0x0501, // rsa_pkcs1_sha384
-					0x0601, // rsa_pkcs1_sha512
-					0x0303, // ecdsa_sha224
-					0x0301, // rsa_pkcs1_sha224
-					0x0302, // dsa_sha224
-					0x0402, // dsa_sha256
-					0x0502, // dsa_sha384
-					0x0602, // dsa_sha512
-				},
-			},
-			&utls.SupportedVersionsExtension{
-				Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12},
-			},
-			&utls.PSKKeyExchangeModesExtension{
-				Modes: []uint8{utls.PskModeDHE},
-			},
-			&utls.KeyShareExtension{
-				KeyShares: []utls.KeyShare{
-					{Group: utls.X25519},
-				},
-			},
-		},
-		GetSessionID: nil,
+		CipherSuites:       append([]uint16(nil), defaultCipherSuites...),
+		CompressionMethods: []uint8{0},
+		Extensions:         buildDefaultExtensions(),
+		TLSVersMax:         utls.VersionTLS13,
+		TLSVersMin:         utls.VersionTLS10,
 	}
 }
