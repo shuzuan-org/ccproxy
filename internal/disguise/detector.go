@@ -21,7 +21,7 @@ var claudeCodePromptPrefixes = []string{
 	"You are Claude Code, Anthropic's official CLI for Claude",
 	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
 	"You are a Claude agent, built on Anthropic's Claude Agent SDK",
-	"You are a file search specialist for Claude Code",
+	"You are a file search specialist for Claude Code, Anthropic's official CLI for Claude.",
 	"You are a helpful AI assistant tasked with summarizing conversations",
 	"You are an agent for Claude Code",
 	"You are an interactive CLI tool that helps users",
