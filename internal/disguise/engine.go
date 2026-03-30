@@ -75,7 +75,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		e.fingerprints.LearnFromHeaders(accountName, origReq.Header)
 
 		// Real CC client via OAuth: lightweight processing only.
-		// 1. Supplement oauth beta header (preserve client's existing betas)
+		// 1. Parse body first — filtering and user_id rewriting both require parsed state.
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return body, true
+		}
+
+		// 2. Supplement oauth beta header (preserve client's existing betas)
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
 		newBeta := SupplementBetaHeader(clientBeta)
 		upstreamReq.Header.Set("Anthropic-Beta", newBeta)
@@ -86,12 +92,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 				"after", newBeta,
 			)
 		}
-
-		// 2. Rewrite metadata.user_id with session masking to prevent cross-user correlation
-		var parsed map[string]interface{}
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			return body, true
-		}
+		// 3. Rewrite metadata.user_id with session masking to prevent cross-user correlation
 		metadata, ok := parsed["metadata"].(map[string]interface{})
 		if !ok {
 			metadata = make(map[string]interface{})
@@ -442,7 +443,8 @@ func sanitizeSystemTextInPlace(parsed map[string]interface{}) {
 			}
 			for _, r := range openCodeReplacements {
 				if strings.Contains(text, r[0]) {
-					m["text"] = strings.ReplaceAll(text, r[0], r[1])
+					text = strings.ReplaceAll(text, r[0], r[1])
+					m["text"] = text
 				}
 			}
 		}
@@ -487,20 +489,10 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 	case []interface{}:
 		newSystem = make([]interface{}, 0, len(system)+1)
 		newSystem = append(newSystem, claudeCodeBlock)
-		prefixedNext := false
 		for _, item := range system {
 			if m, ok := item.(map[string]interface{}); ok {
 				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) == claudeCodePrefix {
 					continue // skip duplicate Claude Code block
-				}
-				// Prefix the first subsequent text block once
-				if !prefixedNext {
-					if blockType, _ := m["type"].(string); blockType == "text" {
-						if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" && !strings.HasPrefix(text, claudeCodePrefix) {
-							m["text"] = claudeCodePrefix + "\n\n" + text
-							prefixedNext = true
-						}
-					}
 				}
 			}
 			newSystem = append(newSystem, item)
