@@ -39,9 +39,11 @@ func TestClaudeCLIv2Spec(t *testing.T) {
 
 func TestClaudeCLIv2Spec_FreshPerCall(t *testing.T) {
 	spec1 := claudeCLIv2Spec()
+	// Mutate spec1's cipher suites; spec2 must be unaffected (distinct backing array).
+	spec1.CipherSuites[0] = 0xffff
 	spec2 := claudeCLIv2Spec()
-	if spec1 == spec2 {
-		t.Fatal("expected distinct spec objects per call")
+	if spec2.CipherSuites[0] == 0xffff {
+		t.Fatal("spec2 shares cipher suites backing array with spec1")
 	}
 }
 
@@ -116,7 +118,8 @@ func TestGetOrCreateTransport_DifferentProxy(t *testing.T) {
 // ja3Hash computes the JA3 hash from a utls ClientHelloSpec.
 // JA3 = MD5(SSLVersion,CipherSuites,Extensions,EllipticCurves,EllipticCurvePointFormats)
 // where values within each field are separated by "-".
-func ja3Hash(spec *utls.ClientHelloSpec) string {
+func ja3Hash(t testing.TB, spec *utls.ClientHelloSpec) string {
+	t.Helper()
 	// For TLS 1.3, ClientHello.legacy_version = 0x0303 = 771.
 	version := "771"
 
@@ -167,7 +170,8 @@ func ja3Hash(spec *utls.ClientHelloSpec) string {
 		case *utls.KeyShareExtension:
 			extIDs = append(extIDs, "51")
 		default:
-			panic(fmt.Sprintf("ja3Hash: unhandled extension type %T", ext))
+			t.Fatalf("ja3Hash: unhandled extension type %T", ext)
+			return ""
 		}
 	}
 
@@ -188,7 +192,7 @@ func TestClaudeCLIv2Spec_JA3Hash(t *testing.T) {
 	const expectedJA3 = "44f88fca027f27bab4bb08d4af15f23e"
 
 	spec := claudeCLIv2Spec()
-	got := ja3Hash(spec)
+	got := ja3Hash(t, spec)
 	if got != expectedJA3 {
 		t.Errorf("JA3 hash mismatch:\n  got:  %s\n  want: %s", got, expectedJA3)
 	}

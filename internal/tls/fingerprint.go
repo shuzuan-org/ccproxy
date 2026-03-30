@@ -38,8 +38,14 @@ func NewTransport() http.RoundTripper {
 	}
 }
 
+// contextDialer is a context-aware superset of proxy.Dialer.
+// proxy.SOCKS5 returns a concrete type that satisfies this interface.
+type contextDialer interface {
+	DialContext(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
 type fingerprintTransport struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	transports map[string]*http.Transport // proxyURL → pooled transport
 }
 
@@ -57,14 +63,21 @@ func (t *fingerprintTransport) RoundTrip(req *http.Request) (*http.Response, err
 // getOrCreateTransport returns a pooled *http.Transport for the given proxyURL.
 // An empty proxyURL means direct connection (no proxy).
 func (t *fingerprintTransport) getOrCreateTransport(proxyURL string) *http.Transport {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if tr, ok := t.transports[proxyURL]; ok {
+	// Fast read path: transport already exists.
+	t.mu.RLock()
+	tr, ok := t.transports[proxyURL]
+	t.mu.RUnlock()
+	if ok {
 		return tr
 	}
 
-	tr := &http.Transport{
+	// Slow write path: create and cache a new transport.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if tr, ok = t.transports[proxyURL]; ok {
+		return tr // created by another goroutine while we waited
+	}
+	tr = &http.Transport{
 		DialTLSContext:      t.makeDialTLSContext(proxyURL),
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 50,
@@ -102,7 +115,7 @@ func (t *fingerprintTransport) makeDialTLSContext(proxyURL string) func(ctx cont
 			return nil, err
 		}
 		handshakeStart := time.Now()
-		if err := tlsConn.Handshake(); err != nil {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = tcpConn.Close()
 			slog.Error("tls: handshake failed", "host", host, "elapsed", time.Since(handshakeStart).String(), "error", err.Error())
 			return nil, err
@@ -143,7 +156,12 @@ func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error
 	}
 
 	start := time.Now()
-	conn, err := dialer.Dial("tcp", addr)
+	var conn net.Conn
+	if cd, ok := dialer.(contextDialer); ok {
+		conn, err = cd.DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
 	if err != nil {
 		slog.Error("tls: SOCKS5 dial failed", "proxy_host", proxyHost, "target", addr, "elapsed", time.Since(start).String(), "error", err.Error())
 		return nil, err
@@ -154,23 +172,29 @@ func dialTCP(ctx context.Context, addr string, proxyURL string) (net.Conn, error
 
 var (
 	defaultCipherSuites = []uint16{
-		0x1301,
-		0x1302,
-		0x1303,
-		0xc02b,
-		0xc02f,
-		0xc02c,
-		0xc030,
-		0xcca9,
-		0xcca8,
-		0xc009,
-		0xc013,
-		0xc00a,
-		0xc014,
-		0x009c,
-		0x009d,
-		0x002f,
-		0x0035,
+		// TLS 1.3
+		0x1301, // TLS_AES_128_GCM_SHA256
+		0x1302, // TLS_AES_256_GCM_SHA384
+		0x1303, // TLS_CHACHA20_POLY1305_SHA256
+		// ECDHE + AES-GCM
+		0xc02b, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		0xc02f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		0xc02c, // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+		0xc030, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		// ECDHE + ChaCha20-Poly1305
+		0xcca9, // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+		0xcca8, // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+		// ECDHE + AES-CBC-SHA (legacy fallback)
+		0xc009, // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
+		0xc013, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+		0xc00a, // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
+		0xc014, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+		// RSA + AES-GCM (non-PFS)
+		0x009c, // TLS_RSA_WITH_AES_128_GCM_SHA256
+		0x009d, // TLS_RSA_WITH_AES_256_GCM_SHA384
+		// RSA + AES-CBC-SHA (non-PFS, legacy)
+		0x002f, // TLS_RSA_WITH_AES_128_CBC_SHA
+		0x0035, // TLS_RSA_WITH_AES_256_CBC_SHA
 	}
 	defaultCurves = []utls.CurveID{utls.X25519, utls.CurveP256, utls.CurveP384}
 	defaultPointFormats = []uint16{0}
