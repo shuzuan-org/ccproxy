@@ -68,8 +68,12 @@ func (h *Handler) HandleNotifyTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "telegram not configured")
 		return
 	}
-	// Fresh notifier — no dedup history, so test message always goes through.
-	n := notify.NewTelegramNotifier(cfg)
+	// Fresh notifier with both categories enabled — test bypasses category filter
+	// to verify connectivity regardless of user's category preferences.
+	testCfg := cfg
+	testCfg.EnableDisabled = true
+	testCfg.EnableAnomaly = true
+	n := notify.NewTelegramNotifier(testCfg)
 	if err := n.Notify(r.Context(), notify.Event{
 		AccountName: "test",
 		Type:        notify.EventAccountDisabled,

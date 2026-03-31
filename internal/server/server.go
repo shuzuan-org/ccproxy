@@ -143,7 +143,9 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
 	// Initialize Telegram notifier from persisted config (if any).
-	if notifyCfg, err := notify.LoadConfig("data"); err == nil && notifyCfg.BotToken != "" && notifyCfg.ChatID != "" {
+	if notifyCfg, err := notify.LoadConfig("data"); err != nil {
+		slog.Warn("telegram config load failed, using noop notifier", "error", err)
+	} else if notifyCfg.BotToken != "" && notifyCfg.ChatID != "" {
 		notify.SetGlobal(notify.NewTelegramNotifier(notifyCfg))
 		slog.Info("telegram notifier initialized")
 	}
