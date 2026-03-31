@@ -10,6 +10,9 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 )
 
+// tokenRefreshThreshold is how far in advance of expiry a token is proactively refreshed.
+const tokenRefreshThreshold = 1 * time.Hour
+
 type Manager struct {
 	mu            sync.RWMutex
 	accounts     []string // names of oauth accounts
@@ -62,7 +65,7 @@ func (m *Manager) GetValidToken(ctx context.Context, accountName string) (*OAuth
 		return nil, fmt.Errorf("no token for account %q, run 'ccproxy oauth login %s'", accountName, accountName)
 	}
 
-	if time.Until(token.ExpiresAt) > 60*time.Second {
+	if time.Until(token.ExpiresAt) > tokenRefreshThreshold {
 		return token, nil
 	}
 
@@ -90,7 +93,7 @@ func (m *Manager) refreshToken(ctx context.Context, accountName, refreshTokenStr
 
 	// Double-check after acquiring lock
 	token, _ := m.store.Load(accountName)
-	if token != nil && time.Until(token.ExpiresAt) > 60*time.Second {
+	if token != nil && time.Until(token.ExpiresAt) > tokenRefreshThreshold {
 		return token, nil
 	}
 
@@ -206,17 +209,12 @@ func (m *Manager) StartAutoRefresh(ctx context.Context) {
 						continue
 					}
 					remaining := time.Until(token.ExpiresAt)
-					if remaining < 60*time.Second {
+					if remaining < tokenRefreshThreshold {
 						slog.Info("oauth: auto-refreshing expiring token", "account", name, "expires_in", remaining.String())
 						_, err := m.refreshToken(ctx, name, token.RefreshToken)
 						if err != nil {
 							slog.Error("oauth: auto-refresh failed", "account", name, "error", err.Error())
 						}
-					} else if remaining < 2*time.Minute {
-						slog.Warn("oauth: token expiring soon",
-							"account", name,
-							"expires_in", remaining.Round(time.Second),
-						)
 					}
 				}
 			}

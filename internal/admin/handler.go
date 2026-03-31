@@ -1,17 +1,22 @@
 package admin
 
 import (
+	"bytes"
+	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/loadbalancer"
+	"github.com/binn/ccproxy/internal/netutil"
 	"github.com/binn/ccproxy/internal/oauth"
 	"github.com/binn/ccproxy/internal/updater"
 )
@@ -85,6 +90,12 @@ type AccountState struct {
 	Banned         bool    `json:"banned"`
 	BanReason      string  `json:"ban_reason,omitempty"`
 	DisabledReason string  `json:"disabled_reason,omitempty"`
+	// Budget / utilization fields (from response headers + usage API)
+	BudgetState string  `json:"budget_state,omitempty"` // "normal" | "sticky_only" | "blocked"
+	Util5h      float64 `json:"util_5h"`                // 0–1
+	Util7d      float64 `json:"util_7d"`                // 0–1
+	ResetAt5h   *string `json:"reset_at_5h,omitempty"`  // RFC3339
+	ResetAt7d   *string `json:"reset_at_7d,omitempty"`  // RFC3339
 }
 
 // tokenStatus returns a human-readable status for an OAuth token.
@@ -96,7 +107,7 @@ func tokenStatus(token *oauth.OAuthToken) string {
 	if remaining < 0 {
 		return "expired"
 	}
-	if remaining < 5*time.Minute {
+	if remaining < 30*time.Minute {
 		return "expiring soon"
 	}
 	return "valid"
@@ -138,6 +149,22 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 			state.Banned = health.IsBanned()
 			state.BanReason = health.BanReason()
 			state.DisabledReason = health.DisabledReason()
+
+			if budget := health.Budget(); budget != nil {
+				w5h := budget.Window5h()
+				w7d := budget.Window7d()
+				state.BudgetState = budget.State().String()
+				state.Util5h = w5h.Utilization
+				state.Util7d = w7d.Utilization
+				if !w5h.ResetAt.IsZero() {
+					r := w5h.ResetAt.Format(time.RFC3339)
+					state.ResetAt5h = &r
+				}
+				if !w7d.ResetAt.IsZero() {
+					r := w7d.ResetAt.Format(time.RFC3339)
+					state.ResetAt7d = &r
+				}
+			}
 		}
 
 		// Add token info
@@ -381,4 +408,95 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("account proxy updated", "name", req.Name, "proxy", req.Proxy)
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// testModel is the model used for account connectivity tests. Use a small,
+// fast model to minimise cost and latency.
+const testModel = "claude-haiku-4-5-20251001"
+// OAuth token to verify the token and network path are working.
+// POST /api/accounts/test
+func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Account string `json:"account"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if !h.registry.Has(req.Account) {
+		writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+
+	token, err := h.oauthMgr.GetValidToken(r.Context(), req.Account)
+	if err != nil || token == nil {
+		writeError(w, http.StatusBadRequest, "no valid token for this account — please login first")
+		return
+	}
+
+	// Build HTTP client, respecting account-level SOCKS5 proxy.
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	if proxyURL := h.registry.GetProxy(req.Account); proxyURL != "" {
+		if dialer, dialErr := netutil.NewSOCKS5Dialer(proxyURL); dialErr == nil {
+			httpClient.Transport = &http.Transport{
+				TLSHandshakeTimeout: 10 * time.Second,
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return dialer.Dial(network, addr)
+				},
+			}
+		}
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      testModel,
+		"max_tokens": 50,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	})
+
+	apiReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build request")
+		return
+	}
+	apiReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	apiReq.Header.Set("anthropic-version", "2023-06-01")
+	apiReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(apiReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "failed to decode response")
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		msg := result.Error.Message
+		if msg == "" {
+			msg = "HTTP " + strconv.Itoa(resp.StatusCode)
+		}
+		slog.Warn("account test failed", "account", req.Account, "status", resp.StatusCode, "error", msg)
+		writeError(w, http.StatusBadGateway, msg)
+		return
+	}
+
+	reply := ""
+	if len(result.Content) > 0 {
+		reply = result.Content[0].Text
+	}
+	slog.Info("account test passed", "account", req.Account)
+	writeJSON(w, map[string]any{"ok": true, "reply": reply})
 }

@@ -43,7 +43,7 @@
     header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
     #refresh-status { font-size: 12px; color: var(--text-muted); }
 
-    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
 
     .card {
       background: var(--surface);
@@ -70,6 +70,9 @@
       font-size: 12px;
       color: var(--text-muted);
     }
+
+    /* Table */
+    .table-scroll { overflow-x: auto; }
 
     table { width: 100%; border-collapse: collapse; }
 
@@ -126,6 +129,37 @@
     .btn-danger:hover { background: rgba(248,81,73,.15); }
     .btn-accent { border-color: var(--accent); color: var(--accent); }
     .btn-accent:hover { background: rgba(88,166,255,.15); }
+    .btn-ok   { border-color: var(--success); color: var(--success); }
+    .btn-fail { border-color: var(--danger);  color: var(--danger); }
+
+    /* Utilization bars */
+    .util-bars { display: flex; flex-direction: column; gap: 3px; }
+    .util-bar-row { display: flex; align-items: center; gap: 6px; }
+    .util-label { font-size: 11px; color: var(--text-muted); width: 14px; flex-shrink: 0; }
+    .util-track { width: 80px; height: 4px; background: var(--border); border-radius: 2px; flex-shrink: 0; }
+    .util-fill { height: 100%; border-radius: 2px; background: var(--success); transition: width 0.3s; }
+    .util-fill.warn { background: var(--warn); }
+    .util-fill.danger { background: var(--danger); }
+    .util-pct { font-size: 11px; color: var(--text-muted); width: 28px; }
+    .util-state { margin-top: 3px; }
+
+    /* Proxy cell */
+    .proxy-cell { min-width: 120px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+    .proxy-placeholder { color: var(--text-muted); font-size: 12px; font-style: italic; }
+    .proxy-edit-btn { display: none; }
+
+    .inline-name-input, .inline-proxy-input {
+      width: 100%;
+      padding: 4px 8px;
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+
+    .inline-name-input { font-weight: 600; }
 
     /* Modal */
     .modal-overlay {
@@ -136,6 +170,7 @@
       z-index: 200;
       justify-content: center;
       align-items: center;
+      padding: 16px;
     }
 
     .modal-overlay.active { display: flex; }
@@ -146,7 +181,7 @@
       border-radius: 12px;
       padding: 24px;
       width: 480px;
-      max-width: 90vw;
+      max-width: 100%;
     }
 
     .modal h3 { margin-bottom: 16px; font-size: 16px; }
@@ -171,34 +206,82 @@
     .modal-status.error { color: var(--danger); }
     .modal-status.ok { color: var(--success); }
 
-    .inline-name-input, .inline-proxy-input {
-      width: 100%;
-      padding: 4px 8px;
-      background: var(--bg);
-      border: 1px solid var(--accent);
-      border-radius: 4px;
-      color: var(--text);
-      font-size: 14px;
-      outline: none;
-    }
-
-    .inline-name-input { font-weight: 600; }
-
-    .proxy-cell {
-      cursor: pointer;
-      min-width: 120px;
-    }
-
-    .proxy-placeholder {
-      color: var(--text-muted);
-      font-size: 12px;
-      font-style: italic;
-    }
-
-    @media (max-width: 640px) {
-      .container { padding: 12px 8px; }
+    /* ── Mobile card layout (< 640px) ──────────────────── */
+    @media (max-width: 639px) {
       header { padding: 10px 12px; }
-      th, td { padding: 8px 10px; }
+      .container { padding: 12px 8px; }
+      .table-scroll { overflow-x: visible; }
+
+      /* Hide table headers */
+      .accounts-table thead { display: none; }
+
+      /* Each row becomes a card */
+      .accounts-table tbody tr {
+        display: block;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 10px;
+        overflow: hidden;
+      }
+
+      /* Undo PC "last row no border" */
+      .accounts-table tr:last-child td { border-bottom: 1px solid var(--border); }
+      .accounts-table tr:hover td { background: transparent; }
+
+      /* Each cell is a label–value flex row */
+      .accounts-table td {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        white-space: normal;
+      }
+
+      /* Label prefix via data-label */
+      .accounts-table td[data-label]::before {
+        content: attr(data-label);
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        font-weight: 500;
+        flex-shrink: 0;
+        min-width: 56px;
+        margin-right: 8px;
+      }
+
+      /* Name cell — card header style */
+      .accounts-table td.td-name {
+        background: var(--surface2);
+        font-size: 15px;
+        justify-content: flex-start;
+        gap: 10px;
+      }
+      .accounts-table td.td-name::before { display: none; }
+
+      /* Actions cell */
+      .accounts-table td.td-actions {
+        background: var(--surface2);
+        justify-content: flex-end;
+        border-bottom: none;
+        gap: 8px;
+      }
+      .accounts-table td.td-actions::before { display: none; }
+      .accounts-table td.td-actions .btn { padding: 8px 16px; font-size: 13px; }
+
+      /* Proxy cell — show edit button, disable dblclick hint */
+      .accounts-table td.td-proxy { cursor: default; }
+      .proxy-edit-btn { display: inline-block; flex-shrink: 0; }
+
+      /* Budget cell — stack bars vertically, full width */
+      .accounts-table td.td-budget { flex-direction: column; align-items: flex-start; gap: 6px; }
+      .accounts-table td.td-budget::before { margin-bottom: 2px; }
+      .accounts-table td.td-budget .util-bars { width: 100%; }
+      .accounts-table td.td-budget .util-track { flex: 1; width: auto; min-width: 80px; }
+
+      /* Hide Refresh on mobile */
+      .btn-refresh { display: none !important; }
     }
   </style>
 </head>
@@ -218,8 +301,8 @@
         <button class="btn btn-accent" onclick="addInlineAccount()">+ Add Claude</button>
       </div>
     </div>
-    <div style="overflow-x:auto">
-      <table>
+    <div class="table-scroll">
+      <table class="accounts-table">
         <thead>
           <tr>
             <th>Name</th>
@@ -227,18 +310,19 @@
             <th>Account Status</th>
             <th>Token Status</th>
             <th>Expires At</th>
+            <th>Budget</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="accounts-body">
-          <tr class="empty-row"><td colspan="6">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </div>
 
-<!-- Login Modal -->
+<!-- OAuth Login Modal -->
 <div class="modal-overlay" id="login-modal">
   <div class="modal">
     <h3>OAuth Login — <span id="modal-account"></span></h3>
@@ -280,10 +364,10 @@
   function accountStatusChip(acct) {
     const status = acct.health || 'healthy';
     const map = {
-      'banned': { cls: 'chip-danger', label: 'Banned' },
-      'cooldown': { cls: 'chip-warn', label: 'Cooling down' },
-      'healthy': { cls: 'chip-success', label: 'Healthy' },
-      'disabled': { cls: 'chip-muted', label: 'Disabled' },
+      'banned':   { cls: 'chip-danger', label: 'Banned' },
+      'cooldown': { cls: 'chip-warn',   label: 'Cooling down' },
+      'healthy':  { cls: 'chip-success',label: 'Healthy' },
+      'disabled': { cls: 'chip-muted',  label: 'Disabled' },
     };
     const meta = map[status] || map['disabled'];
     const reason = acct.ban_reason || acct.disabled_reason || '';
@@ -297,37 +381,77 @@
     return d.toLocaleString([], { hour12: false, month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
   }
 
+  function utilFillClass(util) {
+    if (util >= 0.9) return ' danger';
+    if (util >= 0.7) return ' warn';
+    return '';
+  }
+
+  function utilBarsHTML(acct) {
+    var h5 = Math.round((acct.util_5h || 0) * 100);
+    var h7 = Math.round((acct.util_7d || 0) * 100);
+    var c5 = utilFillClass(acct.util_5h || 0);
+    var c7 = utilFillClass(acct.util_7d || 0);
+    var state = acct.budget_state || 'normal';
+    var stateCls = { normal: 'chip-success', sticky_only: 'chip-warn', blocked: 'chip-danger' }[state] || 'chip-muted';
+    var stateLabel = { normal: 'Normal', sticky_only: 'Sticky', blocked: 'Blocked' }[state] || state;
+    return '<div class="util-bars">' +
+      '<div class="util-bar-row">' +
+        '<span class="util-label">5h</span>' +
+        '<div class="util-track"><div class="util-fill' + c5 + '" style="width:' + h5 + '%"></div></div>' +
+        '<span class="util-pct">' + h5 + '%</span>' +
+      '</div>' +
+      '<div class="util-bar-row">' +
+        '<span class="util-label">7d</span>' +
+        '<div class="util-track"><div class="util-fill' + c7 + '" style="width:' + h7 + '%"></div></div>' +
+        '<span class="util-pct">' + h7 + '%</span>' +
+      '</div>' +
+      '<span class="chip ' + stateCls + ' util-state">' + stateLabel + '</span>' +
+    '</div>';
+  }
+
   var PROXY_HINT = 'socks5://user:password@ip:port';
 
   function renderAccounts(data) {
     document.getElementById('account-count').textContent = data.length + ' accounts';
     const tbody = document.getElementById('accounts-body');
     if (!data.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No OAuth accounts configured</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No OAuth accounts configured</td></tr>';
       return;
     }
     tbody.innerHTML = '';
     data.forEach(function(acct) {
       var tr = document.createElement('tr');
 
-      // Name cell
+      // Name cell (card header on mobile)
       var tdName = document.createElement('td');
+      tdName.className = 'td-name';
       var strong = document.createElement('strong');
       strong.textContent = acct.name;
       tdName.appendChild(strong);
       tr.appendChild(tdName);
 
-      // Proxy cell (with dblclick to edit)
+      // Proxy cell
       var tdProxy = document.createElement('td');
-      tdProxy.className = 'proxy-cell';
+      tdProxy.className = 'proxy-cell td-proxy';
+      tdProxy.dataset.label = 'Proxy';
       if (acct.proxy) {
-        tdProxy.textContent = acct.proxy;
+        tdProxy.appendChild(document.createTextNode(acct.proxy));
       } else {
         var placeholder = document.createElement('span');
         placeholder.className = 'proxy-placeholder';
         placeholder.textContent = PROXY_HINT;
         tdProxy.appendChild(placeholder);
       }
+      // Mobile: tap-to-edit button
+      var proxyEditBtn = document.createElement('button');
+      proxyEditBtn.className = 'btn proxy-edit-btn';
+      proxyEditBtn.textContent = 'Edit';
+      proxyEditBtn.addEventListener('click', (function(name, td) {
+        return function(e) { e.stopPropagation(); editProxy(name, td); };
+      })(acct.name, tdProxy));
+      tdProxy.appendChild(proxyEditBtn);
+      // PC: double-click to edit
       tdProxy.addEventListener('dblclick', (function(name, td) {
         return function() { editProxy(name, td); };
       })(acct.name, tdProxy));
@@ -335,21 +459,35 @@
 
       // Account status cell
       var tdAccountStatus = document.createElement('td');
+      tdAccountStatus.className = 'td-account-status';
+      tdAccountStatus.dataset.label = 'Status';
       tdAccountStatus.innerHTML = accountStatusChip(acct);
       tr.appendChild(tdAccountStatus);
 
       // Token status cell
       var tdStatus = document.createElement('td');
+      tdStatus.className = 'td-token-status';
+      tdStatus.dataset.label = 'Token';
       tdStatus.innerHTML = tokenChip(acct.token_status);
       tr.appendChild(tdStatus);
 
       // Expires at cell
       var tdExpiry = document.createElement('td');
+      tdExpiry.className = 'td-expiry';
+      tdExpiry.dataset.label = 'Expires';
       tdExpiry.textContent = fmtExpiry(acct.token_expires_at);
       tr.appendChild(tdExpiry);
 
-      // Actions cell — use DOM API to prevent XSS via onclick injection
+      // Budget cell
+      var tdBudget = document.createElement('td');
+      tdBudget.className = 'td-budget';
+      tdBudget.dataset.label = 'Budget';
+      tdBudget.innerHTML = utilBarsHTML(acct);
+      tr.appendChild(tdBudget);
+
+      // Actions cell
       var tdActions = document.createElement('td');
+      tdActions.className = 'td-actions';
       var actionsDiv = document.createElement('div');
       actionsDiv.className = 'actions';
 
@@ -361,9 +499,17 @@
       })(acct.name));
       actionsDiv.appendChild(loginBtn);
 
+      var testBtn = document.createElement('button');
+      testBtn.className = 'btn';
+      testBtn.textContent = 'Test';
+      testBtn.addEventListener('click', (function(name, btn) {
+        return function() { doTest(name, btn); };
+      })(acct.name, testBtn));
+      actionsDiv.appendChild(testBtn);
+
       if (acct.token_status !== 'no token') {
         var refreshBtn = document.createElement('button');
-        refreshBtn.className = 'btn';
+        refreshBtn.className = 'btn btn-refresh';
         refreshBtn.textContent = 'Refresh';
         refreshBtn.addEventListener('click', (function(name) {
           return function() { doRefresh(name); };
@@ -516,6 +662,27 @@
     }
   }
 
+  async function doTest(accountName, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    btn.className = 'btn';
+    try {
+      const data = await fetchJSON('/api/accounts/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: accountName }),
+      });
+      btn.textContent = '✓ OK';
+      btn.className = 'btn btn-ok';
+      setTimeout(function() { btn.textContent = 'Test'; btn.className = 'btn'; btn.disabled = false; }, 30000);
+    } catch (err) {
+      btn.textContent = '✗ Fail';
+      btn.className = 'btn btn-fail';
+      btn.title = err.message;
+      btn.onclick = function() { alert(err.message); };
+      setTimeout(function() { btn.textContent = 'Test'; btn.className = 'btn'; btn.title = ''; btn.onclick = null; btn.disabled = false; }, 30000);
+    }
+  }
 
   // --- Proxy Inline Edit ---
 
@@ -529,10 +696,14 @@
   }
 
   function editProxy(accountName, td) {
-    // Prevent double activation
     if (td.querySelector('.inline-proxy-input')) return;
 
-    var current = td.querySelector('.proxy-placeholder') ? '' : td.textContent.trim();
+    // Exclude the edit button text from "current value"
+    var current = '';
+    td.childNodes.forEach(function(node) {
+      if (node.nodeType === Node.TEXT_NODE) current += node.textContent.trim();
+    });
+
     td.innerHTML = '<input class="inline-proxy-input" type="text" placeholder="' + esc(PROXY_HINT) + '" value="' + esc(current) + '" />';
     var input = td.querySelector('.inline-proxy-input');
     input.focus();
@@ -543,7 +714,6 @@
     async function save() {
       if (saving) return;
       var val = input.value.trim();
-      // Allow clearing
       if (val === '') {
         saving = true;
         await submitProxy(accountName, '', td);
@@ -558,12 +728,15 @@
     }
 
     function cancel() {
-      // Restore original display
       if (current) {
-        td.innerHTML = esc(current);
+        td.innerHTML = esc(current) + '<button class="btn proxy-edit-btn">Edit</button>';
       } else {
-        td.innerHTML = '<span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span>';
+        td.innerHTML = '<span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span><button class="btn proxy-edit-btn">Edit</button>';
       }
+      // Re-attach edit button listener
+      td.querySelector('.proxy-edit-btn').addEventListener('click', function(e) {
+        e.stopPropagation(); editProxy(accountName, td);
+      });
     }
 
     input.addEventListener('keydown', function(e) {
@@ -571,7 +744,6 @@
       if (e.key === 'Escape') { e.preventDefault(); cancel(); }
     });
     input.addEventListener('blur', function() {
-      // Small delay to allow click events to fire first
       setTimeout(function() { if (!saving) cancel(); }, 150);
     });
   }
@@ -594,10 +766,8 @@
 
   function addInlineAccount() {
     const tbody = document.getElementById('accounts-body');
-    // Remove "no accounts" empty row if present
     const emptyRow = tbody.querySelector('.empty-row');
     if (emptyRow) emptyRow.remove();
-    // Prevent multiple pending inline rows
     if (tbody.querySelector('.inline-add-row')) {
       tbody.querySelector('.inline-name-input').focus();
       return;
@@ -605,12 +775,13 @@
     const tr = document.createElement('tr');
     tr.className = 'inline-add-row';
     tr.innerHTML =
-      '<td><input class="inline-name-input" type="text" placeholder="Account name…" /></td>' +
-      '<td><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
-      '<td><span class="chip chip-muted">—</span></td>' +
-      '<td><span class="chip chip-muted">—</span></td>' +
-      '<td>—</td>' +
-      '<td><div class="actions">' +
+      '<td class="td-name"><input class="inline-name-input" type="text" placeholder="Account name…" /></td>' +
+      '<td class="td-proxy" data-label="Proxy"><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
+      '<td class="td-account-status" data-label="Status"><span class="chip chip-muted">—</span></td>' +
+      '<td class="td-token-status" data-label="Token"><span class="chip chip-muted">—</span></td>' +
+      '<td class="td-expiry" data-label="Expires">—</td>' +
+      '<td class="td-budget" data-label="Budget"></td>' +
+      '<td class="td-actions"><div class="actions">' +
         '<button class="btn btn-accent inline-save-btn">Save</button>' +
         '<button class="btn inline-cancel-btn">Cancel</button>' +
       '</div></td>';
@@ -642,10 +813,7 @@
 
     function cancelInline() {
       tr.remove();
-      // Restore empty row if no accounts remain
-      if (!tbody.children.length || (tbody.children.length === 0)) {
-        refresh();
-      }
+      if (!tbody.children.length) refresh();
     }
 
     tr.querySelector('.inline-save-btn').addEventListener('click', saveInline);

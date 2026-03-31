@@ -216,7 +216,7 @@ func buildIntegrationOAuthManager(t *testing.T, accounts []config.AccountConfig)
 		err = store.Save(acct.Name, oauth.OAuthToken{
 			AccessToken:  "fake-integration-token",
 			RefreshToken: "rt-ignored",
-			ExpiresAt:    time.Now().Add(1 * time.Hour),
+			ExpiresAt:    time.Now().Add(2 * time.Hour),
 		})
 		if err != nil {
 			t.Fatalf("store.Save(%q): %v", acct.Name, err)
