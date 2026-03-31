@@ -142,6 +142,7 @@
     .util-fill.danger { background: var(--danger); }
     .util-pct { font-size: 11px; color: var(--text-muted); width: 28px; }
     .util-state { margin-top: 3px; }
+    .util-reset-hint { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
 
     /* Proxy cell */
     .proxy-cell { min-width: 120px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
@@ -423,6 +424,16 @@
     return '';
   }
 
+  function fmtResetIn(isoStr) {
+    if (!isoStr) return null;
+    var diff = new Date(isoStr) - Date.now();
+    if (diff <= 0) return null;
+    var mins = Math.ceil(diff / 60000);
+    if (mins < 60) return 'resets in ' + mins + 'm';
+    var hrs = (diff / 3600000).toFixed(1);
+    return 'resets in ' + hrs + 'h';
+  }
+
   function utilBarsHTML(acct) {
     var h5 = Math.round((acct.util_5h || 0) * 100);
     var h7 = Math.round((acct.util_7d || 0) * 100);
@@ -431,16 +442,20 @@
     var state = acct.budget_state || 'normal';
     var stateCls = { normal: 'chip-success', sticky_only: 'chip-warn', blocked: 'chip-danger' }[state] || 'chip-muted';
     var stateLabel = { normal: 'Normal', sticky_only: 'Sticky', blocked: 'Blocked' }[state] || state;
+    var hint5 = fmtResetIn(acct.reset_at_5h);
+    var hint7 = fmtResetIn(acct.reset_at_7d);
     return '<div class="util-bars">' +
       '<div class="util-bar-row">' +
         '<span class="util-label">5h</span>' +
         '<div class="util-track"><div class="util-fill' + c5 + '" style="width:' + h5 + '%"></div></div>' +
         '<span class="util-pct">' + h5 + '%</span>' +
+        (hint5 ? '<span class="util-reset-hint">' + hint5 + '</span>' : '') +
       '</div>' +
       '<div class="util-bar-row">' +
         '<span class="util-label">7d</span>' +
         '<div class="util-track"><div class="util-fill' + c7 + '" style="width:' + h7 + '%"></div></div>' +
         '<span class="util-pct">' + h7 + '%</span>' +
+        (hint7 ? '<span class="util-reset-hint">' + hint7 + '</span>' : '') +
       '</div>' +
       '<span class="chip ' + stateCls + ' util-state">' + stateLabel + '</span>' +
     '</div>';
