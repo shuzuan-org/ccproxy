@@ -31,6 +31,9 @@ func (m *mockNotifier) Events() []notify.Event {
 	return cp
 }
 
+// withMockNotifier replaces the global Notifier with a mock and restores it
+// via t.Cleanup. Tests using this helper must NOT call t.Parallel() because
+// they mutate shared global state (the global Notifier singleton).
 func withMockNotifier(t *testing.T) *mockNotifier {
 	t.Helper()
 	mock := &mockNotifier{}
@@ -44,7 +47,6 @@ func TestDisable_NotifiesAccountDisabled(t *testing.T) {
 	mock := withMockNotifier(t)
 	h := NewAccountHealth("acct1")
 	h.Disable("consecutive_401")
-	time.Sleep(10 * time.Millisecond)
 	events := mock.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(events))
@@ -61,7 +63,6 @@ func TestDisable_NotifiesAccountBanned(t *testing.T) {
 	mock := withMockNotifier(t)
 	h := NewAccountHealth("acct2")
 	h.Disable(PlatformBanReasonForbidden)
-	time.Sleep(10 * time.Millisecond)
 	events := mock.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(events))

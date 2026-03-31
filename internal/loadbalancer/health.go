@@ -109,7 +109,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 			observe.Logger(ctx).Warn("account rate limited (true 429)", "account", h.Name, "cooldown", cd.String())
 			h.setCooldownWithTracking(cd, "rate_limited")
 			h.recordWindow(true)
-			notify.Global().Notify(ctx, notify.Event{
+			_ = notify.Global().Notify(ctx, notify.Event{
 				AccountName: h.Name,
 				Type:        notify.EventRateLimited,
 				Detail:      fmt.Sprintf("cooldown: %s", cd),
@@ -132,7 +132,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		h.mu.Lock()
 		h.consecutive529++
 		h.mu.Unlock()
-		notify.Global().Notify(ctx, notify.Event{
+		_ = notify.Global().Notify(ctx, notify.Event{
 			AccountName: h.Name,
 			Type:        notify.EventOverloaded,
 			Detail:      fmt.Sprintf("cooldown: %s", cd),
@@ -185,7 +185,7 @@ func (h *AccountHealth) RecordTimeout(ctx context.Context) {
 		h.mu.Unlock()
 		observe.Logger(ctx).Warn("account cooldown: timeout threshold reached", "account", h.Name, "count", count)
 		h.setCooldownWithTracking(2*time.Minute, "timeout_threshold")
-		notify.Global().Notify(ctx, notify.Event{
+		_ = notify.Global().Notify(ctx, notify.Event{
 			AccountName: h.Name,
 			Type:        notify.EventTimeoutCooldown,
 			Detail:      fmt.Sprintf("count: %d, cooldown: 2m", count),
@@ -312,7 +312,7 @@ func (h *AccountHealth) Disable(reason string) {
 	if IsPlatformBanReason(reason) {
 		eventType = notify.EventAccountBanned
 	}
-	go notify.Global().Notify(context.Background(), notify.Event{
+	_ = notify.Global().Notify(context.Background(), notify.Event{
 		AccountName: h.Name,
 		Type:        eventType,
 		Detail:      "reason: " + reason,
