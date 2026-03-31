@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/binn/ccproxy/internal/notify"
 	"github.com/binn/ccproxy/internal/observe"
 )
 
@@ -187,6 +189,18 @@ func (bc *BudgetController) checkStateChange(ctx context.Context) {
 			"to", current.String(),
 		)
 		bc.lastState = current
+		if current == StateBlocked {
+			name := bc.name
+			util5h := bc.window5h.Utilization
+			util7d := bc.window7d.Utilization
+			go func() {
+				_ = notify.Global().Notify(ctx, notify.Event{
+					AccountName: name,
+					Type:        notify.EventBudgetBlocked,
+					Detail:      fmt.Sprintf("util_5h=%.0f%%, util_7d=%.0f%%", util5h*100, util7d*100),
+				})
+			}()
+		}
 	}
 }
 
