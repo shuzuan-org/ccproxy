@@ -320,6 +320,42 @@
       </table>
     </div>
   </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <h2>Telegram 通知</h2>
+    </div>
+    <div style="padding:20px;">
+      <div style="display:flex; flex-direction:column; gap:12px; max-width:480px;">
+        <div>
+          <label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:4px;">Bot Token</label>
+          <input type="password" id="notify-bot-token" placeholder="1234567890:AAABBB…" autocomplete="off"
+            style="width:100%; padding:6px 10px; background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text); font-size:13px; outline:none;" />
+        </div>
+        <div>
+          <label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:4px;">Chat ID</label>
+          <input type="text" id="notify-chat-id" placeholder="-1001234567890"
+            style="width:100%; padding:6px 10px; background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text); font-size:13px; outline:none;" />
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <label style="font-size:12px; color:var(--text-muted);">通知类别</label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" id="notify-disabled" />
+            账户被禁用（连续401、平台封禁）
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+            <input type="checkbox" id="notify-anomaly" />
+            其他异常（429 / 529 / 超时 / 预算阻断）
+          </label>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button class="btn btn-accent" onclick="saveNotifyConfig()">保存配置</button>
+          <button class="btn" onclick="testNotify()">发送测试消息</button>
+          <span id="notify-status" style="font-size:12px;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- OAuth Login Modal -->
@@ -838,8 +874,58 @@
     }
   }
 
+  async function loadNotifyConfig() {
+    try {
+      const data = await fetchJSON('/api/notify/config');
+      document.getElementById('notify-bot-token').value = data.bot_token || '';
+      document.getElementById('notify-chat-id').value = data.chat_id || '';
+      document.getElementById('notify-disabled').checked = !!data.enable_disabled;
+      document.getElementById('notify-anomaly').checked = !!data.enable_anomaly;
+    } catch (e) {
+      // silently ignore on load
+    }
+  }
+
+  async function saveNotifyConfig() {
+    var status = document.getElementById('notify-status');
+    status.textContent = '保存中…';
+    status.style.color = 'var(--text-muted)';
+    try {
+      await fetchJSON('/api/notify/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bot_token: document.getElementById('notify-bot-token').value,
+          chat_id: document.getElementById('notify-chat-id').value,
+          enable_disabled: document.getElementById('notify-disabled').checked,
+          enable_anomaly: document.getElementById('notify-anomaly').checked,
+        }),
+      });
+      status.textContent = '✓ 保存成功';
+      status.style.color = 'var(--success)';
+    } catch (e) {
+      status.textContent = '✗ 保存失败: ' + e.message;
+      status.style.color = 'var(--danger)';
+    }
+  }
+
+  async function testNotify() {
+    var status = document.getElementById('notify-status');
+    status.textContent = '发送中…';
+    status.style.color = 'var(--text-muted)';
+    try {
+      await fetchJSON('/api/notify/test', { method: 'POST' });
+      status.textContent = '✓ 测试消息已发送';
+      status.style.color = 'var(--success)';
+    } catch (e) {
+      status.textContent = '✗ 发送失败: ' + e.message;
+      status.style.color = 'var(--danger)';
+    }
+  }
+
   // --- Init ---
   refresh();
+  loadNotifyConfig();
   setInterval(refresh, 30000);
 </script>
 </body>
