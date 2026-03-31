@@ -252,6 +252,9 @@ if [ "$WITH_SYSTEMD" = true ]; then
         info "System user ccproxy already exists, skipping."
     fi
 
+    # Allow the ccproxy user to replace its own binary for self-updates.
+    run chown ccproxy:ccproxy "${INSTALL_DIR}/ccproxy"
+
     # Create directories.
     run mkdir -p /etc/ccproxy
     run chown ccproxy:ccproxy /etc/ccproxy
