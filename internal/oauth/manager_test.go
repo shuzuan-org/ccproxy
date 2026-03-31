@@ -47,11 +47,11 @@ func TestManager_GetValidToken_FreshToken(t *testing.T) {
 
 	m, store := newTestManager(t, srv.URL)
 
-	// Save a fresh token (expires in 10 minutes — well beyond 60s threshold)
+	// Save a fresh token (expires in 2 hours — well beyond 1h refresh threshold)
 	tok := OAuthToken{
 		AccessToken:  "cached-access",
 		RefreshToken: "cached-refresh",
-		ExpiresAt:    time.Now().Add(10 * time.Minute),
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
 		Scope:        "user:inference",
 	}
 	if err := store.Save("test-oauth", tok); err != nil {
@@ -74,11 +74,11 @@ func TestManager_GetValidToken_ExpiredToken_TriggersRefresh(t *testing.T) {
 
 	m, store := newTestManager(t, srv.URL)
 
-	// Save a token that expires in 30s (below 60s threshold)
+	// Save a token that expires in 30 minutes (below 1h refresh threshold)
 	tok := OAuthToken{
 		AccessToken:  "old-access",
 		RefreshToken: "old-refresh",
-		ExpiresAt:    time.Now().Add(30 * time.Second),
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
 		Scope:        "user:inference",
 	}
 	if err := store.Save("test-oauth", tok); err != nil {

@@ -84,7 +84,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 	err = store.Save("test-oauth", oauth.OAuthToken{
 		AccessToken:  token,
 		RefreshToken: "rt-ignored",
-		ExpiresAt:    time.Now().Add(1 * time.Hour),
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("store.Save: %v", err)
