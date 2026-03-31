@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/binn/ccproxy/internal/config"
+	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
 	"github.com/binn/ccproxy/internal/oauth"
 	proxytls "github.com/binn/ccproxy/internal/tls"
@@ -451,16 +452,20 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 		"model":      testModel,
 		"max_tokens": 50,
 		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+		"tools":      []any{},
+		"metadata":   map[string]any{"user_id": "test-connectivity"},
 	})
 
 	apiReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		"https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build request")
 		return
 	}
+	// Apply full Claude CLI disguise headers so Anthropic accepts the OAuth token.
+	disguise.ApplyHeaders(apiReq, false, nil)
+	apiReq.Header["anthropic-beta"] = []string{disguise.BetaHeader(testModel, false)}
 	apiReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	apiReq.Header.Set("anthropic-version", "2023-06-01")
 	apiReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(apiReq)

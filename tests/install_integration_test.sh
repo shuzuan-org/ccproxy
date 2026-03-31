@@ -185,11 +185,11 @@ test_binary_only() {
     local ok=true
 
     # Binary exists and is executable.
-    docker exec "$cid" test -x /usr/local/bin/ccproxy || { red "  binary not executable"; ok=false; }
+    docker exec "$cid" test -x /opt/ccproxy/bin/ccproxy || { red "  binary not executable"; ok=false; }
 
     # ccproxy version outputs version string.
     local ver_output
-    ver_output=$(docker exec "$cid" /usr/local/bin/ccproxy version 2>&1) || true
+    ver_output=$(docker exec "$cid" /opt/ccproxy/bin/ccproxy version 2>&1) || true
     assert_contains "$ver_output" "0.0.0-test" || ok=false
 
     if [ "$ok" = true ]; then
@@ -215,22 +215,22 @@ test_systemd_setup() {
     # User ccproxy exists.
     docker exec "$cid" id ccproxy >/dev/null 2>&1 || { red "  user ccproxy not found"; ok=false; }
 
-    # /etc/ccproxy permissions: 0700, owned by ccproxy.
+    # /opt/ccproxy/etc permissions: 0700, owned by ccproxy.
     local etc_stat
-    etc_stat=$(docker exec "$cid" stat -c '%a %U' /etc/ccproxy 2>&1)
-    assert_contains "$etc_stat" "700 ccproxy" "expected /etc/ccproxy 700 ccproxy, got: $etc_stat" || ok=false
+    etc_stat=$(docker exec "$cid" stat -c '%a %U' /opt/ccproxy/etc 2>&1)
+    assert_contains "$etc_stat" "700 ccproxy" "expected /opt/ccproxy/etc 700 ccproxy, got: $etc_stat" || ok=false
 
-    # /var/lib/ccproxy permissions: 0700, owned by ccproxy.
+    # /opt/ccproxy permissions: 0700, owned by ccproxy.
     local var_stat
-    var_stat=$(docker exec "$cid" stat -c '%a %U' /var/lib/ccproxy 2>&1)
-    assert_contains "$var_stat" "700 ccproxy" "expected /var/lib/ccproxy 700 ccproxy, got: $var_stat" || ok=false
+    var_stat=$(docker exec "$cid" stat -c '%a %U' /opt/ccproxy 2>&1)
+    assert_contains "$var_stat" "700 ccproxy" "expected /opt/ccproxy 700 ccproxy, got: $var_stat" || ok=false
 
     # Unit file exists and contains key directives.
     local unit
     unit=$(docker exec "$cid" cat /etc/systemd/system/ccproxy.service 2>&1) || { red "  unit file missing"; ok=false; }
     assert_contains "$unit" "User=ccproxy" || ok=false
-    assert_contains "$unit" "ExecStart=/usr/local/bin/ccproxy" || ok=false
-    assert_contains "$unit" "WorkingDirectory=/var/lib/ccproxy" || ok=false
+    assert_contains "$unit" "ExecStart=/opt/ccproxy/bin/ccproxy" || ok=false
+    assert_contains "$unit" "WorkingDirectory=/opt/ccproxy" || ok=false
 
     if [ "$ok" = true ]; then
         record_pass "systemd setup"
@@ -323,7 +323,7 @@ test_non_root_rejected() {
     # Create a non-root user.
     docker exec "$cid" useradd -m testuser
 
-    # Run install.sh as non-root (default install dir /usr/local/bin is not writable).
+    # Run install.sh as non-root (default install dir /opt/ccproxy/bin is not writable).
     local output exit_code=0
     output=$(docker exec -u testuser "$cid" sh /opt/install.sh --version v0.0.0-test 2>&1) || exit_code=$?
 

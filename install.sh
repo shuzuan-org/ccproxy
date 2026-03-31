@@ -7,7 +7,7 @@ set -e
 #   or:  curl -fsSL ... | sudo sh -s -- --domain proxy.example.com
 
 REPO="shuzuan-org/ccproxy"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/opt/ccproxy/bin"
 WITH_SYSTEMD=false
 DRY_RUN=false
 VERSION=""
@@ -83,7 +83,7 @@ Use --with-systemd for a managed service, or --domain for systemd + Caddy HTTPS.
 
 Options:
   --version VERSION     Install specific version (default: latest)
-  --install-dir DIR     Binary install path (default: /usr/local/bin)
+  --install-dir DIR     Binary install path (default: /opt/ccproxy/bin)
   --with-systemd        Install binary plus systemd service, user, and directories
   --domain DOMAIN       Install binary + systemd, then configure Caddy HTTPS
   --dry-run             Print actions without executing
@@ -191,6 +191,7 @@ info "Checksum verified."
 info "Extracting to ${INSTALL_DIR}..."
 tar -xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}"
 
+run mkdir -p "${INSTALL_DIR}"
 run install -m 0755 "${TMPDIR}/ccproxy" "${INSTALL_DIR}/ccproxy"
 
 info "Installed: ${INSTALL_DIR}/ccproxy"
@@ -244,6 +245,9 @@ CADDYEOF
 if [ "$WITH_SYSTEMD" = true ]; then
     info "Setting up systemd service..."
 
+    # Derive base directory from binary install dir (e.g. /opt/ccproxy/bin -> /opt/ccproxy).
+    BASE_DIR=$(dirname "$INSTALL_DIR")
+
     # Create system user if not exists.
     if ! id ccproxy > /dev/null 2>&1; then
         run useradd --system --no-create-home --shell /usr/sbin/nologin ccproxy
@@ -252,16 +256,10 @@ if [ "$WITH_SYSTEMD" = true ]; then
         info "System user ccproxy already exists, skipping."
     fi
 
-    # Allow the ccproxy user to replace its own binary for self-updates.
-    run chown ccproxy:ccproxy "${INSTALL_DIR}/ccproxy"
-
-    # Create directories.
-    run mkdir -p /etc/ccproxy
-    run chown ccproxy:ccproxy /etc/ccproxy
-    run chmod 0700 /etc/ccproxy
-    run mkdir -p /var/lib/ccproxy
-    run chown ccproxy:ccproxy /var/lib/ccproxy
-    run chmod 0700 /var/lib/ccproxy
+    # Create self-contained directory layout under BASE_DIR.
+    run mkdir -p "${BASE_DIR}/etc" "${BASE_DIR}/bin"
+    run chown -R ccproxy:ccproxy "${BASE_DIR}"
+    run chmod 0700 "${BASE_DIR}"
 
     # Write systemd unit file to a secure temp file.
     UNIT_TMP=$(mktemp)
@@ -275,8 +273,8 @@ Wants=network-online.target
 Type=simple
 User=ccproxy
 Group=ccproxy
-ExecStart=${INSTALL_DIR}/ccproxy -c /etc/ccproxy/config.toml
-WorkingDirectory=/var/lib/ccproxy
+ExecStart=${INSTALL_DIR}/ccproxy -c ${BASE_DIR}/etc/config.toml
+WorkingDirectory=${BASE_DIR}
 Restart=always
 RestartSec=5
 

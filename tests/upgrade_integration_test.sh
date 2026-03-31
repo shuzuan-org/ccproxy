@@ -95,8 +95,8 @@ start_container() {
 
     # Create config with known admin password.
     docker exec "$cid" bash -c "
-mkdir -p /etc/ccproxy /var/lib/ccproxy
-cat > /etc/ccproxy/config.toml <<'EOF'
+mkdir -p /opt/ccproxy/etc /opt/ccproxy/bin
+cat > /opt/ccproxy/etc/config.toml <<'EOF'
 [server]
 host = \"127.0.0.1\"
 port = 3000
@@ -118,7 +118,7 @@ start_ccproxy() {
     local cid="$1"
     local binary="${2:-/opt/ccproxy}"
     shift 2 || shift 1 || true
-    docker exec -d "$cid" "$binary" -c /etc/ccproxy/config.toml "$@"
+    docker exec -d "$cid" "$binary" -c /opt/ccproxy/etc/config.toml "$@"
     # Wait for it to be ready.
     local retries=0
     while ! docker exec "$cid" sh -c "curl -sf http://127.0.0.1:3000/health >/dev/null 2>&1" ; do
@@ -397,7 +397,7 @@ test_auto_update_disabled_config() {
     docker exec "$cid" bash -c 'apt-get update -qq && apt-get install -y -qq curl' >/dev/null 2>&1
 
     # Override config with auto_update = false.
-    docker exec "$cid" bash -c "cat > /etc/ccproxy/config.toml <<'EOF'
+    docker exec "$cid" bash -c "cat > /opt/ccproxy/etc/config.toml <<'EOF'
 [server]
 host = \"127.0.0.1\"
 port = 3000
@@ -444,14 +444,15 @@ start_upgrade_container() {
     docker exec "$cid" bash -c 'apt-get update -qq && apt-get install -y -qq python3 curl procps' >/dev/null 2>&1
 
     # Copy v1 binary to writable location (go-selfupdate replaces in-place).
-    docker exec "$cid" cp /opt/ccproxy-v1 /usr/local/bin/ccproxy
-    docker exec "$cid" chmod +x /usr/local/bin/ccproxy
+    docker exec "$cid" mkdir -p /opt/ccproxy/bin
+    docker exec "$cid" cp /opt/ccproxy-v1 /opt/ccproxy/bin/ccproxy
+    docker exec "$cid" chmod +x /opt/ccproxy/bin/ccproxy
 
     # Remove /.dockerenv so updater does not refuse.
     docker exec "$cid" rm -f /.dockerenv
 
     # Create data directory.
-    docker exec "$cid" mkdir -p /etc/ccproxy /var/lib/ccproxy
+    docker exec "$cid" mkdir -p /opt/ccproxy/etc /opt/ccproxy
 
     echo "$cid"
 }
@@ -509,7 +510,7 @@ test_api_full_upgrade() {
     cid=$(start_upgrade_container)
 
     # Config: auto_update=false, update_api_url points to mock.
-    docker exec "$cid" bash -c "cat > /etc/ccproxy/config.toml <<'EOF'
+    docker exec "$cid" bash -c "cat > /opt/ccproxy/etc/config.toml <<'EOF'
 [server]
 host = \"127.0.0.1\"
 port = 3000
@@ -525,7 +526,7 @@ EOF
 "
 
     start_mock_api "$cid"
-    start_ccproxy "$cid" /usr/local/bin/ccproxy
+    start_ccproxy "$cid" /opt/ccproxy/bin/ccproxy
 
     local ok=true
 
@@ -557,7 +558,7 @@ EOF
 
     # 4. Verify binary version.
     local version_output
-    version_output=$(docker exec "$cid" /usr/local/bin/ccproxy version 2>&1)
+    version_output=$(docker exec "$cid" /opt/ccproxy/bin/ccproxy version 2>&1)
     assert_contains "$version_output" "$V2_VERSION" "binary should be v${V2_VERSION}" || ok=false
 
     if [ "$ok" = true ]; then
@@ -575,7 +576,7 @@ test_auto_update_background() {
     cid=$(start_upgrade_container)
 
     # Config: auto_update=true, update_api_url points to mock.
-    docker exec "$cid" bash -c "cat > /etc/ccproxy/config.toml <<'EOF'
+    docker exec "$cid" bash -c "cat > /opt/ccproxy/etc/config.toml <<'EOF'
 [server]
 host = \"127.0.0.1\"
 port = 3000
@@ -592,7 +593,7 @@ EOF
 "
 
     start_mock_api "$cid"
-    start_ccproxy "$cid" /usr/local/bin/ccproxy
+    start_ccproxy "$cid" /opt/ccproxy/bin/ccproxy
 
     local ok=true
 
@@ -615,7 +616,7 @@ EOF
 
     # Verify binary version.
     local version_output
-    version_output=$(docker exec "$cid" /usr/local/bin/ccproxy version 2>&1)
+    version_output=$(docker exec "$cid" /opt/ccproxy/bin/ccproxy version 2>&1)
     assert_contains "$version_output" "$V2_VERSION" "binary should be v${V2_VERSION}" || ok=false
 
     if [ "$ok" = true ]; then
