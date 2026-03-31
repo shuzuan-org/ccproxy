@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/binn/ccproxy/internal/notify"
 	"github.com/binn/ccproxy/internal/observe"
 )
 
@@ -107,6 +109,11 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 			observe.Logger(ctx).Warn("account rate limited (true 429)", "account", h.Name, "cooldown", cd.String())
 			h.setCooldownWithTracking(cd, "rate_limited")
 			h.recordWindow(true)
+			notify.Global().Notify(ctx, notify.Event{
+				AccountName: h.Name,
+				Type:        notify.EventRateLimited,
+				Detail:      fmt.Sprintf("cooldown: %s", cd),
+			})
 		} else {
 			// Fake 429: short cooldown, don't affect budget or SRE
 			h.budget.Record429(ctx, false)
@@ -125,6 +132,11 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		h.mu.Lock()
 		h.consecutive529++
 		h.mu.Unlock()
+		notify.Global().Notify(ctx, notify.Event{
+			AccountName: h.Name,
+			Type:        notify.EventOverloaded,
+			Detail:      fmt.Sprintf("cooldown: %s", cd),
+		})
 
 	case 401:
 		observe.Logger(ctx).Warn("account auth error, cooling down", "account", h.Name, "cooldown", cooldown401.String())
@@ -169,9 +181,15 @@ func (h *AccountHealth) RecordTimeout(ctx context.Context) {
 	}
 	h.timeoutCount++
 	if h.timeoutCount >= timeoutThreshold && now.Sub(h.firstTimeoutAt) < healthWindowSize {
+		count := h.timeoutCount
 		h.mu.Unlock()
-		observe.Logger(ctx).Warn("account cooldown: timeout threshold reached", "account", h.Name, "count", h.timeoutCount)
+		observe.Logger(ctx).Warn("account cooldown: timeout threshold reached", "account", h.Name, "count", count)
 		h.setCooldownWithTracking(2*time.Minute, "timeout_threshold")
+		notify.Global().Notify(ctx, notify.Event{
+			AccountName: h.Name,
+			Type:        notify.EventTimeoutCooldown,
+			Detail:      fmt.Sprintf("count: %d, cooldown: 2m", count),
+		})
 		return
 	}
 	h.mu.Unlock()
@@ -286,9 +304,19 @@ func (h *AccountHealth) setCooldownWithTracking(d time.Duration, reason string) 
 // Disable permanently disables this account.
 func (h *AccountHealth) Disable(reason string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.disabled = true
 	h.disabledReason = reason
+	h.mu.Unlock()
+
+	eventType := notify.EventAccountDisabled
+	if IsPlatformBanReason(reason) {
+		eventType = notify.EventAccountBanned
+	}
+	go notify.Global().Notify(context.Background(), notify.Event{
+		AccountName: h.Name,
+		Type:        eventType,
+		Detail:      "reason: " + reason,
+	})
 }
 
 // IsDisabled returns whether the account is permanently disabled.
