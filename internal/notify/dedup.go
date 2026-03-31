@@ -7,6 +7,8 @@ import (
 )
 
 // Dedup suppresses repeated notifications for the same account+event within a TTL window.
+// Note: entries are never evicted; in practice the number of distinct account+event
+// combinations is small and bounded by the account registry size.
 type Dedup struct {
 	mu      sync.Mutex
 	entries map[string]time.Time
