@@ -13,6 +13,7 @@ import (
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/disguise"
 	"github.com/binn/ccproxy/internal/loadbalancer"
+	"github.com/binn/ccproxy/internal/notify"
 	"github.com/binn/ccproxy/internal/oauth"
 	"github.com/binn/ccproxy/internal/observe"
 	"github.com/binn/ccproxy/internal/proxy"
@@ -141,8 +142,14 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	// 7. Create proxy handler.
 	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
+	// Initialize Telegram notifier from persisted config (if any).
+	if notifyCfg, err := notify.LoadConfig("data"); err == nil && notifyCfg.BotToken != "" && notifyCfg.ChatID != "" {
+		notify.SetGlobal(notify.NewTelegramNotifier(notifyCfg))
+		slog.Info("telegram notifier initialized")
+	}
+
 	// 8. Create admin handler.
-	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry, upd)
+	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry, upd, "data")
 
 	// 9. Setup HTTP mux with route groups.
 	mux := http.NewServeMux()
@@ -170,6 +177,8 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	mux.Handle("/api/update/status", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateStatus))))
 	mux.Handle("/api/update/check", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateCheck))))
 	mux.Handle("/api/update/apply", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateApply))))
+	mux.Handle("/api/notify/config", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleNotifyConfig))))
+	mux.Handle("/api/notify/test", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleNotifyTest))))
 	mux.Handle("/admin/", adminRL(adminAuth(http.StripPrefix("/admin", adminHandler.HandleDashboard()))))
 
 	// Health check — no auth required.

@@ -2,13 +2,11 @@ package admin
 
 import (
 	"bytes"
-	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,8 +14,8 @@ import (
 
 	"github.com/binn/ccproxy/internal/config"
 	"github.com/binn/ccproxy/internal/loadbalancer"
-	"github.com/binn/ccproxy/internal/netutil"
 	"github.com/binn/ccproxy/internal/oauth"
+	proxytls "github.com/binn/ccproxy/internal/tls"
 	"github.com/binn/ccproxy/internal/updater"
 )
 
@@ -32,10 +30,11 @@ type Handler struct {
 	cfg      *config.Config
 	registry *config.AccountRegistry
 	updater  *updater.Updater
+	dataDir  string
 }
 
 // NewHandler creates an admin Handler.
-func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.AccountRegistry, upd *updater.Updater) *Handler {
+func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessions *oauth.SessionStore, cfg *config.Config, registry *config.AccountRegistry, upd *updater.Updater, dataDir string) *Handler {
 	return &Handler{
 		balancer: balancer,
 		oauthMgr: oauthMgr,
@@ -43,6 +42,7 @@ func NewHandler(balancer *loadbalancer.Balancer, oauthMgr *oauth.Manager, sessio
 		cfg:      cfg,
 		registry: registry,
 		updater:  upd,
+		dataDir:  dataDir,
 	}
 }
 
@@ -434,17 +434,17 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build HTTP client, respecting account-level SOCKS5 proxy.
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	// Build HTTP client with TLS fingerprint transport (required for OAuth to be accepted by
+	// Anthropic — they reject OAuth tokens from non-CLI TLS fingerprints).
+	httpClient := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: proxytls.NewTransport(),
+	}
+
+	// Inject per-account SOCKS5 proxy via context so fingerprintTransport picks it up.
+	reqCtx := r.Context()
 	if proxyURL := h.registry.GetProxy(req.Account); proxyURL != "" {
-		if dialer, dialErr := netutil.NewSOCKS5Dialer(proxyURL); dialErr == nil {
-			httpClient.Transport = &http.Transport{
-				TLSHandshakeTimeout: 10 * time.Second,
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return dialer.Dial(network, addr)
-				},
-			}
-		}
+		reqCtx = proxytls.WithProxyURL(reqCtx, proxyURL)
 	}
 
 	body, _ := json.Marshal(map[string]any{
@@ -453,7 +453,7 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
 	})
 
-	apiReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+	apiReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build request")

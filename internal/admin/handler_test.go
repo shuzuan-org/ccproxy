@@ -38,7 +38,7 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 	mgr := oauth.NewManager(registry.Names(), store, nil)
 	sessions := oauth.NewSessionStore()
-	return NewHandler(balancer, mgr, sessions, cfg, registry, nil)
+	return NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 }
 
 func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
@@ -434,7 +434,7 @@ func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
 	mgr := oauth.NewManager(registry.Names(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
-	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil)
+	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
 	// Start a PKCE session to get a valid session ID and state.
 	sessionID, _, err := sessions.Create("test-oauth")
@@ -496,7 +496,7 @@ func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T
 	mgr := oauth.NewManager(registry.Names(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
-	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil)
+	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
 	sessionID, _, _ := sessions.Create("test-oauth")
 	session, _ := sessions.Get(sessionID)
@@ -549,7 +549,7 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 	mgr := oauth.NewManager(registry.Names(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
-	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil)
+	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
 	sessionID, _, _ := sessions.Create("test-oauth")
 	session, _ := sessions.Get(sessionID)
