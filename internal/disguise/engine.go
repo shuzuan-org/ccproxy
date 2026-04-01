@@ -143,6 +143,12 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		}
 		// Enforce cache_control block limit (aligned with sub2api's all-requests enforcement).
 		enforceCacheControlLimit(ctx, parsed)
+
+		// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
+		if strings.Contains(origReq.URL.Path, "count_tokens") {
+			delete(parsed, "metadata")
+		}
+
 		if result, err := json.Marshal(parsed); err == nil {
 			body = result
 		}
@@ -308,6 +314,11 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 	// Enforce cache_control limit (after all other modifications)
 	enforceCacheControlLimit(ctx, parsed)
+
+	// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
+	if strings.Contains(origReq.URL.Path, "count_tokens") {
+		delete(parsed, "metadata")
+	}
 
 	// Marshal once at the end
 	result, err := json.Marshal(parsed)

@@ -64,20 +64,23 @@ func IsToolRelatedError(body []byte) bool {
 // thinking → text (preserving content), redacted_thinking → removed.
 // Also removes the top-level "thinking" field.
 func FilterThinkingBlocks(body []byte) []byte {
-	return filterBlocks(body, filterThinkingFromContent)
+	return filterBlocks(body, func(content []any) ([]any, int, int) {
+		return filterThinkingFromContent(content)
+	})
 }
 
 // FilterSignatureSensitiveBlocks does FilterThinkingBlocks + converts tool_use/tool_result to text.
 func FilterSignatureSensitiveBlocks(body []byte) []byte {
-	return filterBlocks(body, func(content []any) []any {
-		return filterToolsFromContent(filterThinkingFromContent(content))
+	return filterBlocks(body, func(content []any) ([]any, int, int) {
+		filtered, conv, rem := filterThinkingFromContent(content)
+		return filterToolsFromContent(filtered), conv, rem
 	})
 }
 
 // filterBlocks is the shared implementation for FilterThinkingBlocks and
 // FilterSignatureSensitiveBlocks. It removes top-level "thinking" and applies
 // the given content filter to each message's content array.
-func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
+func filterBlocks(body []byte, contentFilter func([]any) ([]any, int, int)) []byte {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body
@@ -95,6 +98,7 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 		return result
 	}
 
+	totalConverted, totalRemoved := 0, 0
 	for i, msg := range messages {
 		msgMap, ok := msg.(map[string]any)
 		if !ok {
@@ -105,7 +109,9 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 			continue
 		}
 
-		filtered := contentFilter(content)
+		filtered, conv, rem := contentFilter(content)
+		totalConverted += conv
+		totalRemoved += rem
 		filtered = stripEmptyTextBlocks(filtered)
 		if len(filtered) == 0 {
 			filtered = []any{map[string]any{
@@ -115,6 +121,13 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 		}
 		msgMap["content"] = filtered
 		messages[i] = msgMap
+	}
+
+	if totalConverted > 0 || totalRemoved > 0 {
+		slog.Debug("bodyfilter: thinking blocks filtered",
+			"thinking_to_text", totalConverted,
+			"redacted_removed", totalRemoved,
+		)
 	}
 
 	parsed["messages"] = messages
@@ -127,7 +140,8 @@ func filterBlocks(body []byte, contentFilter func([]any) []any) []byte {
 
 // filterThinkingFromContent processes content blocks:
 // thinking → text, redacted_thinking → removed, empty → placeholder.
-func filterThinkingFromContent(content []any) []any {
+// Returns (filtered content, converted count, removed count).
+func filterThinkingFromContent(content []any) ([]any, int, int) {
 	var result []any
 	converted, removed := 0, 0
 	for _, block := range content {
@@ -161,14 +175,7 @@ func filterThinkingFromContent(content []any) []any {
 		}
 	}
 
-	if converted > 0 || removed > 0 {
-		slog.Debug("bodyfilter: thinking blocks filtered",
-			"thinking_to_text", converted,
-			"redacted_removed", removed,
-		)
-	}
-
-	return result
+	return result, converted, removed
 }
 
 // stripEmptyTextBlocks removes text blocks with empty content.

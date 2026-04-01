@@ -1033,6 +1033,93 @@ func TestEngineApply_CountTokensBeta(t *testing.T) {
 	}
 }
 
+// TestEngineApply_CountTokensStripsMetadata verifies that metadata is removed
+// from count_tokens requests to avoid Anthropic 400 "Extra inputs are not permitted".
+func TestEngineApply_CountTokensStripsMetadata(t *testing.T) {
+	t.Run("non-CC client", func(t *testing.T) {
+		e := newTestEngine(t)
+
+		origReq := newTestRequest(t, nil)
+		origReq.URL.Path = "/v1/messages/count_tokens"
+		upstreamReq := newTestRequest(t, nil)
+
+		body := buildEngineBody(t, map[string]interface{}{
+			"model":    "claude-sonnet-4-5",
+			"messages": []interface{}{},
+			"metadata": map[string]interface{}{
+				"user_id": "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123",
+			},
+		})
+
+		outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+		if !applied {
+			t.Fatal("expected disguise to be applied")
+		}
+
+		parsed := parseBody(t, outBody)
+		if _, exists := parsed["metadata"]; exists {
+			t.Error("expected metadata to be stripped from count_tokens request")
+		}
+	})
+
+	t.Run("CC client", func(t *testing.T) {
+		e := newTestEngine(t)
+
+		origReq := newTestRequest(t, nil)
+		origReq.URL.Path = "/v1/messages/count_tokens"
+		origReq.Header.Set("User-Agent", "claude-cli/2.1.87 (external, cli)")
+		origReq.Header.Set("X-App", "cli")
+		origReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+		origReq.Header.Set("Anthropic-Version", "2023-06-01")
+
+		upstreamReq := newTestRequest(t, nil)
+		upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode+","+BetaInterleavedThinking)
+
+		validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123-def"
+		body := buildEngineBody(t, map[string]interface{}{
+			"model":  "claude-sonnet-4-5",
+			"system": "You are Claude Code, Anthropic's official CLI for Claude.",
+			"metadata": map[string]interface{}{
+				"user_id": validUserID,
+			},
+			"messages": []interface{}{},
+		})
+
+		outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+		if !applied {
+			t.Fatal("expected applied=true for CC client")
+		}
+
+		parsed := parseBody(t, outBody)
+		if _, exists := parsed["metadata"]; exists {
+			t.Error("expected metadata to be stripped from count_tokens request (CC path)")
+		}
+	})
+
+	t.Run("messages endpoint preserves metadata", func(t *testing.T) {
+		e := newTestEngine(t)
+
+		origReq := newTestRequest(t, nil)
+		// Default path is /v1/messages — metadata should NOT be stripped
+		upstreamReq := newTestRequest(t, nil)
+
+		body := buildEngineBody(t, map[string]interface{}{
+			"model":    "claude-sonnet-4-5",
+			"messages": []interface{}{},
+			"metadata": map[string]interface{}{
+				"user_id": "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123",
+			},
+		})
+
+		outBody, _ := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
+
+		parsed := parseBody(t, outBody)
+		if _, exists := parsed["metadata"]; !exists {
+			t.Error("expected metadata to be preserved for /v1/messages request")
+		}
+	})
+}
+
 // TestEngineApply_MergesClientBetas verifies that client-provided betas like
 // context-1m are preserved and merged with required betas.
 func TestEngineApply_MergesClientBetas(t *testing.T) {
