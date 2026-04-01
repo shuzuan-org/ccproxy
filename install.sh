@@ -154,29 +154,29 @@ info "Installing ccproxy ${VERSION_NUM} (${ARCH})"
 
 # ---- download and verify ----
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+INSTALL_TMP=$(mktemp -d)
+trap 'rm -rf "$INSTALL_TMP"' EXIT
 
 ARCHIVE="ccproxy_${VERSION_NUM}_linux_${ARCH}.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE}"
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
 
 info "Downloading ${ARCHIVE}..."
-download "$DOWNLOAD_URL" "${TMPDIR}/${ARCHIVE}"
+download "$DOWNLOAD_URL" "${INSTALL_TMP}/${ARCHIVE}"
 
 info "Downloading checksums.txt..."
-download "$CHECKSUMS_URL" "${TMPDIR}/checksums.txt"
+download "$CHECKSUMS_URL" "${INSTALL_TMP}/checksums.txt"
 
 info "Verifying checksum..."
-EXPECTED=$(grep "${ARCHIVE}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
+EXPECTED=$(grep "${ARCHIVE}" "${INSTALL_TMP}/checksums.txt" | awk '{print $1}')
 if [ -z "$EXPECTED" ]; then
     err "archive not found in checksums.txt"
 fi
 
 if command -v sha256sum > /dev/null 2>&1; then
-    ACTUAL=$(sha256sum "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')
+    ACTUAL=$(sha256sum "${INSTALL_TMP}/${ARCHIVE}" | awk '{print $1}')
 elif command -v shasum > /dev/null 2>&1; then
-    ACTUAL=$(shasum -a 256 "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')
+    ACTUAL=$(shasum -a 256 "${INSTALL_TMP}/${ARCHIVE}" | awk '{print $1}')
 else
     err "sha256sum or shasum is required for checksum verification"
 fi
@@ -189,12 +189,14 @@ info "Checksum verified."
 # ---- install binary ----
 
 info "Extracting to ${INSTALL_DIR}..."
-tar -xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}"
+tar -xzf "${INSTALL_TMP}/${ARCHIVE}" -C "${INSTALL_TMP}"
 
 run mkdir -p "${INSTALL_DIR}"
-run install -m 0755 "${TMPDIR}/ccproxy" "${INSTALL_DIR}/ccproxy"
+run install -m 0755 "${INSTALL_TMP}/ccproxy" "${INSTALL_DIR}/ccproxy"
+run ln -sf "${INSTALL_DIR}/ccproxy" /usr/local/bin/ccproxy
 
 info "Installed: ${INSTALL_DIR}/ccproxy"
+info "Symlinked: /usr/local/bin/ccproxy -> ${INSTALL_DIR}/ccproxy"
 
 # ---- caddy helpers ----
 
@@ -207,10 +209,8 @@ install_caddy() {
     info "Installing Caddy via package manager..."
     if command -v apt-get > /dev/null 2>&1; then
         run apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | \
-            gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | \
-            tee /etc/apt/sources.list.d/caddy-stable.list
+        run sh -c "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+        run sh -c "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list"
         run apt-get update
         run apt-get install -y caddy
     elif command -v dnf > /dev/null 2>&1; then
@@ -259,7 +259,7 @@ if [ "$WITH_SYSTEMD" = true ]; then
     # Create self-contained directory layout under BASE_DIR.
     run mkdir -p "${BASE_DIR}/etc" "${BASE_DIR}/bin"
     run chown -R ccproxy:ccproxy "${BASE_DIR}"
-    run chmod 0700 "${BASE_DIR}"
+    run chmod 0700 "${BASE_DIR}/etc"
 
     # Write systemd unit file to a secure temp file.
     UNIT_TMP=$(mktemp)
@@ -302,7 +302,6 @@ fi
 if [ -n "$DOMAIN" ]; then
     install_caddy
     setup_caddy
-    run systemctl start ccproxy
     info ""
     info "ccproxy ${VERSION_NUM} deployed with HTTPS!"
     info "  URL: https://${DOMAIN}"
@@ -321,5 +320,5 @@ info "  Binary: ${INSTALL_DIR}/ccproxy"
 if [ "$WITH_SYSTEMD" = false ]; then
     info ""
     info "Quick start:"
-    info "  ${INSTALL_DIR}/ccproxy"
+    info "  ccproxy"
 fi

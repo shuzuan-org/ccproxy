@@ -44,6 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.
 curl -fsSL https://raw.githubusercontent.com/shuzuan-org/ccproxy/master/install.sh | sh
 ```
 
+安装后二进制位于 `/opt/ccproxy/bin/ccproxy`，并自动创建 `/usr/local/bin/ccproxy` 软链接，可直接运行 `ccproxy`。
+
 ### Docker（可选）
 
 适合已有 Docker 环境、容器化维护或快速试用；如果是在宿主机长期部署，优先使用上面的 CLI 方式。
