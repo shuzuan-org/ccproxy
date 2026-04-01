@@ -373,3 +373,88 @@ func TestRewriteUserIDWithMasking_OldInputHighVersion_OutputsJSON(t *testing.T) 
 		t.Errorf("expected JSON output for high version, got %q", result)
 	}
 }
+
+// --- RewriteUserIDWithFixedClient tests ---
+
+func TestRewriteUserIDWithFixedClient_UsesFixedClientID(t *testing.T) {
+	t.Parallel()
+	fixedID := strings.Repeat("aa", 32) // 64-char hex
+	original := "user_" + strings.Repeat("ab", 32) + "_account__session_abc-123-def"
+	result := RewriteUserIDWithFixedClient(original, fixedID, "masked-uuid", "")
+
+	if !strings.Contains(result, fixedID) {
+		t.Errorf("expected fixed clientID %q in result %q", fixedID, result)
+	}
+	if !strings.Contains(result, "masked-uuid") {
+		t.Errorf("expected masked session UUID in result %q", result)
+	}
+}
+
+func TestRewriteUserIDWithFixedClient_SameDeviceIDForDifferentUsers(t *testing.T) {
+	t.Parallel()
+	// Key property: all users on the same account get the same device_id.
+	fixedID := strings.Repeat("cc", 32)
+	masked := "shared-masked-session"
+
+	user1 := "user_" + strings.Repeat("11", 32) + "_account__session_sess-user1"
+	user2 := "user_" + strings.Repeat("22", 32) + "_account__session_sess-user2"
+
+	r1 := RewriteUserIDWithFixedClient(user1, fixedID, masked, "")
+	r2 := RewriteUserIDWithFixedClient(user2, fixedID, masked, "")
+
+	// Both should contain the fixed device_id (not the original per-user device_id).
+	if !strings.Contains(r1, fixedID) {
+		t.Errorf("user1: expected fixedID %q, got %q", fixedID, r1)
+	}
+	if !strings.Contains(r2, fixedID) {
+		t.Errorf("user2: expected fixedID %q, got %q", fixedID, r2)
+	}
+	// Both should produce the same result (same fixed clientID + same masked session).
+	if r1 != r2 {
+		t.Errorf("expected same output for different users with same account fixedID+session, got %q vs %q", r1, r2)
+	}
+}
+
+func TestRewriteUserIDWithFixedClient_UnknownFormat_UsesFixed(t *testing.T) {
+	t.Parallel()
+	fixedID := strings.Repeat("dd", 32)
+	result := RewriteUserIDWithFixedClient("random-garbage", fixedID, "masked-uuid", "")
+	if !strings.Contains(result, fixedID) {
+		t.Errorf("expected fixedID in fallback result, got %q", result)
+	}
+	if !strings.Contains(result, "masked-uuid") {
+		t.Errorf("expected masked-uuid in fallback result, got %q", result)
+	}
+}
+
+func TestRewriteUserIDWithFixedClient_JSONFormat(t *testing.T) {
+	t.Parallel()
+	fixedID := strings.Repeat("ee", 32)
+	original := `{"device_id":"` + strings.Repeat("ab", 32) + `","session_id":"old-sess"}`
+	result := RewriteUserIDWithFixedClient(original, fixedID, "new-sess", "2.1.78")
+
+	if !strings.HasPrefix(result, "{") {
+		t.Errorf("expected JSON output, got %q", result)
+	}
+	p := ParseUserID(result)
+	if p == nil {
+		t.Fatal("expected parseable JSON result")
+	}
+	if p.DeviceID != fixedID {
+		t.Errorf("expected DeviceID=%q, got %q", fixedID, p.DeviceID)
+	}
+	if p.SessionID != "new-sess" {
+		t.Errorf("expected SessionID=new-sess, got %q", p.SessionID)
+	}
+}
+
+func TestRewriteUserIDWithFixedClient_EmptyFixedID_GeneratesRandom(t *testing.T) {
+	t.Parallel()
+	// Empty fixedClientID: fall back to GenerateClientID (random).
+	r1 := RewriteUserIDWithFixedClient("garbage", "", "masked", "")
+	r2 := RewriteUserIDWithFixedClient("garbage", "", "masked", "")
+	// Two calls with empty fixedClientID should produce different device_ids.
+	if r1 == r2 {
+		t.Errorf("expected random device_ids when fixedClientID is empty, got identical: %q", r1)
+	}
+}

@@ -882,9 +882,10 @@ func TestEngineApply_CacheControlLimit(t *testing.T) {
 	}
 }
 
-// TestEngineApply_FiltersBillingSystemBlocks verifies that system blocks starting
-// with "x-anthropic-billing-header" are removed during disguise.
-func TestEngineApply_FiltersBillingSystemBlocks(t *testing.T) {
+// TestEngineApply_PassesThroughBillingSystemBlocks verifies that system blocks starting
+// with "x-anthropic-billing-header" are passed through (not filtered) during disguise,
+// aligned with sub2api's transparent forwarding behavior.
+func TestEngineApply_PassesThroughBillingSystemBlocks(t *testing.T) {
 	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
@@ -908,7 +909,8 @@ func TestEngineApply_FiltersBillingSystemBlocks(t *testing.T) {
 		t.Fatalf("expected system to be array, got %T", parsed["system"])
 	}
 
-	// Billing block should be removed; should NOT find any block with billing text
+	// Billing block should be preserved (pass-through, not filtered).
+	found := false
 	for _, item := range sysArr {
 		m, ok := item.(map[string]interface{})
 		if !ok {
@@ -916,14 +918,18 @@ func TestEngineApply_FiltersBillingSystemBlocks(t *testing.T) {
 		}
 		text, _ := m["text"].(string)
 		if strings.Contains(text, "x-anthropic-billing-header") {
-			t.Errorf("billing block should have been filtered, found: %q", text)
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Error("billing block should be passed through (not filtered), but was not found in output")
 	}
 }
 
-// TestEngineApply_FiltersBillingSystemBlocks_CCClient verifies billing blocks
-// are also filtered for real CC clients.
-func TestEngineApply_FiltersBillingSystemBlocks_CCClient(t *testing.T) {
+// TestEngineApply_PassesThroughBillingSystemBlocks_CCClient verifies billing blocks
+// are passed through for real CC clients (aligned with sub2api transparent forwarding).
+func TestEngineApply_PassesThroughBillingSystemBlocks_CCClient(t *testing.T) {
 	e := newTestEngine(t)
 
 	origReq := newTestRequest(t, nil)
@@ -956,6 +962,8 @@ func TestEngineApply_FiltersBillingSystemBlocks_CCClient(t *testing.T) {
 		t.Fatalf("expected system to be array, got %T", parsed["system"])
 	}
 
+	// Billing block should be preserved (pass-through, not filtered).
+	found := false
 	for _, item := range sysArr {
 		m, ok := item.(map[string]interface{})
 		if !ok {
@@ -963,14 +971,18 @@ func TestEngineApply_FiltersBillingSystemBlocks_CCClient(t *testing.T) {
 		}
 		text, _ := m["text"].(string)
 		if strings.Contains(text, "x-anthropic-billing-header") {
-			t.Errorf("billing block should have been filtered for CC client, found: %q", text)
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Error("billing block should be passed through (not filtered) for CC client, but was not found in output")
 	}
 }
 
-// TestEngineApply_FiltersBillingSystemBlocks_StringType verifies that a string
-// system field starting with billing prefix is removed.
-func TestEngineApply_FiltersBillingSystemBlocks_StringType(t *testing.T) {
+// TestEngineApply_PassesThroughBillingSystemBlocks_StringType verifies that a string
+// system field starting with billing prefix is passed through (not removed).
+func TestEngineApply_PassesThroughBillingSystemBlocks_StringType(t *testing.T) {
 	e := newTestEngine(t)
 	origReq, upstreamReq := newTestRequestPair(t)
 
@@ -983,11 +995,10 @@ func TestEngineApply_FiltersBillingSystemBlocks_StringType(t *testing.T) {
 	outBody, _ := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1")
 	parsed := parseBody(t, outBody)
 
-	// After filtering, system prompt injection will re-create the system field.
-	// The key thing is the billing text should not be present.
+	// Billing text should be preserved in the output system prompt array.
 	sysText := strings.Join(extractAllSystemTexts(parsed["system"]), " ")
-	if strings.Contains(sysText, "x-anthropic-billing-header") {
-		t.Errorf("billing string system should have been filtered, found: %q", sysText)
+	if !strings.Contains(sysText, "x-anthropic-billing-header") {
+		t.Errorf("billing string system should be passed through (not filtered), combined system: %q", sysText)
 	}
 }
 

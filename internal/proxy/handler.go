@@ -37,6 +37,8 @@ var forwardHeaders = []string{
 	"X-Stainless-Retry-Count", "X-Stainless-Timeout",
 	"X-Stainless-Helper-Method", "Sec-Fetch-Mode",
 	"Anthropic-Dangerous-Direct-Browser-Access",
+	"X-Claude-Code-Session-Id", // Claude Code 2.1.87+
+	"X-Client-Request-Id",      // Claude Code 2.1.87+
 }
 
 // Handler routes incoming /v1/messages and /v1/messages/count_tokens requests
@@ -106,9 +108,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	originalModel := header.Model
 
 	// Extract session ID from metadata.user_id if present.
+	// Use ParseUserID to handle both legacy string format and new JSON object format (>= 2.1.78).
 	sessionID := ""
 	if header.Metadata.UserID != "" {
-		sessionID = session.ExtractSessionID(header.Metadata.UserID)
+		if p := disguise.ParseUserID(header.Metadata.UserID); p != nil {
+			sessionID = p.SessionID
+		}
 	}
 
 	// Step 3: Get auth info from context.

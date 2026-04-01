@@ -80,6 +80,46 @@ func deterministicClientID(accountSeed, originalClientID string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// RewriteUserIDWithFixedClient rewrites user_id using the account's fixed per-account
+// ClientID (same for all users of this account), aligning with sub2api's fp.ClientID strategy.
+// All users sharing the same proxy account will have identical device_id in their user_id,
+// making all traffic appear to originate from a single device.
+// Falls back to a generated ID when fixedClientID is empty.
+func RewriteUserIDWithFixedClient(originalUserID, fixedClientID, maskedSessionUUID, uaVersion string) string {
+	parsed := ParseUserID(originalUserID)
+	useJSON := isNewMetadataFormatVersion(uaVersion)
+
+	clientID := fixedClientID
+	if clientID == "" {
+		clientID = GenerateClientID()
+	}
+
+	if parsed == nil {
+		if useJSON {
+			obj := userIDJSON{DeviceID: clientID, SessionID: maskedSessionUUID}
+			b, _ := json.Marshal(obj)
+			return string(b)
+		}
+		return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
+	}
+
+	if parsed.IsNewFormat || useJSON {
+		obj := userIDJSON{DeviceID: clientID, SessionID: maskedSessionUUID}
+		if parsed.AccountUUID != "" {
+			obj.AccountUUID = generateSessionUUID(clientID + parsed.AccountUUID)
+		}
+		b, _ := json.Marshal(obj)
+		return string(b)
+	}
+
+	// Legacy string formats
+	if parsed.AccountUUID != "" {
+		newAccount := generateSessionUUID(clientID + parsed.AccountUUID)
+		return fmt.Sprintf("user_%s_account_%s_session_%s", clientID, newAccount, maskedSessionUUID)
+	}
+	return fmt.Sprintf("user_%s_account__session_%s", clientID, maskedSessionUUID)
+}
+
 // RewriteUserIDWithMasking rewrites a client's user_id to prevent Anthropic from
 // correlating different proxy users, replacing the session portion with maskedSessionUUID.
 // Output format follows the input format, unless uaVersion >= 2.1.78 forces JSON.

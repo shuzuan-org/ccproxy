@@ -73,6 +73,8 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		)
 		// Learn fingerprint from real CC client for future disguise use
 		e.fingerprints.LearnFromHeaders(accountName, origReq.Header)
+		// Get per-account fingerprint (ensures ClientID is initialized for this account).
+		fp := e.fingerprints.Get(accountName)
 
 		// Real CC client via OAuth: lightweight processing only.
 		// 1. Parse body first — filtering and user_id rewriting both require parsed state.
@@ -98,9 +100,6 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
-		// Filter billing/internal system blocks (CC clients can carry these too)
-		filterSystemBlocksByPrefix(parsed)
-
 		maskedSession := e.sessions.Get(accountName)
 		uaVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
 		originalUserIDRaw := metadata["user_id"]
@@ -115,18 +114,33 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 				originalUserIDStr = string(b)
 			}
 		}
-		if originalUserIDStr != "" {
-			metadata["user_id"] = RewriteUserIDWithMasking(originalUserIDStr, sessionSeed, maskedSession, uaVersion)
-		} else {
-			metadata["user_id"] = GenerateUserID(sessionSeed, uaVersion)
+		// Rewrite metadata.user_id: use account's fixed fp.ClientID as device_id so all users
+		// appear as the same device (aligned with sub2api's fp.ClientID strategy).
+		fpClientID := ""
+		if fp != nil {
+			fpClientID = fp.ClientID
 		}
+		metadata["user_id"] = RewriteUserIDWithFixedClient(originalUserIDStr, fpClientID, maskedSession, uaVersion)
 		newUserIDStr := fmt.Sprintf("%v", metadata["user_id"])
 		observe.Logger(ctx).Debug("disguise: user_id rewritten (CC pass-through)",
 			"account", accountName,
 			"before", truncateUserID(originalUserIDStr),
 			"after", truncateUserID(newUserIDStr),
 		)
+		// Sync X-Claude-Code-Session-Id header with the rewritten session_id (Claude Code 2.1.87+).
+		// The header must match metadata.user_id's session_id to avoid Anthropic validation failures.
+		if upstreamReq.Header.Get("X-Claude-Code-Session-Id") != "" {
+			if p := ParseUserID(newUserIDStr); p != nil {
+				upstreamReq.Header.Set("X-Claude-Code-Session-Id", p.SessionID)
+				observe.Logger(ctx).Debug("disguise: X-Claude-Code-Session-Id synced (CC pass-through)",
+					"account", accountName,
+					"session_id", p.SessionID,
+				)
+			}
+		}
 		parsed["metadata"] = metadata
+		// Enforce cache_control block limit (aligned with sub2api's all-requests enforcement).
+		enforceCacheControlLimit(ctx, parsed)
 		if result, err := json.Marshal(parsed); err == nil {
 			body = result
 		}
@@ -210,9 +224,6 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		"after", newBeta,
 	)
 
-	// Filter billing/internal system blocks before any system prompt processing
-	filterSystemBlocksByPrefix(parsed)
-
 	// Sanitize third-party tool prompts before system prompt injection
 	sanitizeSystemTextInPlace(parsed)
 
@@ -252,7 +263,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	} else {
 		fpUAVersion = extractUAVersion(DefaultHeaders["User-Agent"])
 	}
-	injectMetadataUserIDInPlace(parsed, sessionSeed, maskedSession, fpUAVersion)
+	injectMetadataUserIDInPlace(parsed, fpClientIDOrEmpty(fp), maskedSession, fpUAVersion)
 	newUserID := ""
 	if meta, ok := parsed["metadata"].(map[string]interface{}); ok {
 		newUserID, _ = meta["user_id"].(string)
@@ -262,6 +273,12 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		"before", truncateUserID(originalUserID),
 		"after", truncateUserID(newUserID),
 	)
+	// Sync X-Claude-Code-Session-Id header with the generated session_id (Claude Code 2.1.87+).
+	if upstreamReq.Header.Get("X-Claude-Code-Session-Id") != "" && newUserID != "" {
+		if p := ParseUserID(newUserID); p != nil {
+			upstreamReq.Header.Set("X-Claude-Code-Session-Id", p.SessionID)
+		}
+	}
 
 	// Layer 6: Model ID normalization
 	normalizeModelInPlace(parsed)
@@ -506,22 +523,20 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 	parsed["system"] = newSystem
 }
 
-func injectMetadataUserIDInPlace(parsed map[string]interface{}, sessionSeed string, maskedSessionUUID string, uaVersion string) {
+func injectMetadataUserIDInPlace(parsed map[string]interface{}, fixedClientID string, maskedSessionUUID string, uaVersion string) {
 	metadata, ok := parsed["metadata"].(map[string]interface{})
 	if !ok {
 		metadata = make(map[string]interface{})
 	}
 
-	var clientID string
-	if sessionSeed != "" {
-		clientID = deterministicClientID(sessionSeed, "default-client")
-	} else {
+	clientID := fixedClientID
+	if clientID == "" {
 		clientID = GenerateClientID()
 	}
 
 	sessionID := maskedSessionUUID
 	if sessionID == "" {
-		sessionID = generateSessionUUID(sessionSeed)
+		sessionID = generateSessionUUID("")
 	}
 
 	var userID string
@@ -655,4 +670,13 @@ func normalizeModelInPlace(parsed map[string]interface{}) {
 	if normalized != model {
 		parsed["model"] = normalized
 	}
+}
+
+// fpClientIDOrEmpty safely retrieves the ClientID from a Fingerprint, returning ""
+// when fp is nil (injectMetadataUserIDInPlace handles empty by generating a random one).
+func fpClientIDOrEmpty(fp *Fingerprint) string {
+	if fp == nil {
+		return ""
+	}
+	return fp.ClientID
 }
