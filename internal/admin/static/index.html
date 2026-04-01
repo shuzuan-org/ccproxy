@@ -594,9 +594,17 @@
     const el = document.getElementById('refresh-status');
     el.textContent = 'Refreshing…';
     try {
-      const data = await fetchJSON('/api/accounts');
+      const [data, upd] = await Promise.all([
+        fetchJSON('/api/accounts'),
+        fetchJSON('/api/update/status'),
+      ]);
       renderAccounts(data);
-      el.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour12: false });
+      let text = 'v' + upd.current_version;
+      if (upd.auto_update && upd.next_check && upd.next_check !== '0001-01-01T00:00:00Z') {
+        const next = new Date(upd.next_check);
+        text += ' · next check ' + next.toLocaleTimeString([], { hour12: false });
+      }
+      el.textContent = text;
     } catch (err) {
       el.textContent = 'Error: ' + err.message;
     }
