@@ -73,12 +73,25 @@ func NewBudgetController(name string) *BudgetController {
 
 // UpdateFromHeaders parses anthropic-ratelimit-unified-* response headers.
 // Header format: anthropic-ratelimit-unified-{5h,7d}-{utilization,status,reset}
-// Utilization values from headers are 0-1 decimals.
+// Utilization values from headers are 0-1 decimals; reset values are Unix timestamps.
 func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.Header) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
 	now := time.Now()
+
+	// parseReset parses an Anthropic rate-limit reset header value as a Unix timestamp.
+	// Anthropic sends seconds; guard against millis (> 1e11 ≈ year 5138 in seconds).
+	parseReset := func(v string) (time.Time, bool) {
+		ts, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if ts > 1e11 { // millis → convert to seconds
+			ts /= 1000
+		}
+		return time.Unix(ts, 0), true
+	}
 
 	// Parse 5h window
 	if v := headers.Get("anthropic-ratelimit-unified-5h-utilization"); v != "" {
@@ -92,7 +105,7 @@ func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.
 		bc.window5h.LastUpdated = now
 	}
 	if v := headers.Get("anthropic-ratelimit-unified-5h-reset"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
+		if t, ok := parseReset(v); ok {
 			bc.window5h.ResetAt = t
 			bc.window5h.LastUpdated = now
 		}
@@ -110,7 +123,7 @@ func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.
 		bc.window7d.LastUpdated = now
 	}
 	if v := headers.Get("anthropic-ratelimit-unified-7d-reset"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
+		if t, ok := parseReset(v); ok {
 			bc.window7d.ResetAt = t
 			bc.window7d.LastUpdated = now
 		}
@@ -120,6 +133,8 @@ func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.
 		"account", bc.name,
 		"util_5h", bc.window5h.Utilization,
 		"util_7d", bc.window7d.Utilization,
+		"reset_5h", bc.window5h.ResetAt.Format(time.RFC3339),
+		"reset_7d", bc.window7d.ResetAt.Format(time.RFC3339),
 		"state", bc.stateLocked().String(),
 	)
 	bc.checkStateChange(ctx)

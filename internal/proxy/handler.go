@@ -96,7 +96,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Model    string `json:"model"`
 		Stream   bool   `json:"stream"`
 		Metadata struct {
-			UserID string `json:"user_id"`
+			// Use RawMessage to handle both string format (< 2.1.78) and
+			// JSON object format (>= 2.1.78): {"device_id":"...","session_id":"..."}
+			UserID json.RawMessage `json:"user_id"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(rawBody, &header); err != nil {
@@ -108,10 +110,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	originalModel := header.Model
 
 	// Extract session ID from metadata.user_id if present.
-	// Use ParseUserID to handle both legacy string format and new JSON object format (>= 2.1.78).
+	// user_id can be a JSON string (old format, < 2.1.78) or a JSON object (new format, >= 2.1.78).
+	// Try to unmarshal as string first; if that fails, pass the raw JSON to ParseUserID directly.
 	sessionID := ""
-	if header.Metadata.UserID != "" {
-		if p := disguise.ParseUserID(header.Metadata.UserID); p != nil {
+	if len(header.Metadata.UserID) > 0 {
+		var rawUserID string
+		if json.Unmarshal(header.Metadata.UserID, &rawUserID) != nil {
+			// JSON object format: pass raw bytes as string to ParseUserID
+			rawUserID = string(header.Metadata.UserID)
+		}
+		if p := disguise.ParseUserID(rawUserID); p != nil {
 			sessionID = p.SessionID
 		}
 	}
@@ -145,11 +153,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 5: Execute with retry and failover.
 	// The requestFn includes two-stage signature error retry:
-	// Stage 0: send original body
-	// Stage 1: on signature error → filter thinking blocks and retry
+	// Stage 0: send body (thinking blocks pre-filtered if detected)
+	// Stage 1: on signature error → escalate to FilterSignatureSensitiveBlocks
 	// Stage 2: on signature+tool error → filter tool blocks and retry
 	requestFn := func(acct config.AccountConfig, requestID string) (*http.Response, int, error) {
+		// Proactively strip thinking blocks before the first attempt. Their signatures
+		// are always invalid after account/session rewriting — production data shows a
+		// 100% failure rate at stage 0 (153/153 signature errors). Filtering upfront
+		// eliminates the guaranteed failed round-trip.
+		thinkingPreFiltered := HasThinkingBlocks(rawBody)
 		bodyToSend := rawBody
+		if thinkingPreFiltered {
+			bodyToSend = FilterThinkingBlocks(rawBody)
+			log.Debug("disguise: proactive thinking filter applied", "account", acct.Name)
+		}
 		for stage := 0; stage <= 2; stage++ {
 			resp, statusCode, err := h.doRequest(origReq, acct, requestID, bodyToSend, isStream)
 			if err != nil || statusCode != 400 || resp == nil {
@@ -174,12 +191,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if stage == 0 && IsSignatureError(errBody) {
 				errMsg := extractErrorMessage(errBody)
-				log.Info("signature error detected, retrying with thinking blocks filtered",
-					"account", acct.Name,
-					"stage", stage,
-					"error_msg", errMsg,
-				)
-				bodyToSend = FilterThinkingBlocks(rawBody)
+				if thinkingPreFiltered {
+					// Thinking blocks already stripped — escalate directly to full sensitive
+					// block filtering. Repeating FilterThinkingBlocks would send the same
+					// body again and waste a round-trip.
+					log.Info("signature error after proactive thinking filter, escalating to sensitive block filter",
+						"account", acct.Name,
+						"stage", stage,
+						"error_msg", errMsg,
+					)
+					bodyToSend = FilterSignatureSensitiveBlocks(rawBody)
+					stage = 1 // skip stage 1 (it would repeat the same filter)
+				} else {
+					log.Info("signature error detected, retrying with thinking blocks filtered",
+						"account", acct.Name,
+						"stage", stage,
+						"error_msg", errMsg,
+					)
+					bodyToSend = FilterThinkingBlocks(rawBody)
+				}
 				continue
 			}
 			if stage == 1 && (IsSignatureError(errBody) || IsToolRelatedError(errBody)) {

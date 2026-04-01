@@ -120,8 +120,11 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if fp != nil {
 			fpClientID = fp.ClientID
 		}
-		metadata["user_id"] = RewriteUserIDWithFixedClient(originalUserIDStr, fpClientID, maskedSession, uaVersion)
-		newUserIDStr := fmt.Sprintf("%v", metadata["user_id"])
+		rewrittenUserID := RewriteUserIDWithFixedClient(originalUserIDStr, fpClientID, maskedSession, uaVersion)
+		// Preserve other metadata fields; only overwrite user_id (session masking).
+		metadata["user_id"] = rewrittenUserID
+		parsed["metadata"] = metadata
+		newUserIDStr := rewrittenUserID
 		observe.Logger(ctx).Debug("disguise: user_id rewritten (CC pass-through)",
 			"account", accountName,
 			"before", truncateUserID(originalUserIDStr),
@@ -138,7 +141,6 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 				)
 			}
 		}
-		parsed["metadata"] = metadata
 		// Enforce cache_control block limit (aligned with sub2api's all-requests enforcement).
 		enforceCacheControlLimit(ctx, parsed)
 		if result, err := json.Marshal(parsed); err == nil {
@@ -524,11 +526,6 @@ func injectSystemPromptInPlace(parsed map[string]interface{}) {
 }
 
 func injectMetadataUserIDInPlace(parsed map[string]interface{}, fixedClientID string, maskedSessionUUID string, uaVersion string) {
-	metadata, ok := parsed["metadata"].(map[string]interface{})
-	if !ok {
-		metadata = make(map[string]interface{})
-	}
-
 	clientID := fixedClientID
 	if clientID == "" {
 		clientID = GenerateClientID()
@@ -548,8 +545,13 @@ func injectMetadataUserIDInPlace(parsed map[string]interface{}, fixedClientID st
 		userID = fmt.Sprintf("user_%s_account__session_%s", clientID, sessionID)
 	}
 
-	metadata["user_id"] = userID
-	parsed["metadata"] = metadata
+	// Preserve other metadata fields; only set user_id.
+	meta, ok := parsed["metadata"].(map[string]interface{})
+	if !ok {
+		meta = make(map[string]interface{})
+	}
+	meta["user_id"] = userID
+	parsed["metadata"] = meta
 }
 
 // sanitizeRequestBodyInPlace ensures the request body matches Claude Code client patterns.

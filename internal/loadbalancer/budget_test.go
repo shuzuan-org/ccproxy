@@ -243,8 +243,8 @@ func TestBudgetController_CooldownUntil(t *testing.T) {
 
 	bc := NewBudgetController("test")
 	h := http.Header{}
-	h.Set("anthropic-ratelimit-unified-5h-reset", "2026-03-14T12:00:00Z")
-	h.Set("anthropic-ratelimit-unified-7d-reset", "2026-03-14T14:00:00Z")
+	h.Set("anthropic-ratelimit-unified-5h-reset", "1773460800") // 2026-03-14T12:00:00Z as Unix timestamp
+	h.Set("anthropic-ratelimit-unified-7d-reset", "1773496800") // 2026-03-14T14:00:00Z as Unix timestamp
 	bc.UpdateFromHeaders(context.Background(), h)
 
 	cd := bc.CooldownUntil()

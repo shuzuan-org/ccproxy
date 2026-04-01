@@ -1,11 +1,20 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 )
+
+// HasThinkingBlocks reports whether body contains any thinking or redacted_thinking
+// content blocks. Uses a byte scan on compact JSON — avoids full parse overhead.
+// False positives are safe: FilterThinkingBlocks is a no-op when no blocks exist.
+func HasThinkingBlocks(body []byte) bool {
+	return bytes.Contains(body, []byte(`"type":"thinking"`)) ||
+		bytes.Contains(body, []byte(`"type":"redacted_thinking"`))
+}
 
 // IsSignatureError checks if a 400 response body indicates a thinking block signature error.
 func IsSignatureError(body []byte) bool {
