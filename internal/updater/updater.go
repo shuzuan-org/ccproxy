@@ -28,7 +28,6 @@ type UpdateStatus struct {
 	CurrentVersion string    `json:"current_version"`
 	LatestVersion  string    `json:"latest_version"`
 	LastCheck      time.Time `json:"last_check"`
-	NextCheck      time.Time `json:"next_check"`
 	AutoUpdate     bool      `json:"auto_update"`
 	Channel        string    `json:"channel"`
 	Checking       bool      `json:"checking"`
@@ -70,15 +69,10 @@ func (u *Updater) IsDocker() bool {
 func (u *Updater) Status() UpdateStatus {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	var nextCheck time.Time
-	if !u.lastCheck.IsZero() {
-		nextCheck = u.lastCheck.Add(u.cfg.CheckInterval)
-	}
 	return UpdateStatus{
 		CurrentVersion: u.cfg.CurrentVersion,
 		LatestVersion:  u.latest,
 		LastCheck:      u.lastCheck,
-		NextCheck:      nextCheck,
 		AutoUpdate:     u.cfg.AutoUpdate,
 		Channel:        u.cfg.Channel,
 		Checking:       u.checking,
@@ -101,7 +95,7 @@ func (u *Updater) Start(ctx context.Context) {
 	}
 
 	slog.Info("auto-update enabled",
-		"interval", u.cfg.CheckInterval.String(),
+		"schedule", "every hour on the hour",
 		"repo", u.cfg.Repo,
 	)
 
@@ -116,14 +110,18 @@ func (u *Updater) Start(ctx context.Context) {
 		u.checkAndApply(ctx)
 	}
 
-	ticker := time.NewTicker(u.cfg.CheckInterval)
-	defer ticker.Stop()
-
+	// Check at the top of every hour.
 	for {
+		now := time.Now()
+		next := now.Truncate(time.Hour).Add(time.Hour)
+		delay := next.Sub(now)
+
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			u.checkAndApply(ctx)
 		}
 	}

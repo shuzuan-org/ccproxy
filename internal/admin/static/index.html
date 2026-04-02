@@ -599,12 +599,7 @@
         fetchJSON('/api/update/status'),
       ]);
       renderAccounts(data);
-      let text = 'v' + upd.current_version;
-      if (upd.auto_update && upd.next_check && upd.next_check !== '0001-01-01T00:00:00Z') {
-        const next = new Date(upd.next_check);
-        text += ' · next check ' + next.toLocaleTimeString([], { hour12: false });
-      }
-      el.textContent = text;
+      el.textContent = 'v' + upd.current_version;
     } catch (err) {
       el.textContent = 'Error: ' + err.message;
     }
