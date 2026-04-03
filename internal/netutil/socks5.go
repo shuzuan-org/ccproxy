@@ -10,11 +10,16 @@ import (
 )
 
 // NewSOCKS5Dialer parses a SOCKS5 proxy URL and returns a dialer.
-// The URL format is socks5://[user:pass@]host:port.
+// The URL format is socks5://[user:pass@]host:port or socks5h://[user:pass@]host:port.
+// Both schemes behave identically — Go's proxy.SOCKS5 always sends the raw hostname
+// to the proxy server for remote DNS resolution.
 func NewSOCKS5Dialer(proxyURL string) (proxy.Dialer, error) {
 	u, err := url.Parse(proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy URL %q: %w", proxyURL, err)
+	}
+	if u.Scheme != "socks5" && u.Scheme != "socks5h" {
+		return nil, fmt.Errorf("unsupported proxy scheme %q, want socks5 or socks5h", u.Scheme)
 	}
 
 	var auth *proxy.Auth

@@ -14,6 +14,7 @@ func TestMaskProxyURL_ValidURL(t *testing.T) {
 		{"host:port", "socks5://10.0.0.1:1080", "10.0.0.1:1080"},
 		{"with auth", "socks5://user:pass@10.0.0.1:1080", "10.0.0.1:1080"},
 		{"no port", "socks5://myhost", "myhost"},
+		{"socks5h", "socks5h://10.0.0.1:1080", "10.0.0.1:1080"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,5 +62,24 @@ func TestNewSOCKS5Dialer_InvalidURL(t *testing.T) {
 	_, err := NewSOCKS5Dialer("://bad")
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
+	}
+}
+
+func TestNewSOCKS5Dialer_Socks5hScheme(t *testing.T) {
+	t.Parallel()
+	dialer, err := NewSOCKS5Dialer("socks5h://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("NewSOCKS5Dialer(socks5h): %v", err)
+	}
+	if dialer == nil {
+		t.Fatal("expected non-nil dialer")
+	}
+}
+
+func TestNewSOCKS5Dialer_UnsupportedScheme(t *testing.T) {
+	t.Parallel()
+	_, err := NewSOCKS5Dialer("http://127.0.0.1:1080")
+	if err == nil {
+		t.Fatal("expected error for unsupported scheme")
 	}
 }

@@ -55,7 +55,7 @@ type AccountConfig struct {
 	BaseURL        string
 	RequestTimeout int
 	Enabled        bool
-	Proxy          string // SOCKS5 proxy URL for this account (e.g. "socks5://host:port")
+	Proxy          string // SOCKS5 proxy URL for this account (e.g. "socks5://host:port" or "socks5h://host:port")
 }
 
 // Load reads, parses, applies defaults, auto-generates missing credentials,

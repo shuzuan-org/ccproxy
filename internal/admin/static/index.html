@@ -461,7 +461,7 @@
     '</div>';
   }
 
-  var PROXY_HINT = 'socks5://user:password@ip:port';
+  var PROXY_HINT = 'socks5[h]://user:password@ip:port';
 
   function renderAccounts(data) {
     document.getElementById('account-count').textContent = data.length + ' accounts';
@@ -743,7 +743,7 @@
   function isValidProxy(s) {
     try {
       var u = new URL(s);
-      return u.protocol === 'socks5:' && u.hostname && u.port;
+      return (u.protocol === 'socks5:' || u.protocol === 'socks5h:') && u.hostname && u.port;
     } catch (e) {
       return false;
     }
