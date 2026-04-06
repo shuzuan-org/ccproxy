@@ -13,11 +13,20 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 # update_api_url = ""  # GitHub Enterprise API URL (default: github.com)
 # update_channel = "stable"   # Release channel: "stable" (default) or "beta" (includes pre-releases)
 
-# API keys — leave this section empty or omit entirely to auto-generate on first start
+# API keys — each key represents a user who can manage their own Claude accounts.
+# Leave this section empty or omit entirely to auto-generate 3 default users (alice/bob/charlie).
+# The "password" field is the dashboard login password — leave empty to auto-generate.
 # [[api_keys]]
 # key = "sk-987313a7b186d14afe045aa16335b032987313a7b186d14afe045aa16335b032"
-# name = "dev-team"
+# name = "alice"
+# password = ""  # Leave empty or omit to auto-generate
 # enabled = true
 
-# Accounts are managed dynamically via the admin dashboard (Add Claude button).
+# Accounts are managed dynamically per-user via the admin dashboard (Add Claude button).
+# Each account has an "owner" field linking it to the api_key user who created it.
+# All accounts participate in global load balancing regardless of owner.
 # They are persisted in data/accounts.json — no TOML config needed.
+#
+# Dashboard login:
+#   Admin:  username "admin", password = admin_password (read-only global view)
+#   Users:  username = api_key name, password = api_key password (manage own accounts)

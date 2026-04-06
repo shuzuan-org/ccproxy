@@ -19,7 +19,7 @@ func newTestHandler(t *testing.T) *Handler {
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth")
+	_ = registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -41,6 +41,16 @@ func newTestHandler(t *testing.T) *Handler {
 	return NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 }
 
+// asUser wraps request with testuser auth context (non-admin, owns "test-oauth").
+func asUser(r *http.Request) *http.Request {
+	return r.WithContext(WithAdminAuth(r.Context(), &AdminAuthInfo{Username: "testuser", IsAdmin: false}))
+}
+
+// asAdmin wraps request with admin auth context (read-only).
+func asAdmin(r *http.Request) *http.Request {
+	return r.WithContext(WithAdminAuth(r.Context(), &AdminAuthInfo{Username: "admin", IsAdmin: true}))
+}
+
 func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
 	h := newTestHandler(t)
 
@@ -54,7 +64,7 @@ func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	w := httptest.NewRecorder()
-	h.HandleAccounts(w, req)
+	h.HandleAccounts(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -77,7 +87,7 @@ func TestHandleAccounts_NoToken(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	w := httptest.NewRecorder()
-	h.HandleAccounts(w, req)
+	h.HandleAccounts(w, asUser(req))
 
 	var states []AccountState
 	if err := json.NewDecoder(w.Body).Decode(&states); err != nil {
@@ -159,7 +169,7 @@ func TestHandleAccounts_IncludesHealthState(t *testing.T) {
 
 			req := httptest.NewRequest("GET", "/api/accounts", nil)
 			w := httptest.NewRecorder()
-			h.HandleAccounts(w, req)
+			h.HandleAccounts(w, asUser(req))
 
 			if w.Code != 200 {
 				t.Fatalf("status = %d, want 200", w.Code)
@@ -199,7 +209,7 @@ func TestHandleOAuthLoginStart(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginStart(w, req)
+	h.HandleOAuthLoginStart(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -223,10 +233,11 @@ func TestHandleOAuthLoginStart_InvalidAccount(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"account": "nonexistent"})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginStart(w, req)
+	h.HandleOAuthLoginStart(w, asUser(req))
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400", w.Code)
+	// Ownership check fails before account validation, so we get 403.
+	if w.Code != 403 {
+		t.Errorf("status = %d, want 403", w.Code)
 	}
 }
 
@@ -236,7 +247,7 @@ func TestHandleOAuthRefresh_NoToken(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/refresh", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthRefresh(w, req)
+	h.HandleOAuthRefresh(w, asUser(req))
 
 	if w.Code == 200 {
 		t.Error("expected error when no token stored")
@@ -254,7 +265,7 @@ func TestHandleOAuthLogout(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/oauth/logout", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLogout(w, req)
+	h.HandleOAuthLogout(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d", w.Code)
@@ -272,7 +283,7 @@ func TestHandleAddAccount(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "new-account"})
 	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleAddAccount(w, req)
+	h.HandleAddAccount(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -290,7 +301,7 @@ func TestHandleAddAccount_Duplicate(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleAddAccount(w, req)
+	h.HandleAddAccount(w, asUser(req))
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400 for duplicate", w.Code)
@@ -303,7 +314,7 @@ func TestHandleRemoveAccount(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/accounts/remove", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleRemoveAccount(w, req)
+	h.HandleRemoveAccount(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -321,10 +332,11 @@ func TestHandleRemoveAccount_NotFound(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "does-not-exist"})
 	req := httptest.NewRequest("POST", "/api/accounts/remove", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleRemoveAccount(w, req)
+	h.HandleRemoveAccount(w, asUser(req))
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400", w.Code)
+	// Ownership check fails for nonexistent account.
+	if w.Code != 403 {
+		t.Errorf("status = %d, want 403", w.Code)
 	}
 }
 
@@ -335,7 +347,7 @@ func TestHandleUpdateProxy(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth", "proxy": "socks5://127.0.0.1:1080"})
 	req := httptest.NewRequest("POST", "/api/accounts/proxy", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleUpdateProxy(w, req)
+	h.HandleUpdateProxy(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -354,10 +366,11 @@ func TestHandleUpdateProxy_NotFound(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"name": "nonexistent", "proxy": "socks5://127.0.0.1:1080"})
 	req := httptest.NewRequest("POST", "/api/accounts/proxy", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleUpdateProxy(w, req)
+	h.HandleUpdateProxy(w, asUser(req))
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400", w.Code)
+	// Ownership check fails for nonexistent account.
+	if w.Code != 403 {
+		t.Errorf("status = %d, want 403", w.Code)
 	}
 }
 
@@ -367,7 +380,7 @@ func TestHandleSessions(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	w := httptest.NewRecorder()
-	h.HandleSessions(w, req)
+	h.HandleSessions(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -417,7 +430,7 @@ func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
 	// Build handler with provider pointing to mock server.
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth")
+	_ = registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -452,7 +465,7 @@ func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginComplete(w, req)
+	h.HandleOAuthLoginComplete(w, asUser(req))
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -479,7 +492,7 @@ func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth")
+	_ = registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -508,7 +521,7 @@ func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T
 	})
 	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginComplete(w, req)
+	h.HandleOAuthLoginComplete(w, asUser(req))
 
 	if w.Code == 200 {
 		t.Fatal("expected error response for failed exchange")
@@ -532,7 +545,7 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth")
+	_ = registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -561,7 +574,7 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginComplete(w, req)
+	h.HandleOAuthLoginComplete(w, asUser(req))
 
 	if w.Code >= 500 {
 		t.Errorf("status = %d — admin API must not return 5xx (Cloudflare replaces with HTML)", w.Code)
@@ -584,7 +597,7 @@ func TestHandleOAuthLoginComplete_InvalidSession(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginComplete(w, req)
+	h.HandleOAuthLoginComplete(w, asUser(req))
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -613,7 +626,7 @@ func TestHandleOAuthLoginComplete_StateMismatch(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/oauth/login/complete", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	h.HandleOAuthLoginComplete(w, req)
+	h.HandleOAuthLoginComplete(w, asUser(req))
 
 	if w.Code != 400 {
 		t.Errorf("status = %d, want 400 (CSRF protection)", w.Code)

@@ -209,7 +209,7 @@ func (bc *BudgetController) checkStateChange(ctx context.Context) {
 			util5h := bc.window5h.Utilization
 			util7d := bc.window7d.Utilization
 			go func() {
-				_ = notify.Global().Notify(context.Background(), notify.Event{
+				notify.NotifyAllGlobal(context.Background(), notify.Event{
 					AccountName: name,
 					Type:        notify.EventBudgetBlocked,
 					Detail:      fmt.Sprintf("util_5h=%.0f%%, util_7d=%.0f%%", util5h*100, util7d*100),

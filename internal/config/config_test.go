@@ -221,18 +221,21 @@ admin_password = "pass"
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.APIKeys) == 0 {
-		t.Fatal("api_keys should have been auto-generated")
+	if len(cfg.APIKeys) != 3 {
+		t.Fatalf("api_keys len = %d, want 3", len(cfg.APIKeys))
 	}
 	k := cfg.APIKeys[0]
 	if !strings.HasPrefix(k.Key, "sk-") {
 		t.Errorf("api key %q missing sk- prefix", k.Key)
 	}
-	if k.Name != "default" {
-		t.Errorf("api key name = %q, want default", k.Name)
+	if k.Name != "alice" {
+		t.Errorf("api key name = %q, want alice", k.Name)
 	}
 	if !k.Enabled {
 		t.Error("api key should be enabled")
+	}
+	if k.Password == "" {
+		t.Error("api key password should have been auto-generated")
 	}
 
 	// Verify it was persisted to the file
@@ -286,9 +289,9 @@ enabled = false
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have the original disabled key plus a new generated one
-	if len(cfg.APIKeys) != 2 {
-		t.Fatalf("api_keys len = %d, want 2", len(cfg.APIKeys))
+	// Should have the original disabled key plus 3 new generated ones
+	if len(cfg.APIKeys) != 4 {
+		t.Fatalf("api_keys len = %d, want 4", len(cfg.APIKeys))
 	}
 	generated := cfg.APIKeys[1]
 	if !strings.HasPrefix(generated.Key, "sk-") {
@@ -405,8 +408,8 @@ func TestRuntimeAccounts_Multiple(t *testing.T) {
 	}
 	dir := t.TempDir()
 	registry := NewAccountRegistry(dir)
-	_ = registry.Add("alice")
-	_ = registry.Add("bob")
+	_ = registry.Add("alice", "")
+	_ = registry.Add("bob", "")
 
 	accounts := cfg.RuntimeAccounts(registry)
 	if len(accounts) != 2 {

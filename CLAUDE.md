@@ -53,8 +53,9 @@ internal/
   tls/              TLS 指纹伪装
   updater/          OTA 自动升级引擎（GitHub Releases + go-selfupdate）
 data/               运行时数据 — 不提交（.gitignore）
-  accounts.json     动态账户注册表 (0600)
+  accounts.json     动态账户注册表，含 owner 字段 (0600)
   oauth_tokens.json 加密的 OAuth 令牌 (0600)
+  notify_*.json     按用户的 Telegram 通知配置 (0600)
 config.toml.example 参考配置
 ```
 
@@ -69,11 +70,21 @@ config.toml.example 参考配置
 ### 配置
 
 - `config.Load(path)` 一次性完成读取、解析、应用默认值、自动生成缺失凭据和校验。
-- 如果 `admin_password` 为空或 `api_keys` 中没有启用的条目，`Load` 会自动生成加密安全的值，持久化到配置文件并打印到控制台。
+- 如果 `admin_password` 为空或 `api_keys` 中没有启用的条目，`Load` 会自动生成加密安全的值，持久化到配置文件并打印到控制台。无 enabled key 时默认创建 3 个用户（alice/bob/charlie），各自有独立的 API key 和仪表盘密码。
 - `base_url`、`request_timeout`、`max_concurrency` 是 `[server]` 下的全局设置。
-- 账户**不在** TOML 中定义。它们通过管理仪表盘（"Add Claude"/"Remove" 按钮）动态管理，由 `config.AccountRegistry` 持久化到 `data/accounts.json`。
+- 账户**不在** TOML 中定义。它们通过管理仪表盘（"Add Claude"/"Remove" 按钮）动态管理，由 `config.AccountRegistry` 持久化到 `data/accounts.json`。每个账户有 `owner` 字段绑定到创建者的 API Key 名称。
 - `config.RuntimeAccount(acct)` 和 `config.RuntimeAccounts(registry)` 从全局设置 + 注册表条目构建 `AccountConfig` 结构体，供下游消费者（负载均衡器、代理、OAuth）使用。
 - `AccountRegistry.SetOnChange(fn)` 在运行时将动态增删传播到负载均衡器和 OAuth 管理器。
+
+### 多用户模型
+
+- **API Key = 用户**：每个 `APIKeyConfig` 有 `key`、`name`、`password`、`enabled` 四个字段。`password` 用于仪表盘登录（自动生成）。
+- **两种角色**：
+  - Admin（username=`admin`，password=`admin_password`）：只读全局视图，可见所有账户但不能操作，可触发更新。
+  - 普通用户（username=`api_key.name`，password=`api_key.password`）：只能管理自己 `owner` 的账户。
+- **Account.Owner**：每个账户绑定创建者。Admin 创建的或迁移的无主账户 owner 为空。
+- **Telegram 通知分用户**：每用户独立配置（`data/notify_<username>.json`）。Admin 收所有异常，普通用户只收自己账户的 CategoryDisabled 事件（禁用/封禁）。
+- **负载均衡不受影响**：所有 enabled 账户进入全局池共同调度，不区分 owner。
 
 ### 并发
 

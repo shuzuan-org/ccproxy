@@ -14,10 +14,10 @@ func TestRegistryAdd(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	if err := r.Add("alice"); err != nil {
+	if err := r.Add("alice", ""); err != nil {
 		t.Fatalf("Add alice: %v", err)
 	}
-	if err := r.Add("bob"); err != nil {
+	if err := r.Add("bob", ""); err != nil {
 		t.Fatalf("Add bob: %v", err)
 	}
 
@@ -38,8 +38,8 @@ func TestRegistryAdd_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	_ = r.Add("alice")
-	err := r.Add("alice")
+	_ = r.Add("alice", "")
+	err := r.Add("alice", "")
 	if err == nil {
 		t.Fatal("expected error for duplicate name")
 	}
@@ -50,12 +50,12 @@ func TestRegistryAdd_Empty(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	err := r.Add("")
+	err := r.Add("", "")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
 
-	err = r.Add("   ")
+	err = r.Add("   ", "")
 	if err == nil {
 		t.Fatal("expected error for whitespace-only name")
 	}
@@ -66,8 +66,8 @@ func TestRegistryRemove(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	_ = r.Add("alice")
-	_ = r.Add("bob")
+	_ = r.Add("alice", "")
+	_ = r.Add("bob", "")
 
 	if err := r.Remove("alice"); err != nil {
 		t.Fatalf("Remove alice: %v", err)
@@ -99,8 +99,8 @@ func TestRegistryPersistence(t *testing.T) {
 
 	// Create and populate
 	r1 := NewAccountRegistry(dir)
-	_ = r1.Add("alice")
-	_ = r1.Add("bob")
+	_ = r1.Add("alice", "")
+	_ = r1.Add("bob", "")
 
 	// Load from disk
 	r2 := NewAccountRegistry(dir)
@@ -127,7 +127,7 @@ func TestRegistryHas(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	_ = r.Add("alice")
+	_ = r.Add("alice", "")
 
 	if !r.Has("alice") {
 		t.Error("Has(alice) should be true")
@@ -142,8 +142,8 @@ func TestRegistryNames(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
 
-	_ = r.Add("alice")
-	_ = r.Add("bob")
+	_ = r.Add("alice", "")
+	_ = r.Add("bob", "")
 
 	names := r.Names()
 	if len(names) != 2 {
@@ -164,7 +164,7 @@ func TestRegistryOnChange(t *testing.T) {
 		called.Add(1)
 	})
 
-	_ = r.Add("alice")
+	_ = r.Add("alice", "")
 
 	// onChange is called via channel consumer goroutine, wait briefly
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -199,7 +199,7 @@ func TestRegistryOnChange_Serialized(t *testing.T) {
 
 	// Rapid-fire adds
 	for i := 0; i < 5; i++ {
-		if err := r.Add(fmt.Sprintf("acct-%d", i)); err != nil {
+		if err := r.Add(fmt.Sprintf("acct-%d", i), ""); err != nil {
 			t.Fatalf("Add acct-%d: %v", i, err)
 		}
 	}
@@ -234,7 +234,7 @@ func TestRegistryUpdateProxy(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	r := NewAccountRegistry(dir)
-	_ = r.Add("alice")
+	_ = r.Add("alice", "")
 
 	if err := r.UpdateProxy("alice", "socks5://10.0.0.1:1080"); err != nil {
 		t.Fatalf("UpdateProxy: %v", err)

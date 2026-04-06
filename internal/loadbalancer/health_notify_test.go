@@ -31,15 +31,19 @@ func (m *mockNotifier) Events() []notify.Event {
 	return cp
 }
 
-// withMockNotifier replaces the global Notifier with a mock and restores it
-// via t.Cleanup. Tests using this helper must NOT call t.Parallel() because
-// they mutate shared global state (the global Notifier singleton).
+// withMockNotifier sets up a global NotifierRegistry with the mock as the admin
+// notifier (receives all events). Restores the previous registry via t.Cleanup.
+// Tests using this helper must NOT call t.Parallel() because they mutate shared
+// global state.
 func withMockNotifier(t *testing.T) *mockNotifier {
 	t.Helper()
 	mock := &mockNotifier{}
-	orig := notify.Global()
-	notify.SetGlobal(mock)
-	t.Cleanup(func() { notify.SetGlobal(orig) })
+	orig := notify.GlobalRegistry()
+	reg := notify.NewRegistry(func(string) string { return "" })
+	// Register mock as admin so it receives all events (admin notifier gets everything).
+	reg.Set("admin", mock)
+	notify.SetGlobalRegistry(reg)
+	t.Cleanup(func() { notify.SetGlobalRegistry(orig) })
 	return mock
 }
 

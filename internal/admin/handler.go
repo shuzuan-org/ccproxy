@@ -59,6 +59,20 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_, _ = w.Write(data)
 }
 
+// HandleAuthMe returns the authenticated user's identity.
+// GET /api/auth/me
+func (h *Handler) HandleAuthMe(w http.ResponseWriter, r *http.Request) {
+	auth := GetAdminAuth(r.Context())
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	writeJSON(w, map[string]any{
+		"username": auth.Username,
+		"is_admin": auth.IsAdmin,
+	})
+}
+
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -79,6 +93,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 // AccountState holds the runtime state of a single backend account.
 type AccountState struct {
 	Name           string  `json:"name"`
+	Owner          string  `json:"owner,omitempty"`
 	AuthMode       string  `json:"auth_mode"`
 	LoadRate       int     `json:"load_rate"`
 	ActiveSlots    int     `json:"active_slots"`
@@ -115,12 +130,20 @@ func tokenStatus(token *oauth.OAuthToken) string {
 }
 
 // HandleAccounts returns account status with token info for OAuth accounts.
+// Admin sees all accounts (read-only), users see only their own.
 // GET /api/accounts
 func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
+	auth := GetAdminAuth(r.Context())
 	tracker := h.balancer.GetTracker()
 	maxConcurrency := h.cfg.Server.MaxConcurrency
 
-	entries := h.registry.List()
+	var entries []config.Account
+	if auth != nil && auth.IsAdmin {
+		entries = h.registry.List()
+	} else if auth != nil {
+		entries = h.registry.ListByOwner(auth.Username)
+	}
+
 	states := make([]AccountState, 0, len(entries))
 	for _, entry := range entries {
 		var loadRate, activeSlots int
@@ -130,6 +153,7 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 
 		state := AccountState{
 			Name:           entry.Name,
+			Owner:          entry.Owner,
 			AuthMode:       "oauth",
 			LoadRate:       loadRate,
 			ActiveSlots:    activeSlots,
@@ -193,6 +217,10 @@ func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if _, ok := h.requireOwner(w, r, req.Account); !ok {
+		return
+	}
+
 	if !h.isOAuthAccount(req.Account) {
 		writeError(w, http.StatusBadRequest, "account not found or not oauth")
 		return
@@ -225,7 +253,12 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	session, ok := h.sessions.Get(req.SessionID)
 	if !ok {
+		slog.Warn("oauth: login complete failed", "reason", "session_expired_or_missing", "session_id", req.SessionID)
 		writeError(w, http.StatusBadRequest, "session not found or expired")
+		return
+	}
+
+	if _, ownerOK := h.requireOwner(w, r, session.AccountName); !ownerOK {
 		return
 	}
 
@@ -236,6 +269,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		codeState = req.Code[idx+1:]
 	}
 	if subtle.ConstantTimeCompare([]byte(session.State), []byte(codeState)) != 1 {
+		slog.Warn("oauth: login complete failed", "reason", "state_mismatch", "account", session.AccountName, "session_id", req.SessionID)
 		h.sessions.Delete(req.SessionID)
 		writeError(w, http.StatusBadRequest, "invalid OAuth state parameter")
 		return
@@ -276,6 +310,10 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := h.requireOwner(w, r, req.Account); !ok {
+		return
+	}
+
 	if !h.isOAuthAccount(req.Account) {
 		writeError(w, http.StatusBadRequest, "account not found or not oauth")
 		return
@@ -306,6 +344,10 @@ func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 		Account string `json:"account"`
 	}
 	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if _, ok := h.requireOwner(w, r, req.Account); !ok {
 		return
 	}
 
@@ -340,9 +382,58 @@ func (h *Handler) isOAuthAccount(name string) bool {
 	return h.registry.Has(name)
 }
 
+// requireUser checks that the request is from a non-admin user.
+// Admin is read-only and cannot mutate accounts. Returns the username or writes 403.
+func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
+	auth := GetAdminAuth(r.Context())
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return "", false
+	}
+	if auth.IsAdmin {
+		writeError(w, http.StatusForbidden, "admin is read-only, cannot modify accounts")
+		return "", false
+	}
+	return auth.Username, true
+}
+
+// requireOwner checks that the request is from the owner of the named account.
+// Returns the username or writes an error response.
+func (h *Handler) requireOwner(w http.ResponseWriter, r *http.Request, accountName string) (string, bool) {
+	username, ok := h.requireUser(w, r)
+	if !ok {
+		return "", false
+	}
+	if !h.registry.IsOwner(accountName, username) {
+		writeError(w, http.StatusForbidden, "you do not own this account")
+		return "", false
+	}
+	return username, true
+}
+
+// requireAdmin checks that the request is from the admin user.
+func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	auth := GetAdminAuth(r.Context())
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return false
+	}
+	if !auth.IsAdmin {
+		writeError(w, http.StatusForbidden, "admin only")
+		return false
+	}
+	return true
+}
+
 // HandleAddAccount adds a new account to the registry.
+// Only non-admin users can add accounts (owner is set to the requesting user).
 // POST /api/accounts/add
 func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
+	username, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -350,7 +441,7 @@ func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.registry.Add(req.Name); err != nil {
+	if err := h.registry.Add(req.Name, username); err != nil {
 		slog.Warn("add account failed", "name", req.Name, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -370,6 +461,10 @@ func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if _, ok := h.requireOwner(w, r, req.Name); !ok {
 		return
 	}
 
@@ -402,6 +497,10 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := h.requireOwner(w, r, req.Name); !ok {
+		return
+	}
+
 	if err := h.registry.UpdateProxy(req.Name, req.Proxy); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -414,6 +513,8 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 // testModel is the model used for account connectivity tests. Use a small,
 // fast model to minimise cost and latency.
 const testModel = "claude-haiku-4-5-20251001"
+
+// HandleTestAccount sends a minimal API request using the account's
 // OAuth token to verify the token and network path are working.
 // POST /api/accounts/test
 func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +522,10 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 		Account string `json:"account"`
 	}
 	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if _, ok := h.requireOwner(w, r, req.Account); !ok {
 		return
 	}
 

@@ -288,9 +288,23 @@
 </head>
 <body>
 
+<div id="login-screen" style="position:fixed; inset:0; background:var(--bg); z-index:999; display:flex; justify-content:center; align-items:center;">
+  <div class="card" style="width:360px; padding:32px;">
+    <h2 style="text-align:center; margin-bottom:24px; color:var(--accent);">ccproxy Login</h2>
+    <input type="text" id="login-username" placeholder="Username" style="width:100%; padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:14px; margin-bottom:12px; outline:none;" />
+    <input type="password" id="login-password" placeholder="Password" style="width:100%; padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:14px; margin-bottom:12px; outline:none;" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div id="login-error" style="color:var(--danger); font-size:12px; min-height:18px; margin-bottom:8px;"></div>
+    <button class="btn btn-accent" onclick="doLogin()" style="width:100%; padding:8px; font-size:14px;">Login</button>
+  </div>
+</div>
+
 <header>
   <h1>ccproxy OAuth</h1>
-  <span id="refresh-status">Loading…</span>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <span id="current-user" style="font-size:12px; color:var(--text-muted);"></span>
+    <span id="refresh-status">Loading…</span>
+    <button class="btn" onclick="doLogout()" style="font-size:12px;">Logout</button>
+  </div>
 </header>
 
 <div class="container">
@@ -299,7 +313,7 @@
       <h2>OAuth Accounts</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <span class="badge" id="account-count">—</span>
-        <button class="btn btn-accent" onclick="addInlineAccount()">+ Add Claude</button>
+        <button class="btn btn-accent" id="add-account-btn" onclick="addInlineAccount()">+ Add Claude</button>
       </div>
     </div>
     <div class="table-scroll">
@@ -307,6 +321,7 @@
         <thead>
           <tr>
             <th>Name</th>
+            <th id="th-owner">Owner</th>
             <th>Proxy</th>
             <th>Account Status</th>
             <th>Token Status</th>
@@ -316,7 +331,7 @@
           </tr>
         </thead>
         <tbody id="accounts-body">
-          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="8">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -344,7 +359,7 @@
             <input type="checkbox" id="notify-disabled" />
             账户被禁用（连续401、平台封禁）
           </label>
-          <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+          <label id="notify-anomaly-row" style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
             <input type="checkbox" id="notify-anomaly" />
             其他异常（429 / 529 / 超时 / 预算阻断）
           </label>
@@ -467,7 +482,7 @@
     document.getElementById('account-count').textContent = data.length + ' accounts';
     const tbody = document.getElementById('accounts-body');
     if (!data.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No OAuth accounts configured</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No OAuth accounts configured</td></tr>';
       return;
     }
     tbody.innerHTML = '';
@@ -481,6 +496,14 @@
       strong.textContent = acct.name;
       tdName.appendChild(strong);
       tr.appendChild(tdName);
+
+      // Owner cell
+      var tdOwner = document.createElement('td');
+      tdOwner.className = 'td-owner';
+      tdOwner.dataset.label = 'Owner';
+      tdOwner.textContent = acct.owner || 'admin';
+      tdOwner.style.display = (currentUser && currentUser.is_admin) ? '' : 'none';
+      tr.appendChild(tdOwner);
 
       // Proxy cell
       var tdProxy = document.createElement('td');
@@ -542,6 +565,8 @@
       var actionsDiv = document.createElement('div');
       actionsDiv.className = 'actions';
 
+      var isAdmin = currentUser && currentUser.is_admin;
+      if (!isAdmin) {
       var loginBtn = document.createElement('button');
       loginBtn.className = 'btn btn-accent';
       loginBtn.textContent = 'Login';
@@ -575,6 +600,7 @@
         return function() { doRemove(name); };
       })(acct.name));
       actionsDiv.appendChild(removeBtn);
+      } // end if (!isAdmin)
 
       tdActions.appendChild(actionsDiv);
       tr.appendChild(tdActions);
@@ -583,8 +609,21 @@
     });
   }
 
+  let authHeader = sessionStorage.getItem('ccproxy_auth') || '';
+  let currentUser = null;
+
   async function fetchJSON(url, opts) {
+    if (!opts) opts = {};
+    if (!opts.headers) opts.headers = {};
+    if (authHeader) opts.headers['Authorization'] = 'Basic ' + authHeader;
     const res = await fetch(url, opts);
+    if (res.status === 401) {
+      sessionStorage.removeItem('ccproxy_auth');
+      authHeader = '';
+      currentUser = null;
+      showLoginScreen();
+      throw new Error('Session expired');
+    }
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
     return body;
@@ -830,6 +869,7 @@
     tr.className = 'inline-add-row';
     tr.innerHTML =
       '<td class="td-name"><input class="inline-name-input" type="text" placeholder="Account name…" /></td>' +
+      '<td class="td-owner" data-label="Owner" style="' + ((currentUser && currentUser.is_admin) ? '' : 'display:none') + '">—</td>' +
       '<td class="td-proxy" data-label="Proxy"><span class="proxy-placeholder">' + esc(PROXY_HINT) + '</span></td>' +
       '<td class="td-account-status" data-label="Status"><span class="chip chip-muted">—</span></td>' +
       '<td class="td-token-status" data-label="Token"><span class="chip chip-muted">—</span></td>' +
@@ -941,10 +981,78 @@
     }
   }
 
+  // --- Login / Logout ---
+
+  function showLoginScreen() {
+    document.getElementById('login-screen').style.display = 'flex';
+  }
+
+  function hideLoginScreen() {
+    document.getElementById('login-screen').style.display = 'none';
+  }
+
+  async function doLogin() {
+    var user = document.getElementById('login-username').value.trim();
+    var pass = document.getElementById('login-password').value;
+    var errorEl = document.getElementById('login-error');
+    errorEl.textContent = '';
+    if (!user || !pass) { errorEl.textContent = 'Please enter username and password'; return; }
+    var encoded = btoa(user + ':' + pass);
+    try {
+      var res = await fetch('/api/auth/me', { headers: { 'Authorization': 'Basic ' + encoded } });
+      if (!res.ok) throw new Error('Invalid credentials');
+      authHeader = encoded;
+      sessionStorage.setItem('ccproxy_auth', encoded);
+      currentUser = await res.json();
+      hideLoginScreen();
+      applyRoleVisibility();
+      refresh();
+      loadNotifyConfig();
+    } catch (err) {
+      errorEl.textContent = err.message;
+    }
+  }
+
+  function doLogout() {
+    sessionStorage.removeItem('ccproxy_auth');
+    authHeader = '';
+    currentUser = null;
+    showLoginScreen();
+  }
+
+  function applyRoleVisibility() {
+    var isAdmin = currentUser && currentUser.is_admin;
+    document.getElementById('current-user').textContent = currentUser ? currentUser.username : '';
+    // Owner column: only visible for admin
+    var thOwner = document.getElementById('th-owner');
+    if (thOwner) thOwner.style.display = isAdmin ? '' : 'none';
+    // Add button: hidden for admin (read-only)
+    var addBtn = document.getElementById('add-account-btn');
+    if (addBtn) addBtn.style.display = isAdmin ? 'none' : '';
+    // Anomaly checkbox: hidden for non-admin
+    var anomalyRow = document.getElementById('notify-anomaly-row');
+    if (anomalyRow) anomalyRow.style.display = isAdmin ? '' : 'none';
+  }
+
   // --- Init ---
-  refresh();
-  loadNotifyConfig();
-  setInterval(refresh, 30000);
+  async function init() {
+    if (authHeader) {
+      try {
+        var res = await fetch('/api/auth/me', { headers: { 'Authorization': 'Basic ' + authHeader } });
+        if (res.ok) {
+          currentUser = await res.json();
+          hideLoginScreen();
+          applyRoleVisibility();
+          refresh();
+          loadNotifyConfig();
+          setInterval(refresh, 30000);
+          return;
+        }
+      } catch (e) {}
+    }
+    showLoginScreen();
+  }
+  init();
 </script>
 </body>
 </html>

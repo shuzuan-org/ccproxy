@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/binn/ccproxy/internal/admin"
+	"github.com/binn/ccproxy/internal/config"
 )
 
 func TestRecoveryMiddleware_NoPanic(t *testing.T) {
@@ -43,12 +46,40 @@ func TestRecoveryMiddleware_WithPanic(t *testing.T) {
 func TestBasicAuth_Correct(t *testing.T) {
 	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := admin.GetAdminAuth(r.Context())
+		if auth == nil || !auth.IsAdmin {
+			t.Error("expected admin auth info in context")
+		}
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := basicAuth("secret")(inner)
+	handler := basicAuth("secret", nil)(inner)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.SetBasicAuth("admin", "secret")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestBasicAuth_UserLogin(t *testing.T) {
+	t.Parallel()
+	apiKeys := []config.APIKeyConfig{
+		{Key: "sk-test", Name: "alice", Password: "alicepass", Enabled: true},
+	}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := admin.GetAdminAuth(r.Context())
+		if auth == nil || auth.Username != "alice" || auth.IsAdmin {
+			t.Error("expected user auth info for alice")
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := basicAuth("secret", apiKeys)(inner)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("alice", "alicepass")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -62,7 +93,7 @@ func TestBasicAuth_Wrong(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := basicAuth("secret")(inner)
+	handler := basicAuth("secret", nil)(inner)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.SetBasicAuth("admin", "wrong")
@@ -72,9 +103,6 @@ func TestBasicAuth_Wrong(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
-	if w.Header().Get("WWW-Authenticate") == "" {
-		t.Error("missing WWW-Authenticate header")
-	}
 }
 
 func TestBasicAuth_NoAuth(t *testing.T) {
@@ -82,7 +110,7 @@ func TestBasicAuth_NoAuth(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := basicAuth("secret")(inner)
+	handler := basicAuth("secret", nil)(inner)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()

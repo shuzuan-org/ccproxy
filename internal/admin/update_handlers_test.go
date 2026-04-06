@@ -59,6 +59,7 @@ func TestHandleUpdateCheck_NoUpdater(t *testing.T) {
 	h := &Handler{updater: nil}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/update/check", nil)
+	req = req.WithContext(WithAdminAuth(req.Context(), &AdminAuthInfo{Username: "admin", IsAdmin: true}))
 	w := httptest.NewRecorder()
 	h.HandleUpdateCheck(w, req)
 
@@ -69,6 +70,7 @@ func TestHandleUpdateApply_NoUpdater(t *testing.T) {
 	h := &Handler{updater: nil}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/update/apply", nil)
+	req = req.WithContext(WithAdminAuth(req.Context(), &AdminAuthInfo{Username: "admin", IsAdmin: true}))
 	w := httptest.NewRecorder()
 	h.HandleUpdateApply(w, req)
 

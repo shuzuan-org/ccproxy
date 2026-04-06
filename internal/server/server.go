@@ -37,6 +37,17 @@ func New(cfg *config.Config, version string) (*Server, error) {
 
 	// 1. Create account registry from persistent storage.
 	registry := config.NewAccountRegistry("data")
+
+	// Migrate ownerless accounts to the first enabled API key user.
+	if len(cfg.APIKeys) > 0 {
+		for _, k := range cfg.APIKeys {
+			if k.Enabled {
+				registry.MigrateOwnerless(k.Name)
+				break
+			}
+		}
+	}
+
 	runtimeAccounts := cfg.RuntimeAccounts(registry)
 
 	// 2. Create concurrency tracker and load balancer.
@@ -142,13 +153,21 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	// 7. Create proxy handler.
 	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
 
-	// Initialize Telegram notifier from persisted config (if any).
-	if notifyCfg, err := notify.LoadConfig("data"); err != nil {
-		slog.Warn("telegram config load failed, using noop notifier", "error", err)
-	} else if notifyCfg.BotToken != "" && notifyCfg.ChatID != "" {
-		notify.SetGlobal(notify.NewTelegramNotifier(notifyCfg))
-		slog.Info("telegram notifier initialized")
+	// Initialize per-user Telegram notifier registry.
+	notify.MigrateOldConfig("data")
+	notifyRegistry := notify.NewRegistry(registry.GetOwner)
+	for _, username := range notify.ListConfigUsers("data") {
+		notifyCfg, err := notify.LoadConfig("data", username)
+		if err != nil {
+			slog.Warn("telegram config load failed", "username", username, "error", err)
+			continue
+		}
+		if notifyCfg.BotToken != "" && notifyCfg.ChatID != "" {
+			notifyRegistry.Set(username, notify.NewTelegramNotifier(notifyCfg))
+			slog.Info("telegram notifier initialized", "username", username)
+		}
 	}
+	notify.SetGlobalRegistry(notifyRegistry)
 
 	// 8. Create admin handler.
 	adminHandler := admin.NewHandler(balancer, oauthMgr, oauthSessions, cfg, registry, upd, "data")
@@ -164,7 +183,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	limiter := ratelimit.NewLimiter(cfg.Server.RateLimit, time.Minute)
 	limiter.StartCleanup(ctx)
 	adminRL := ratelimit.Middleware(limiter)
-	adminAuth := basicAuth(cfg.Server.AdminPassword)
+	adminAuth := basicAuth(cfg.Server.AdminPassword, cfg.APIKeys)
 
 	mux.Handle("/api/accounts", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAccounts))))
 	mux.Handle("/api/accounts/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddAccount))))
@@ -181,7 +200,8 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	mux.Handle("/api/update/apply", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateApply))))
 	mux.Handle("/api/notify/config", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleNotifyConfig))))
 	mux.Handle("/api/notify/test", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleNotifyTest))))
-	mux.Handle("/admin/", adminRL(adminAuth(http.StripPrefix("/admin", adminHandler.HandleDashboard()))))
+	mux.Handle("/api/auth/me", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAuthMe))))
+	mux.Handle("/admin/", adminRL(http.StripPrefix("/admin", adminHandler.HandleDashboard())))
 
 	// Health check — no auth required.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -241,18 +261,49 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// basicAuth returns a middleware that enforces HTTP Basic Auth using the given password.
-// The username field is ignored; only the password is checked.
-func basicAuth(password string) func(http.Handler) http.Handler {
+// basicAuth returns a middleware that enforces HTTP Basic Auth.
+// Supports two roles:
+//   - admin: username "admin" with the admin password → IsAdmin=true
+//   - user: username matching an api_key name with the api_key password → IsAdmin=false
+//
+// To prevent timing attacks, all api_keys are always checked regardless of admin match.
+func basicAuth(adminPassword string, apiKeys []config.APIKeyConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, pass, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(password)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ccproxy admin"`)
+			user, pass, ok := r.BasicAuth()
+			if !ok {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-			next.ServeHTTP(w, r)
+
+			var matched bool
+			var authInfo *admin.AdminAuthInfo
+
+			// Always check admin credentials.
+			adminMatch := subtle.ConstantTimeCompare([]byte(user), []byte("admin")) == 1 &&
+				subtle.ConstantTimeCompare([]byte(pass), []byte(adminPassword)) == 1
+			if adminMatch {
+				matched = true
+				authInfo = &admin.AdminAuthInfo{Username: "admin", IsAdmin: true}
+			}
+
+			// Always iterate all api_keys to prevent timing side-channels.
+			for _, k := range apiKeys {
+				nameMatch := subtle.ConstantTimeCompare([]byte(user), []byte(k.Name)) == 1
+				passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(k.Password)) == 1
+				if nameMatch && passMatch && k.Enabled && !matched {
+					matched = true
+					authInfo = &admin.AdminAuthInfo{Username: k.Name, IsAdmin: false}
+				}
+			}
+
+			if !matched {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			ctx := admin.WithAdminAuth(r.Context(), authInfo)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

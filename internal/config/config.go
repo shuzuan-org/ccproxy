@@ -42,9 +42,10 @@ func (s ServerConfig) IsAutoUpdateEnabled() bool {
 }
 
 type APIKeyConfig struct {
-	Key     string `toml:"key"`
-	Name    string `toml:"name"`
-	Enabled bool   `toml:"enabled"`
+	Key      string `toml:"key"`
+	Name     string `toml:"name"`
+	Password string `toml:"password"`
+	Enabled  bool   `toml:"enabled"`
 }
 
 // AccountConfig is the runtime representation of an account, built from
@@ -81,14 +82,14 @@ func Load(path string) (*Config, error) {
 	// Initialize logging early so all subsequent log output uses the configured format/level.
 	SetupLogging(cfg)
 
-	genPassword, genKey := autoGenerate(cfg, path)
+	genPassword, genKeys, genPasswords := autoGenerate(cfg, path)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	if genPassword || genKey {
-		printGeneratedCredentials(cfg, genPassword, genKey)
+	if genPassword || genKeys || len(genPasswords) > 0 {
+		printGeneratedCredentials(cfg, genPassword, genKeys, genPasswords)
 	}
 
 	return cfg, nil

@@ -18,6 +18,7 @@ type Account struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	Proxy   string `json:"proxy,omitempty"`
+	Owner   string `json:"owner,omitempty"`
 }
 
 // AccountRegistry manages a persistent list of accounts stored in data/accounts.json.
@@ -41,9 +42,9 @@ func NewAccountRegistry(dataDir string) *AccountRegistry {
 	return r
 }
 
-// Add adds a new account with the given name. Returns an error if the name
+// Add adds a new account with the given name and owner. Returns an error if the name
 // is empty, contains invalid characters, or is already taken.
-func (r *AccountRegistry) Add(name string) error {
+func (r *AccountRegistry) Add(name, owner string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("account name cannot be empty")
@@ -58,7 +59,7 @@ func (r *AccountRegistry) Add(name string) error {
 		}
 	}
 
-	r.accounts = append(r.accounts, Account{Name: name, Enabled: true})
+	r.accounts = append(r.accounts, Account{Name: name, Enabled: true, Owner: owner})
 	if err := r.save(); err != nil {
 		// Roll back
 		r.accounts = r.accounts[:len(r.accounts)-1]
@@ -167,6 +168,66 @@ func (r *AccountRegistry) GetProxy(name string) string {
 		}
 	}
 	return ""
+}
+
+// ListByOwner returns a copy of accounts owned by the given owner.
+func (r *AccountRegistry) ListByOwner(owner string) []Account {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var result []Account
+	for _, acct := range r.accounts {
+		if acct.Owner == owner {
+			result = append(result, acct)
+		}
+	}
+	return result
+}
+
+// IsOwner returns true if the named account exists and is owned by owner.
+func (r *AccountRegistry) IsOwner(accountName, owner string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, acct := range r.accounts {
+		if acct.Name == accountName {
+			return acct.Owner == owner
+		}
+	}
+	return false
+}
+
+// GetOwner returns the owner of the named account, or "" if not found.
+func (r *AccountRegistry) GetOwner(accountName string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, acct := range r.accounts {
+		if acct.Name == accountName {
+			return acct.Owner
+		}
+	}
+	return ""
+}
+
+// MigrateOwnerless assigns the given owner to all accounts that have an empty owner.
+// Returns the number of accounts migrated.
+func (r *AccountRegistry) MigrateOwnerless(owner string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	count := 0
+	for i := range r.accounts {
+		if r.accounts[i].Owner == "" {
+			r.accounts[i].Owner = owner
+			count++
+		}
+	}
+	if count > 0 {
+		if err := r.save(); err != nil {
+			slog.Error("registry: failed to persist owner migration", "error", err.Error())
+			return 0
+		}
+		slog.Info("registry: migrated ownerless accounts", "owner", owner, "count", count)
+	}
+	return count
 }
 
 // SetOnChange registers a callback that is invoked whenever the account list

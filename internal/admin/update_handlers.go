@@ -22,10 +22,14 @@ func (h *Handler) HandleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, h.updater.Status())
 }
 
-// HandleUpdateCheck triggers an immediate version check.
+// HandleUpdateCheck triggers an immediate version check. Admin only.
 func (h *Handler) HandleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if !h.requireAdmin(w, r) {
 		return
 	}
 
@@ -43,10 +47,14 @@ func (h *Handler) HandleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"latest": latest})
 }
 
-// HandleUpdateApply triggers an immediate upgrade.
+// HandleUpdateApply triggers an immediate upgrade. Admin only.
 func (h *Handler) HandleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if !h.requireAdmin(w, r) {
 		return
 	}
 
