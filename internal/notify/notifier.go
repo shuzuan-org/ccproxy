@@ -15,10 +15,11 @@ const (
 	EventAccountBanned   EventType = "account_banned"   // platform ban (403/400)
 
 	// CategoryAnomaly events — recoverable.
-	EventRateLimited     EventType = "rate_limited"     // true 429 with reset headers
-	EventOverloaded      EventType = "overloaded"       // 529
-	EventTimeoutCooldown EventType = "timeout_cooldown" // timeout threshold reached
-	EventBudgetBlocked   EventType = "budget_blocked"   // budget state �� Blocked
+	EventRateLimited      EventType = "rate_limited"       // true 429 with reset headers
+	EventOverloaded       EventType = "overloaded"         // 529
+	EventTimeoutCooldown  EventType = "timeout_cooldown"   // timeout threshold reached
+	EventBudgetBlocked    EventType = "budget_blocked"     // budget state → Blocked
+	EventAccountReEnabled EventType = "account_re_enabled" // recovered from disabled state
 )
 
 // EventCategory classifies an event for subscription filtering.
@@ -32,7 +33,7 @@ const (
 // Category returns the category of this event type.
 func (e EventType) Category() EventCategory {
 	switch e {
-	case EventAccountDisabled, EventAccountBanned:
+	case EventAccountDisabled, EventAccountBanned, EventAccountReEnabled:
 		return CategoryDisabled
 	default:
 		return CategoryAnomaly

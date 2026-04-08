@@ -190,6 +190,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	mux.Handle("/api/accounts/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveAccount))))
 	mux.Handle("/api/accounts/proxy", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateProxy))))
 	mux.Handle("/api/accounts/test", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleTestAccount))))
+	mux.Handle("/api/accounts/enable", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAccountEnable))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
 	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))

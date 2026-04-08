@@ -319,6 +319,28 @@ func (h *AccountHealth) Disable(reason string) {
 	})
 }
 
+// Enable re-enables a disabled account, clearing the disabled state and 401 counter.
+// Returns true if the account was actually re-enabled.
+func (h *AccountHealth) Enable() bool {
+	h.mu.Lock()
+	if !h.disabled {
+		h.mu.Unlock()
+		return false
+	}
+	h.disabled = false
+	h.disabledReason = ""
+	h.consecutive401 = 0
+	h.first401At = time.Time{}
+	h.mu.Unlock()
+
+	notify.NotifyAllGlobal(context.Background(), notify.Event{
+		AccountName: h.Name,
+		Type:        notify.EventAccountReEnabled,
+		Detail:      "account re-enabled",
+	})
+	return true
+}
+
 // IsDisabled returns whether the account is permanently disabled.
 func (h *AccountHealth) IsDisabled() bool {
 	h.mu.RLock()

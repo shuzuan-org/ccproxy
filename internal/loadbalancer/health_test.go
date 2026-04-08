@@ -228,6 +228,63 @@ func TestConsecutive401_Disable(t *testing.T) {
 	}
 }
 
+func TestEnable_Consecutive401(t *testing.T) {
+	t.Parallel()
+	h := NewAccountHealth("test")
+
+	// Disable via consecutive 401s
+	h.Disable("consecutive_401")
+	if !h.IsDisabled() {
+		t.Fatal("expected disabled")
+	}
+
+	// Enable should succeed
+	if !h.Enable() {
+		t.Error("expected Enable to return true")
+	}
+	if h.IsDisabled() {
+		t.Error("expected account to be enabled after Enable()")
+	}
+	if h.DisabledReason() != "" {
+		t.Errorf("expected empty reason, got %q", h.DisabledReason())
+	}
+	if !h.IsAvailable() {
+		t.Error("expected account to be available after Enable()")
+	}
+}
+
+func TestEnable_PlatformBan(t *testing.T) {
+	t.Parallel()
+	h := NewAccountHealth("test")
+
+	// Disable via platform ban
+	h.Disable(PlatformBanReasonForbidden)
+	if !h.IsDisabled() {
+		t.Fatal("expected disabled")
+	}
+
+	// Enable should still succeed for banned accounts (UI manual recovery)
+	if !h.Enable() {
+		t.Error("expected Enable to return true even for banned accounts")
+	}
+	if h.IsDisabled() {
+		t.Error("expected account to be enabled after Enable()")
+	}
+	if h.IsBanned() {
+		t.Error("expected account to not be banned after Enable()")
+	}
+}
+
+func TestEnable_NotDisabled(t *testing.T) {
+	t.Parallel()
+	h := NewAccountHealth("test")
+
+	// Enable on already-enabled account should return false
+	if h.Enable() {
+		t.Error("expected Enable to return false for non-disabled account")
+	}
+}
+
 func TestRecordTimeout(t *testing.T) {
 	t.Parallel()
 	h := NewAccountHealth("test")

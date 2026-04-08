@@ -565,8 +565,6 @@
       var actionsDiv = document.createElement('div');
       actionsDiv.className = 'actions';
 
-      var isAdmin = currentUser && currentUser.is_admin;
-      if (!isAdmin) {
       var loginBtn = document.createElement('button');
       loginBtn.className = 'btn btn-accent';
       loginBtn.textContent = 'Login';
@@ -600,7 +598,16 @@
         return function() { doRemove(name); };
       })(acct.name));
       actionsDiv.appendChild(removeBtn);
-      } // end if (!isAdmin)
+
+      if (acct.health === 'disabled' || acct.health === 'banned') {
+        var enableBtn = document.createElement('button');
+        enableBtn.className = 'btn btn-accent';
+        enableBtn.textContent = 'Enable';
+        enableBtn.addEventListener('click', (function(name, btn) {
+          return function() { doEnable(name, btn); };
+        })(acct.name, enableBtn));
+        actionsDiv.appendChild(enableBtn);
+      }
 
       tdActions.appendChild(actionsDiv);
       tr.appendChild(tdActions);
@@ -932,13 +939,31 @@
     }
   }
 
+  async function doEnable(accountName, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Enabling…';
+    try {
+      await fetchJSON('/api/accounts/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: accountName }),
+      });
+      refresh();
+    } catch (err) {
+      alert('Enable failed: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = 'Enable';
+    }
+  }
+
   async function loadNotifyConfig() {
     try {
       const data = await fetchJSON('/api/notify/config');
       document.getElementById('notify-bot-token').value = data.bot_token || '';
       document.getElementById('notify-chat-id').value = data.chat_id || '';
-      document.getElementById('notify-disabled').checked = !!data.enable_disabled;
-      document.getElementById('notify-anomaly').checked = !!data.enable_anomaly;
+      var isNew = !data.bot_token;
+      document.getElementById('notify-disabled').checked = isNew ? true : !!data.enable_disabled;
+      document.getElementById('notify-anomaly').checked = isNew ? true : !!data.enable_anomaly;
     } catch (e) {
       // silently ignore on load
     }

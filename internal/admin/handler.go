@@ -290,6 +290,21 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	h.sessions.Delete(req.SessionID)
 
+	// Auto re-enable if account was disabled (including platform ban).
+	// A successful OAuth login proves the account is valid again.
+	if health := h.balancer.GetHealth(session.AccountName); health != nil {
+		if health.IsDisabled() {
+			if health.Enable() {
+				slog.Info("oauth: account re-enabled after login",
+					"account", session.AccountName,
+				)
+				if err := h.balancer.SaveState(h.dataDir); err != nil {
+					slog.Warn("failed to persist health state after auto re-enable", "error", err)
+				}
+			}
+		}
+	}
+
 	slog.Info("oauth: login complete",
 		"account", session.AccountName,
 		"expires_at", token.ExpiresAt.Format(time.RFC3339),
@@ -310,7 +325,7 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.requireOwner(w, r, req.Account); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Account); !ok {
 		return
 	}
 
@@ -347,7 +362,7 @@ func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.requireOwner(w, r, req.Account); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Account); !ok {
 		return
 	}
 
@@ -411,6 +426,24 @@ func (h *Handler) requireOwner(w http.ResponseWriter, r *http.Request, accountNa
 	return username, true
 }
 
+// requireOwnerOrAdmin checks that the request is from the account owner or admin.
+// Admin can operate on any account; regular users can only operate on their own.
+func (h *Handler) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, accountName string) (string, bool) {
+	auth := GetAdminAuth(r.Context())
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return "", false
+	}
+	if auth.IsAdmin {
+		return auth.Username, true
+	}
+	if !h.registry.IsOwner(accountName, auth.Username) {
+		writeError(w, http.StatusForbidden, "you do not own this account")
+		return "", false
+	}
+	return auth.Username, true
+}
+
 // requireAdmin checks that the request is from the admin user.
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	auth := GetAdminAuth(r.Context())
@@ -455,6 +488,7 @@ func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleRemoveAccount removes an account from the registry and cleans up its OAuth token.
+// Admin or account owner can remove accounts.
 // POST /api/accounts/remove
 func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -464,7 +498,7 @@ func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.requireOwner(w, r, req.Name); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Name); !ok {
 		return
 	}
 
@@ -487,6 +521,7 @@ func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleUpdateProxy updates the proxy URL for an account.
+// Admin or account owner can update proxy.
 // POST /api/accounts/proxy
 func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -497,7 +532,7 @@ func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.requireOwner(w, r, req.Name); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Name); !ok {
 		return
 	}
 
@@ -525,7 +560,7 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.requireOwner(w, r, req.Account); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Account); !ok {
 		return
 	}
 
@@ -609,4 +644,40 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("account test passed", "account", req.Account)
 	writeJSON(w, map[string]any{"ok": true, "reply": reply})
+}
+
+// HandleAccountEnable re-enables a disabled account.
+// POST /api/accounts/{name}/enable
+func (h *Handler) HandleAccountEnable(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Account string `json:"account"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.Account); !ok {
+		return
+	}
+
+	health := h.balancer.GetHealth(req.Account)
+	if health == nil {
+		writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+
+	if !health.IsDisabled() {
+		writeError(w, http.StatusBadRequest, "account is not disabled")
+		return
+	}
+
+	if health.Enable() {
+		slog.Info("account re-enabled via admin", "account", req.Account)
+		if err := h.balancer.SaveState(h.dataDir); err != nil {
+			slog.Warn("failed to persist health state after enable", "error", err)
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	} else {
+		writeError(w, http.StatusInternalServerError, "failed to enable account")
+	}
 }
