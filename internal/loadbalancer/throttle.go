@@ -25,7 +25,7 @@ type PoolThrottle struct {
 const (
 	throttleWindowSize     = 2 * time.Minute
 	defaultThrottleK       = 2.0
-	minThrottleSamples     = 3 // minimum requests in window before throttling kicks in
+	minThrottleSamples     = 8 // minimum requests in window before throttling kicks in
 	maxQueueTimeoutDefault = 30 * time.Second
 	maxQueueTimeoutStream  = 10 * time.Second
 )

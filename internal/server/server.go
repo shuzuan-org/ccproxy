@@ -120,6 +120,10 @@ func New(cfg *config.Config, version string) (*Server, error) {
 			}
 			return nil
 		},
+		func(name string) bool {
+			h := balancer.GetHealth(name)
+			return h != nil && !h.IsDisabled()
+		},
 	)
 	slog.Info("usage fetcher started")
 

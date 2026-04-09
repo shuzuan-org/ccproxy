@@ -227,10 +227,12 @@ func (uf *UsageFetcher) cacheError(accountName string) {
 
 // StartBackground starts a background goroutine that periodically checks
 // all accounts and fetches usage data when needed.
+// isAvailable is called per account; banned/disabled accounts are skipped.
 func (uf *UsageFetcher) StartBackground(
 	ctx context.Context,
 	getAccountNames func() []string,
 	getBudget func(string) *BudgetController,
+	isAvailable func(string) bool,
 ) {
 	go func() {
 		ticker := time.NewTicker(usageCheckInterval)
@@ -242,6 +244,9 @@ func (uf *UsageFetcher) StartBackground(
 			case <-ticker.C:
 				names := getAccountNames()
 				for _, name := range names {
+					if isAvailable != nil && !isAvailable(name) {
+						continue
+					}
 					budget := getBudget(name)
 					resp := uf.FetchIfNeeded(ctx, name, budget)
 					if resp != nil && budget != nil {

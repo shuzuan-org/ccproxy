@@ -136,45 +136,67 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	if sessionKey != "" {
 		if info, ok := b.sessions.Load(sessionKey); ok {
 			si := info.(*SessionInfo)
-			if time.Since(si.LastRequest) < sessionTTL {
+			expired := time.Since(si.LastRequest) >= sessionTTL
+			deleteSession := expired // only delete on true expiry
+
+			if !expired {
 				acct := b.findAccount(si.AccountName)
 				if acct != nil && !excludeAccounts[acct.Name] {
 					h := health[acct.Name]
 					if h == nil || h.IsAvailable() {
-						// Use dynamic concurrency for sticky sessions
-						effectiveMax := acct.MaxConcurrency
-						if h != nil {
-							effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
-						}
-						rate := b.tracker.LoadRate(acct.Name, effectiveMax)
-						if rate < 100 {
-							if release, ok := b.tracker.Acquire(acct.Name, requestID, effectiveMax); ok {
-								b.sessions.Store(sessionKey, &SessionInfo{
-									AccountName: si.AccountName,
-									LastRequest: time.Now(),
-								})
-								observe.Logger(ctx).Debug("balancer: sticky session hit",
-									"account", acct.Name,
-									"session_key", sessionKey,
-								)
-								return &SelectResult{Account: *acct, RequestID: requestID, Release: release}, nil
-							}
-						} else {
-							observe.Logger(ctx).Debug("balancer: sticky session skipped (overloaded)",
+						// Check budget state — blocked accounts should not receive
+						// even sticky traffic so the budget can recover.
+						// Session is preserved so affinity resumes after recovery.
+						if h != nil && h.budget != nil && h.budget.State() == StateBlocked {
+							observe.Logger(ctx).Debug("balancer: sticky session skipped (budget blocked)",
 								"account", acct.Name,
-								"load_rate", rate,
+								"session_key", sessionKey,
 							)
+						} else {
+							// Use dynamic concurrency for sticky sessions
+							effectiveMax := acct.MaxConcurrency
+							if h != nil {
+								effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
+							}
+							rate := b.tracker.LoadRate(acct.Name, effectiveMax)
+							if rate < 100 {
+								if release, ok := b.tracker.Acquire(acct.Name, requestID, effectiveMax); ok {
+									b.sessions.Store(sessionKey, &SessionInfo{
+										AccountName: si.AccountName,
+										LastRequest: time.Now(),
+									})
+									observe.Logger(ctx).Debug("balancer: sticky session hit",
+										"account", acct.Name,
+										"session_key", sessionKey,
+									)
+									return &SelectResult{Account: *acct, RequestID: requestID, Release: release}, nil
+								}
+							} else {
+								observe.Logger(ctx).Debug("balancer: sticky session skipped (overloaded)",
+									"account", acct.Name,
+									"load_rate", rate,
+								)
+							}
 						}
 					} else {
 						observe.Logger(ctx).Debug("balancer: sticky session skipped (unavailable)",
 							"account", acct.Name,
 						)
+						deleteSession = true
 					}
+				} else {
+					// Account removed or excluded — clean up binding
+					deleteSession = true
 				}
 			}
-			// Sticky session expired or account unavailable
-			observe.Logger(ctx).Debug("balancer: sticky session expired", "session_key", sessionKey)
-			b.sessions.Delete(sessionKey)
+
+			if deleteSession {
+				observe.Logger(ctx).Debug("balancer: sticky session removed",
+					"session_key", sessionKey,
+					"expired", expired,
+				)
+				b.sessions.Delete(sessionKey)
+			}
 		}
 	}
 

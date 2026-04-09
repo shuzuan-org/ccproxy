@@ -160,21 +160,43 @@ func TestLatencyEMA_Convergence(t *testing.T) {
 func TestScore_Composite(t *testing.T) {
 	t.Parallel()
 
-	// Cold start: no errors, no latency, no util → score from load only
+	// Cold start: no errors, no latency, no util → score from load only + jitter
 	h := NewAccountHealth("test")
+	base := 0.0*0.3 + 0.0*0.2 + 0.5*0.2 + 0.0*0.3 // errorRate=0, latency=0, loadRate=50%, util=0
+	// With ±5% jitter, score should be within [base*0.95, base*1.05]
 	score := h.Score(50)
-	// New weights: errRate*0.3 + latency*0.2 + loadRate*0.2 + maxUtil*0.3
-	want := 0.0*0.3 + 0.0*0.2 + 0.5*0.2 + 0.0*0.3 // errorRate=0, latency=0, loadRate=50%, util=0
-	if score < want-0.01 || score > want+0.01 {
-		t.Errorf("expected score ~%.2f, got %.2f", want, score)
+	if score < base*0.95-0.001 || score > base*1.05+0.001 {
+		t.Errorf("expected score ~%.2f (±5%%), got %.2f", base, score)
 	}
 
-	// With errors, score should increase
+	// With errors, score should increase significantly
 	h.RecordError(context.Background(), 500, 0, nil)
 	h.RecordError(context.Background(), 500, 0, nil)
 	scoreWithErrors := h.Score(50)
-	if scoreWithErrors <= score {
-		t.Errorf("score with errors (%.2f) should be > cold start score (%.2f)", scoreWithErrors, score)
+	// Error rate pushes base well above cold start; verify meaningful increase
+	// even accounting for ±5% jitter on both values
+	if scoreWithErrors <= base*1.05+0.001 {
+		t.Errorf("score with errors (%.4f) should be significantly > cold start base (%.4f)", scoreWithErrors, base)
+	}
+}
+
+func TestScore_Jitter(t *testing.T) {
+	t.Parallel()
+
+	h := NewAccountHealth("test")
+	// Set some non-zero budget util so scores aren't near zero
+	h.budget.mu.Lock()
+	h.budget.window7d.Utilization = 0.50
+	h.budget.mu.Unlock()
+
+	// Call Score many times and verify not all identical (jitter working)
+	scores := make(map[float64]bool)
+	for i := 0; i < 50; i++ {
+		s := h.Score(30)
+		scores[s] = true
+	}
+	if len(scores) < 5 {
+		t.Errorf("expected jitter to produce varied scores, got only %d distinct values out of 50", len(scores))
 	}
 }
 

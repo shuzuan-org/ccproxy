@@ -173,13 +173,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return resp, statusCode, err
 			}
 
-			// Read 400 body to check for signature error.
+			// Read 400 body to check for signature error or platform ban.
 			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			if reason, banned := loadbalancer.DetectPlatformBan(statusCode, errBody); banned {
 				if health := h.balancer.GetHealth(acct.Name); health != nil {
 					health.Disable(reason)
 				}
+				log.Warn("platform ban detected, triggering failover",
+					"account", acct.Name, "reason", reason)
+				// Return 403 to retry layer so ClassifyError triggers FailoverImmediate.
+				return &http.Response{
+					StatusCode: 403,
+					Header:     resp.Header,
+					Body:       io.NopCloser(bytes.NewReader(errBody)),
+				}, 403, nil
 			}
 			if readErr != nil {
 				return &http.Response{

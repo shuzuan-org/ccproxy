@@ -301,3 +301,103 @@ func abs(f float64) float64 {
 	}
 	return f
 }
+
+func TestBudgetController_EffectiveUtilization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		util5h  float64
+		reset5h time.Time
+		util7d  float64
+		reset7d time.Time
+		wantLo  float64 // lower bound (inclusive)
+		wantHi  float64 // upper bound (inclusive)
+	}{
+		{
+			name:    "zero reset times - returns raw max",
+			util5h:  0.30,
+			util7d:  0.60,
+			wantLo:  0.59,
+			wantHi:  0.61,
+		},
+		{
+			name:    "7d window near reset - heavy decay",
+			util5h:  0.10,
+			reset5h: time.Now().Add(3 * time.Hour),
+			util7d:  0.60,
+			reset7d: time.Now().Add(5 * time.Hour), // 5h remaining of 168h window
+			wantLo:  0.05,                           // max(0.10*3/5, 0.60*5/168) ≈ max(0.06, 0.018)
+			wantHi:  0.07,
+		},
+		{
+			name:    "both windows far from reset - minimal decay",
+			util5h:  0.40,
+			reset5h: time.Now().Add(4 * time.Hour), // 4/5 = 80% remaining
+			util7d:  0.50,
+			reset7d: time.Now().Add(150 * time.Hour), // 150/168 ≈ 89% remaining
+			wantLo:  0.43, // max(0.40*0.8, 0.50*0.89) ≈ max(0.32, 0.446)
+			wantHi:  0.46,
+		},
+		{
+			name:    "reset time in the past - returns 0 for that window",
+			util5h:  0.80,
+			reset5h: time.Now().Add(-1 * time.Hour), // already passed
+			util7d:  0.50,
+			reset7d: time.Now().Add(100 * time.Hour),
+			wantLo:  0.29, // max(0, 0.50*100/168) ≈ 0.297
+			wantHi:  0.31,
+		},
+		{
+			name:    "only 5h has reset time - 7d uses raw",
+			util5h:  0.30,
+			reset5h: time.Now().Add(1 * time.Hour),
+			util7d:  0.40,
+			wantLo:  0.39, // max(0.30*1/5, 0.40) = max(0.06, 0.40)
+			wantHi:  0.41,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			bc := NewBudgetController("test")
+			bc.mu.Lock()
+			bc.window5h.Utilization = tt.util5h
+			bc.window5h.ResetAt = tt.reset5h
+			bc.window7d.Utilization = tt.util7d
+			bc.window7d.ResetAt = tt.reset7d
+			bc.mu.Unlock()
+
+			got := bc.EffectiveUtilization()
+			if got < tt.wantLo || got > tt.wantHi {
+				t.Errorf("EffectiveUtilization() = %.4f, want [%.4f, %.4f]", got, tt.wantLo, tt.wantHi)
+			}
+		})
+	}
+}
+
+func TestDecayedUtil(t *testing.T) {
+	t.Parallel()
+
+	// Window with remaining time = half the window duration
+	w := BudgetWindow{Utilization: 0.80, ResetAt: time.Now().Add(84 * time.Hour)}
+	got := decayedUtil(w, window7dDuration) // 84/168 = 0.5
+	if abs(got-0.40) > 0.01 {
+		t.Errorf("decayedUtil half-remaining = %.4f, want ~0.40", got)
+	}
+
+	// Zero reset time → raw utilization
+	w2 := BudgetWindow{Utilization: 0.60}
+	got2 := decayedUtil(w2, window5hDuration)
+	if got2 != 0.60 {
+		t.Errorf("decayedUtil zero reset = %.4f, want 0.60", got2)
+	}
+
+	// Past reset → 0
+	w3 := BudgetWindow{Utilization: 0.90, ResetAt: time.Now().Add(-1 * time.Hour)}
+	got3 := decayedUtil(w3, window7dDuration)
+	if got3 != 0 {
+		t.Errorf("decayedUtil past reset = %.4f, want 0", got3)
+	}
+}

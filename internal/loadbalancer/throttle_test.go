@@ -18,7 +18,7 @@ func TestPoolThrottle_ShouldThrottle_ColdWindow(t *testing.T) {
 	t.Parallel()
 	pt := NewPoolThrottle(10)
 
-	// 1 request, 0 accepts — should NOT throttle (below minThrottleSamples=3)
+	// 1 request, 0 accepts — should NOT throttle (below minThrottleSamples=8)
 	pt.RecordRequest()
 	for i := 0; i < 100; i++ {
 		if pt.ShouldThrottle() {
@@ -26,11 +26,13 @@ func TestPoolThrottle_ShouldThrottle_ColdWindow(t *testing.T) {
 		}
 	}
 
-	// 2 requests, 0 accepts — still below threshold
-	pt.RecordRequest()
+	// 7 requests, 0 accepts — still below threshold
+	for i := 0; i < 6; i++ {
+		pt.RecordRequest()
+	}
 	for i := 0; i < 100; i++ {
 		if pt.ShouldThrottle() {
-			t.Error("should not throttle with only 2 requests (below minThrottleSamples)")
+			t.Error("should not throttle with only 7 requests (below minThrottleSamples)")
 		}
 	}
 }

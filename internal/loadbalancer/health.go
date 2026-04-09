@@ -157,8 +157,11 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		}
 
 	case 403:
-		observe.Logger(ctx).Error("account forbidden, disabling", "account", h.Name)
-		h.Disable(legacyBanReasonForbidden)
+		// Skip if already disabled with a more specific reason (e.g., from platform ban detection).
+		if !h.IsDisabled() {
+			observe.Logger(ctx).Error("account forbidden, disabling", "account", h.Name)
+			h.Disable(legacyBanReasonForbidden)
+		}
 
 	case 400:
 		// 400 with "organization disabled" text handled by caller via body check
@@ -236,12 +239,14 @@ type ScoreBreakdown struct {
 }
 
 // Score computes a composite score (lower is better).
-// score = errorRate*0.3 + normalizedLatency*0.2 + loadRate/100*0.2 + maxUtil*0.3
+// score = (errorRate*0.3 + normalizedLatency*0.2 + loadRate/100*0.2 + effectiveUtil*0.3) * jitter
 func (h *AccountHealth) Score(loadRate int) float64 {
 	return h.ScoreDetail(loadRate).Score
 }
 
 // ScoreDetail computes a composite score and returns the breakdown of each component.
+// Uses time-decayed budget utilization and applies ±5% random jitter to prevent
+// deterministic lock-in where one account permanently captures all traffic.
 func (h *AccountHealth) ScoreDetail(loadRate int) ScoreBreakdown {
 	errRate := h.ErrorRate()
 
@@ -258,15 +263,19 @@ func (h *AccountHealth) ScoreDetail(loadRate int) ScoreBreakdown {
 		normalizedLatency /= 2.0 // scale to 0-1
 	}
 
-	maxUtil := h.budget.MaxUtilization()
+	effectiveUtil := h.budget.EffectiveUtilization()
 	lr := float64(loadRate) / 100.0
 
+	base := errRate*0.3 + normalizedLatency*0.2 + lr*0.2 + effectiveUtil*0.3
+	// Apply ±5% jitter to break deterministic ties
+	jitter := 1.0 + (rand.Float64()*0.1 - 0.05)
+
 	return ScoreBreakdown{
-		Score:        errRate*0.3 + normalizedLatency*0.2 + lr*0.2 + maxUtil*0.3,
+		Score:        base * jitter,
 		ErrRate:      errRate,
 		LatencyScore: normalizedLatency,
 		LoadRate:     lr,
-		MaxUtil:      maxUtil,
+		MaxUtil:      effectiveUtil,
 	}
 }
 

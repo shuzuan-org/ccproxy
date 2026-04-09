@@ -43,6 +43,9 @@ const (
 	penaltyStep             = 0.03 // per consecutive true 429
 	penaltyMax              = 0.15 // maximum penalty shift
 	penaltyRecoveryInterval = 5 * time.Minute
+
+	window5hDuration = 5 * time.Hour   // nominal length of the 5-hour budget window
+	window7dDuration = 168 * time.Hour // nominal length of the 7-day budget window
 )
 
 // BudgetWindow holds rate-limit state for a single time window (5h or 7d).
@@ -224,6 +227,40 @@ func (bc *BudgetController) MaxUtilization() float64 {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
 	return math.Max(bc.window5h.Utilization, bc.window7d.Utilization)
+}
+
+// EffectiveUtilization returns a time-decayed max utilization for scoring.
+// As a window's reset time approaches, its utilization contributes less,
+// reflecting the fact that the budget is about to be replenished.
+// State() thresholds still use raw MaxUtilization — this only affects L3 scoring.
+func (bc *BudgetController) EffectiveUtilization() float64 {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return math.Max(
+		decayedUtil(bc.window5h, window5hDuration),
+		decayedUtil(bc.window7d, window7dDuration),
+	)
+}
+
+// decayedUtil computes time-decayed utilization for a single budget window.
+// effectiveUtil = rawUtil * clamp01(timeRemaining / windowDuration)
+// If ResetAt is zero (no header received yet), returns rawUtil unchanged (no decay).
+// If ResetAt is in the past, returns 0 (budget has reset, utilization cleared).
+func decayedUtil(w BudgetWindow, windowDuration time.Duration) float64 {
+	if w.ResetAt.IsZero() {
+		return w.Utilization
+	}
+	remaining := time.Until(w.ResetAt)
+	if remaining <= 0 {
+		// Reset time has passed — window should have been refreshed;
+		// treat as zero utilization since the budget has reset.
+		return 0
+	}
+	ratio := float64(remaining) / float64(windowDuration)
+	if ratio > 1.0 {
+		ratio = 1.0
+	}
+	return w.Utilization * ratio
 }
 
 // Record429 records a 429 response. hasResetHeaders indicates whether

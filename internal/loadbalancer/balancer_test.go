@@ -610,3 +610,76 @@ func TestBalancer_AccountStates(t *testing.T) {
 		t.Fatalf("banned state = %q, want banned", got)
 	}
 }
+
+// TestBalancer_StickySessionBudgetBlocked tests that a sticky session falls through
+// to L3 when the bound account's budget is in StateBlocked.
+func TestBalancer_StickySessionBudgetBlocked(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("blocked-acct", 5),
+		makeAccount("healthy-acct", 5),
+	}
+	b := newTestBalancer(accounts)
+
+	// Bind a sticky session to blocked-acct
+	b.BindSession("test-session", "blocked-acct")
+
+	// Push blocked-acct into StateBlocked (util >= 95%)
+	h := b.GetHealth("blocked-acct")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.96")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.80")
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
+
+	if state := h.Budget().State(); state != StateBlocked {
+		t.Fatalf("expected StateBlocked, got %v", state)
+	}
+
+	// Select with the sticky session — should NOT use blocked-acct
+	result, err := b.SelectAccount(testCtx, "test-session", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Name == "blocked-acct" {
+		t.Error("sticky session should not use budget-blocked account, expected fallthrough to healthy-acct")
+	}
+	result.Release()
+
+	// Session binding should be preserved (not deleted) so affinity resumes after recovery
+	if _, ok := b.sessions.Load("test-session"); !ok {
+		t.Error("session binding should be preserved for budget-blocked account, not deleted")
+	}
+}
+
+// TestBalancer_StickySessionBudgetStickyOnly tests that a sticky session still
+// works when the bound account is in StateStickyOnly (that's its purpose).
+func TestBalancer_StickySessionBudgetStickyOnly(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeAccount("sticky-only-acct", 5),
+		makeAccount("other-acct", 5),
+	}
+	b := newTestBalancer(accounts)
+
+	// Bind a sticky session to sticky-only-acct
+	b.BindSession("test-session", "sticky-only-acct")
+
+	// Push into StateStickyOnly (90% <= util < 95%)
+	h := b.GetHealth("sticky-only-acct")
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
+	h.Budget().UpdateFromHeaders(context.Background(), headers)
+
+	if state := h.Budget().State(); state != StateStickyOnly {
+		t.Fatalf("expected StateStickyOnly, got %v", state)
+	}
+
+	// Select with the sticky session — should still use sticky-only-acct
+	result, err := b.SelectAccount(testCtx, "test-session", map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Name != "sticky-only-acct" {
+		t.Errorf("sticky session should still use StickyOnly account, got %s", result.Account.Name)
+	}
+	result.Release()
+}
