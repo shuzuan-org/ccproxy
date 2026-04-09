@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ccproxy — 使用指南</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* Header */
+    .help-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .help-header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
+    .help-header a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    .help-header a:hover { background: var(--surface2); color: var(--text); }
+
+    /* Layout */
+    .help-layout {
+      display: flex;
+      max-width: 1100px;
+      margin: 0 auto;
+      min-height: calc(100vh - 52px);
+    }
+
+    /* Sidebar TOC */
+    .help-sidebar {
+      width: 200px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 52px;
+      height: calc(100vh - 52px);
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      padding: 20px 0;
+    }
+    .toc-list { list-style: none; }
+    .toc-item {
+      display: block;
+      padding: 8px 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .toc-item:hover { color: var(--text); background: rgba(88,166,255,0.04); }
+    .toc-item.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      background: rgba(88,166,255,0.06);
+    }
+    .toc-num {
+      display: inline-block;
+      width: 20px;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    /* Content */
+    .help-content {
+      flex: 1;
+      min-width: 0;
+      padding: 32px 40px 80px;
+    }
+
+    .section { margin-bottom: 56px; }
+    .section:last-child { margin-bottom: 0; }
+
+    .section h2 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: rgba(88,166,255,0.12);
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .section p { margin: 12px 0; color: var(--text); }
+    .section p.muted { color: var(--text-muted); font-size: 14px; }
+
+    /* Steps */
+    .steps { margin: 16px 0; }
+    .step {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 16px;
+      align-items: flex-start;
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      margin-top: 1px;
+    }
+    .step-body { flex: 1; min-width: 0; }
+    .step-body strong { color: var(--text); }
+
+    /* Callouts */
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: rgba(88,166,255,0.06);
+      padding: 12px 16px;
+      border-radius: 0 6px 6px 0;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .callout-tip { border-left-color: var(--success); background: rgba(63,185,80,0.06); }
+    .callout-warn { border-left-color: var(--warn); background: rgba(210,153,34,0.06); }
+    .callout-label {
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .callout-tip .callout-label { color: var(--success); }
+    .callout-warn .callout-label { color: var(--warn); }
+
+    /* Code blocks */
+    .code-block {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin: 14px 0;
+      overflow-x: auto;
+      font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .code-block .comment { color: var(--text-muted); }
+    .code-block .cmd { color: var(--success); }
+    .code-block .flag { color: var(--warn); }
+    .code-block .val { color: var(--accent); }
+
+    /* Inline code */
+    code {
+      background: var(--surface2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+      font-size: 13px;
+    }
+
+    /* Illustration container */
+    .illustration {
+      margin: 20px 0;
+      display: flex;
+      justify-content: center;
+    }
+    .illustration svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Status legend */
+    .legend-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .chip-success { background: rgba(63,185,80,.15); color: var(--success); }
+    .chip-warn    { background: rgba(210,153,34,.15); color: var(--warn); }
+    .chip-danger  { background: rgba(248,81,73,.15);  color: var(--danger); }
+    .chip-muted   { background: var(--surface2); color: var(--text-muted); }
+
+    /* Utilization bar demo */
+    .util-demo { margin: 14px 0; }
+    .util-demo-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .util-demo-label { font-size: 13px; width: 80px; color: var(--text-muted); }
+    .util-demo-track {
+      width: 120px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .util-demo-fill { height: 100%; border-radius: 3px; }
+    .util-demo-desc { font-size: 13px; color: var(--text); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .help-header { padding: 10px 14px; }
+      .help-header h1 { font-size: 16px; }
+
+      .help-sidebar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        width: 100%;
+        height: auto;
+        border-right: none;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+        z-index: 99;
+        padding: 8px 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        display: flex;
+      }
+      .toc-list {
+        display: flex;
+        padding: 0 8px;
+        gap: 2px;
+      }
+      .toc-item {
+        padding: 6px 12px;
+        border-left: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 6px 6px 0 0;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .toc-item.active { border-bottom-color: var(--accent); border-left: none; }
+      .toc-num { display: none; }
+
+      .help-layout { display: block; }
+      .help-content { padding: 20px 16px 80px; }
+      .section h2 { font-size: 18px; }
+      .legend-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="help-header">
+  <h1>ccproxy 使用指南</h1>
+  <a href="/admin/">← 返回仪表盘</a>
+</div>
+
+<div class="help-layout">
+  <nav class="help-sidebar">
+    <ul class="toc-list">
+      <li><a class="toc-item" href="#login"><span class="toc-num">1</span>登录</a></li>
+      <li><a class="toc-item" href="#add-account"><span class="toc-num">2</span>添加账户</a></li>
+      <li><a class="toc-item" href="#oauth"><span class="toc-num">3</span>OAuth 认证</a></li>
+      <li><a class="toc-item" href="#proxy"><span class="toc-num">4</span>设置代理</a></li>
+      <li><a class="toc-item" href="#test"><span class="toc-num">5</span>测试连通</a></li>
+      <li><a class="toc-item" href="#notify"><span class="toc-num">6</span>通知配置</a></li>
+      <li><a class="toc-item" href="#status"><span class="toc-num">7</span>状态说明</a></li>
+    </ul>
+  </nav>
+
+  <main class="help-content">
+
+    <!-- ========== 1. 登录 ========== -->
+    <div class="section" id="login">
+      <h2><span class="section-num">1</span>登录仪表盘</h2>
+      <p>管理员会提供你的用户名和密码。打开仪表盘地址，在登录界面输入凭据即可进入。</p>
+
+      <div class="illustration">
+        <svg width="360" height="240" viewBox="0 0 360 240" role="img" aria-label="登录界面示意图">
+          <!-- Card background -->
+          <rect x="40" y="10" width="280" height="220" rx="10" fill="#161b22" stroke="#30363d"/>
+          <!-- Title -->
+          <text x="180" y="48" text-anchor="middle" fill="#58a6ff" font-size="16" font-weight="600" font-family="-apple-system, sans-serif">ccproxy Login</text>
+          <!-- Username field -->
+          <rect x="70" y="68" width="220" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+          <text x="84" y="91" fill="#c9d1d9" font-size="13" font-weight="600" font-family="-apple-system, sans-serif">alice</text>
+          <!-- Password field -->
+          <rect x="70" y="116" width="220" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+          <text x="84" y="139" fill="#c9d1d9" font-size="13" font-family="-apple-system, sans-serif">••••••••</text>
+          <!-- Login button -->
+          <rect x="70" y="172" width="220" height="36" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="180" y="195" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600" font-family="-apple-system, sans-serif">Login</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- ========== 2. 添加账户 ========== -->
+    <div class="section" id="add-account">
+      <h2><span class="section-num">2</span>添加 Claude 账户</h2>
+      <p>登录后，你需要添加至少一个 Claude 账户。每个账户对应一个 Anthropic OAuth 授权。</p>
+
+      <div class="illustration">
+        <svg width="520" height="160" viewBox="0 0 520 160" role="img" aria-label="添加账户示意图">
+          <!-- Card header -->
+          <rect x="10" y="10" width="500" height="44" rx="8" ry="0" fill="#21262d" stroke="#30363d"/>
+          <rect x="10" y="10" width="500" height="44" rx="8" fill="#21262d" stroke="#30363d"/>
+          <text x="30" y="38" fill="#c9d1d9" font-size="14" font-weight="600" font-family="-apple-system, sans-serif">OAuth Accounts</text>
+          <!-- Badge -->
+          <rect x="162" y="22" width="80" height="22" rx="11" fill="#21262d" stroke="#30363d"/>
+          <text x="202" y="38" text-anchor="middle" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">0 accounts</text>
+          <!-- Add button -->
+          <rect x="390" y="20" width="100" height="28" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="440" y="39" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">+ Add Claude</text>
+          <!-- Arrow pointing to button -->
+          <path d="M440,58 L440,72" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow-blue)"/>
+          <defs><marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#58a6ff"/></marker></defs>
+          <!-- Inline add row -->
+          <rect x="10" y="80" width="500" height="44" rx="0" fill="#161b22" stroke="#30363d"/>
+          <rect x="24" y="90" width="200" height="26" rx="4" fill="#0d1117" stroke="#58a6ff"/>
+          <text x="34" y="108" fill="#c9d1d9" font-size="13" font-family="-apple-system, sans-serif">my-claude-1</text>
+          <!-- Save / Cancel buttons -->
+          <rect x="370" y="90" width="56" height="26" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="398" y="108" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">Save</text>
+          <rect x="434" y="90" width="60" height="26" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="464" y="108" text-anchor="middle" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">Cancel</text>
+          <!-- Annotation -->
+          <text x="30" y="148" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">输入账户名称后点击 Save，名称自定义，仅用于标识</text>
+        </svg>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div class="step-body">点击右上角的 <strong>+ Add Claude</strong> 按钮</div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div class="step-body">在弹出的输入框中输入账户名称（如 <code>my-claude-1</code>），名称自定义，仅用于在列表中区分不同账户</div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <div class="step-body">点击 <strong>Save</strong> 保存，或按 <strong>Enter</strong> 确认</div>
+        </div>
+      </div>
+
+      <div class="callout callout-tip">
+        <div class="callout-label">提示</div>
+        你可以添加多个账户。
+      </div>
+    </div>
+
+    <!-- ========== 3. OAuth 认证 ========== -->
+    <div class="section" id="oauth">
+      <h2><span class="section-num">3</span>OAuth 登录认证</h2>
+      <p>添加账户后，需要通过 OAuth 授权让 ccproxy 获取 Claude API 的访问令牌。这是最关键的一步。</p>
+
+      <!-- Overview flow -->
+      <div class="illustration">
+        <svg width="540" height="200" viewBox="0 0 540 200" role="img" aria-label="OAuth 认证流程概览">
+          <rect x="10" y="50" width="120" height="80" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="70" y="80" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">仪表盘</text>
+          <rect x="30" y="95" width="80" height="24" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="70" y="112" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">Login</text>
+          <path d="M135,90 L175,90" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#oa1)"/>
+          <text x="155" y="82" text-anchor="middle" fill="#8b949e" font-size="10" font-family="-apple-system, sans-serif">打开 URL</text>
+          <rect x="180" y="50" width="140" height="80" rx="8" fill="#161b22" stroke="#d29922"/>
+          <text x="250" y="76" text-anchor="middle" fill="#d29922" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">Anthropic 网页</text>
+          <text x="250" y="96" text-anchor="middle" fill="#c9d1d9" font-size="11" font-family="-apple-system, sans-serif">登录并授权</text>
+          <text x="250" y="116" text-anchor="middle" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">获得 Code</text>
+          <path d="M325,90 L365,90" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#oa1)"/>
+          <text x="345" y="82" text-anchor="middle" fill="#8b949e" font-size="10" font-family="-apple-system, sans-serif">粘贴</text>
+          <rect x="370" y="50" width="160" height="80" rx="8" fill="#161b22" stroke="#3fb950"/>
+          <text x="450" y="76" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">粘贴 Code</text>
+          <rect x="388" y="90" width="124" height="24" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="400" y="107" fill="#8b949e" font-size="10" font-family="-apple-system, sans-serif">auth_code_xxx...</text>
+          <text x="70" y="38" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">第 1 步</text>
+          <text x="250" y="38" text-anchor="middle" fill="#d29922" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">第 2 步</text>
+          <text x="450" y="38" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">第 3 步</text>
+          <text x="450" y="158" text-anchor="middle" fill="#3fb950" font-size="12" font-family="-apple-system, sans-serif">✓ 认证成功</text>
+          <path d="M450,125 L450,145" stroke="#3fb950" stroke-width="1.5" marker-end="url(#oa2)"/>
+          <defs>
+            <marker id="oa1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#58a6ff"/></marker>
+            <marker id="oa2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#3fb950"/></marker>
+          </defs>
+        </svg>
+      </div>
+
+      <p style="margin-top:8px;"><strong>第 1 步：点击 Login，打开授权链接</strong></p>
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div class="step-body">在账户行中点击 <strong>Login</strong> 按钮，弹出 OAuth 登录弹窗</div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div class="step-body">点击 <strong>Open</strong> 在新标签页中打开授权页面（或点击 <strong>Copy</strong> 复制链接手动打开）</div>
+        </div>
+      </div>
+
+      <!-- ccproxy modal illustration -->
+      <div class="illustration">
+        <svg width="480" height="260" viewBox="0 0 480 260" role="img" aria-label="ccproxy OAuth 弹窗">
+          <!-- Modal background -->
+          <rect x="10" y="10" width="460" height="240" rx="12" fill="#161b22" stroke="#30363d"/>
+          <!-- Title -->
+          <text x="30" y="40" fill="#c9d1d9" font-size="15" font-weight="600" font-family="-apple-system, sans-serif">OAuth Login — my-claude-1</text>
+          <!-- Description -->
+          <text x="30" y="62" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Open the authorization URL below, approve access, then paste the returned code.</text>
+          <!-- Status message -->
+          <text x="30" y="82" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Copy or click the URL to authorize, then paste the code below.</text>
+          <!-- Authorization URL label -->
+          <text x="30" y="104" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Authorization URL</text>
+          <!-- URL field + buttons row -->
+          <rect x="30" y="110" width="290" height="28" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="40" y="129" fill="#58a6ff" font-size="10" font-family="'SF Mono', Consolas, monospace">https://api.anthropic.com/oauth/auth...</text>
+          <rect x="328" y="110" width="50" height="28" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="353" y="129" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">Copy</text>
+          <!-- Open button (highlighted) -->
+          <rect x="386" y="110" width="56" height="28" rx="6" fill="rgba(88,166,255,0.25)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="414" y="129" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">Open</text>
+          <!-- Highlight arrow on Open -->
+          <path d="M414,96 L414,106" stroke="#58a6ff" stroke-width="2" marker-end="url(#oa1)"/>
+          <text x="414" y="92" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="600" font-family="-apple-system, sans-serif">点击这里</text>
+          <!-- Code input -->
+          <rect x="30" y="156" width="412" height="32" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="40" y="177" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">Paste authorization code or callback URL here…</text>
+          <!-- Bottom buttons -->
+          <rect x="340" y="204" width="56" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="368" y="223" text-anchor="middle" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">Cancel</text>
+          <rect x="404" y="204" width="56" height="28" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="432" y="223" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">Submit</text>
+        </svg>
+      </div>
+
+      <p style="margin-top:8px;"><strong>第 2 步：在 Anthropic 页面中授权</strong></p>
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">3</span>
+          <div class="step-body">在打开的 Anthropic 页面中 <strong>登录你的 Claude 账户</strong></div>
+        </div>
+        <div class="step">
+          <span class="step-num">4</span>
+          <div class="step-body">登录后会显示权限确认页面，查看权限列表后点击 <strong>Authorize</strong> 按钮完成授权</div>
+        </div>
+      </div>
+
+      <!-- Anthropic authorization page illustration -->
+      <div class="illustration">
+        <svg width="400" height="420" viewBox="0 0 400 420" role="img" aria-label="Anthropic 授权页面">
+          <!-- Page background -->
+          <rect x="10" y="10" width="380" height="400" rx="12" fill="#f7f7f7" stroke="#e0e0e0"/>
+          <!-- Anthropic logo (simplified) -->
+          <circle cx="185" cy="50" r="14" fill="#c5d5c5" stroke="#9ab09a" stroke-width="1.5"/>
+          <circle cx="215" cy="50" r="14" fill="#c5d5c5" stroke="#9ab09a" stroke-width="1.5"/>
+          <line x1="192" y1="50" x2="208" y2="50" stroke="#555" stroke-width="2.5"/>
+          <!-- Title -->
+          <text x="200" y="90" text-anchor="middle" fill="#1a1a1a" font-size="15" font-weight="600" font-family="-apple-system, sans-serif">Claude Code would like to connect to</text>
+          <text x="200" y="110" text-anchor="middle" fill="#1a1a1a" font-size="15" font-weight="600" font-family="-apple-system, sans-serif">your Claude chat account</text>
+          <!-- Permission section -->
+          <text x="60" y="148" fill="#666" font-size="11" font-weight="600" letter-spacing="0.5" font-family="-apple-system, sans-serif">YOUR ACCOUNT WILL BE USED TO:</text>
+          <!-- Permission items -->
+          <text x="60" y="178" fill="#555" font-size="13" font-family="-apple-system, sans-serif">✓  Access your Anthropic profile information</text>
+          <text x="60" y="206" fill="#555" font-size="13" font-family="-apple-system, sans-serif">✓  Contribute to your Claude subscription usage</text>
+          <text x="60" y="234" fill="#555" font-size="13" font-family="-apple-system, sans-serif">✓  Access your Claude Code sessions</text>
+          <text x="60" y="262" fill="#555" font-size="13" font-family="-apple-system, sans-serif">✓  Use and manage your connectors</text>
+          <text x="60" y="290" fill="#555" font-size="13" font-family="-apple-system, sans-serif">✓  Your privacy settings apply to coding sessions</text>
+          <!-- Authorize button (highlighted) -->
+          <rect x="50" y="320" width="300" height="42" rx="8" fill="#1a1a2e" stroke="#1a1a2e"/>
+          <text x="200" y="346" text-anchor="middle" fill="#fff" font-size="14" font-weight="600" font-family="-apple-system, sans-serif">Authorize</text>
+          <!-- Highlight arrow -->
+          <path d="M360,341 L354,341" stroke="#f85149" stroke-width="2.5" marker-end="url(#oa-red)"/>
+          <text x="366" y="345" fill="#f85149" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">点击</text>
+          <!-- Decline link -->
+          <text x="200" y="386" text-anchor="middle" fill="#888" font-size="13" font-family="-apple-system, sans-serif">Decline</text>
+          <defs>
+            <marker id="oa-red" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto"><path d="M8,0 L0,4 L8,8 Z" fill="#f85149"/></marker>
+          </defs>
+        </svg>
+      </div>
+
+      <p style="margin-top:8px;"><strong>第 3 步：复制授权码，粘贴回仪表盘</strong></p>
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">5</span>
+          <div class="step-body">授权成功后会显示 <strong>Authentication Code</strong> 页面，点击 <strong>Copy Code</strong> 复制授权码</div>
+        </div>
+      </div>
+
+      <!-- Authentication Code page illustration -->
+      <div class="illustration">
+        <svg width="460" height="220" viewBox="0 0 460 220" role="img" aria-label="Authentication Code 页面">
+          <!-- Page background -->
+          <rect x="10" y="10" width="440" height="200" rx="12" fill="#f7f7f7" stroke="#e0e0e0"/>
+          <!-- Title -->
+          <text x="230" y="52" text-anchor="middle" fill="#1a1a1a" font-size="22" font-weight="700" font-family="-apple-system, sans-serif">Authentication Code</text>
+          <!-- Subtitle -->
+          <text x="230" y="80" text-anchor="middle" fill="#666" font-size="13" font-family="-apple-system, sans-serif">Paste this into Claude Code:</text>
+          <!-- Code box -->
+          <rect x="30" y="100" width="400" height="36" rx="6" fill="#f0f0f0" stroke="#ddd"/>
+          <text x="42" y="123" fill="#333" font-size="12" font-family="'SF Mono', Consolas, monospace">Kh8r5KC3DkbbHGhdKXmWZAxTHvd...QX080MxZdVu9X-Zz1A</text>
+          <!-- Copy Code button -->
+          <rect x="162" y="154" width="136" height="34" rx="6" fill="none" stroke="#ccc"/>
+          <!-- Copy icon -->
+          <rect x="180" y="164" width="11" height="13" rx="2" fill="none" stroke="#666" stroke-width="1.2"/>
+          <rect x="184" y="161" width="11" height="13" rx="2" fill="#f7f7f7" stroke="#666" stroke-width="1.2"/>
+          <text x="202" y="176" fill="#333" font-size="13" font-family="-apple-system, sans-serif">Copy Code</text>
+          <!-- Highlight arrow -->
+          <path d="M308,171 L302,171" stroke="#f85149" stroke-width="2.5" marker-end="url(#oa-red2)"/>
+          <text x="314" y="175" fill="#f85149" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">点击复制</text>
+          <defs>
+            <marker id="oa-red2" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto"><path d="M8,0 L0,4 L8,8 Z" fill="#f85149"/></marker>
+          </defs>
+        </svg>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">6</span>
+          <div class="step-body">回到仪表盘弹窗，将授权码 <strong>粘贴到第二行输入框</strong>（不是第一行的 URL），点击 <strong>Submit</strong></div>
+        </div>
+      </div>
+
+      <!-- Paste code back illustration -->
+      <div class="illustration">
+        <svg width="480" height="210" viewBox="0 0 480 210" role="img" aria-label="粘贴授权码到弹窗">
+          <rect x="10" y="10" width="460" height="190" rx="12" fill="#161b22" stroke="#30363d"/>
+          <!-- Title -->
+          <text x="30" y="38" fill="#c9d1d9" font-size="14" font-weight="600" font-family="-apple-system, sans-serif">OAuth Login — my-claude-1</text>
+          <!-- Row 1: Authorization URL (read-only, dimmed) -->
+          <text x="30" y="60" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Authorization URL</text>
+          <rect x="30" y="66" width="290" height="28" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="40" y="85" fill="#484f58" font-size="10" font-family="'SF Mono', Consolas, monospace">https://api.anthropic.com/oauth/auth...</text>
+          <rect x="328" y="66" width="50" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="353" y="85" text-anchor="middle" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Copy</text>
+          <rect x="386" y="66" width="56" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="414" y="85" text-anchor="middle" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">Open</text>
+          <!-- Row 2: Code input (highlighted, filled with auth code) -->
+          <rect x="30" y="110" width="412" height="32" rx="4" fill="#0d1117" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="40" y="131" fill="#c9d1d9" font-size="11" font-family="'SF Mono', Consolas, monospace">Kh8r5KC3DkbbHGhdKXmWZAxTHvd...QX080MxZdVu9X-Zz1A</text>
+          <!-- Label pointing to row 2 input -->
+          <text x="240" y="104" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="600" font-family="-apple-system, sans-serif">▼ 粘贴授权码到第二行</text>
+          <!-- Submit button (highlighted) -->
+          <rect x="404" y="160" width="56" height="28" rx="6" fill="rgba(88,166,255,0.25)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="432" y="179" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">Submit</text>
+          <!-- Arrow -->
+          <path d="M394,174 L400,174" stroke="#58a6ff" stroke-width="2" marker-end="url(#oa1)"/>
+          <text x="380" y="178" text-anchor="end" fill="#58a6ff" font-size="10" font-weight="600" font-family="-apple-system, sans-serif">点击提交</text>
+          <rect x="340" y="160" width="56" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="368" y="179" text-anchor="middle" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">Cancel</text>
+        </svg>
+      </div>
+
+      <div class="callout callout-warn">
+        <div class="callout-label">注意</div>
+        OAuth 会话有效期仅 <strong>10 分钟</strong>。如果超时未完成，请关闭弹窗后重新点击 Login 开始新的认证流程。
+      </div>
+
+      <div class="callout callout-tip">
+        <div class="callout-label">提示</div>
+        认证成功后，Token 状态会变为 <span class="chip chip-success">valid</span>。系统会在令牌过期前自动刷新，通常无需手动操作。
+      </div>
+    </div>
+
+    <!-- ========== 4. 设置代理 ========== -->
+    <div class="section" id="proxy">
+      <h2><span class="section-num">4</span>设置代理（可选）</h2>
+      <p>如果你的 Claude 账户需要通过 SOCKS5 代理访问 Anthropic API，可以为每个账户单独配置代理。</p>
+
+      <div class="illustration">
+        <svg width="480" height="130" viewBox="0 0 480 130" role="img" aria-label="设置代理示意图">
+          <!-- Before state -->
+          <text x="10" y="20" fill="#8b949e" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">修改前：</text>
+          <rect x="10" y="30" width="200" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
+          <text x="22" y="51" fill="#8b949e" font-size="12" font-style="italic" font-family="-apple-system, sans-serif">socks5[h]://user:pass@ip:port</text>
+          <!-- Arrow -->
+          <text x="230" y="51" fill="#58a6ff" font-size="16" font-family="-apple-system, sans-serif">→</text>
+          <text x="230" y="68" fill="#8b949e" font-size="10" font-family="-apple-system, sans-serif">双击</text>
+          <!-- After state -->
+          <text x="260" y="20" fill="#8b949e" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">编辑中：</text>
+          <rect x="260" y="30" width="210" height="32" rx="4" fill="#0d1117" stroke="#58a6ff"/>
+          <text x="272" y="51" fill="#c9d1d9" font-size="12" font-family="'SF Mono', Consolas, monospace">socks5://user:pw@1.2.3.4:1080</text>
+          <!-- Hint -->
+          <text x="10" y="100" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">桌面端双击 Proxy 列编辑 · 移动端点击 Edit 按钮 · Enter 保存 · Esc 取消</text>
+          <!-- Supported schemes -->
+          <text x="10" y="120" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">支持协议：<tspan fill="#c9d1d9">socks5://</tspan> 和 <tspan fill="#c9d1d9">socks5h://</tspan>（远端 DNS 解析）</text>
+        </svg>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div class="step-body"><strong>桌面端</strong>：双击账户行的 Proxy 列进入编辑模式；<strong>移动端</strong>：点击 <strong>Edit</strong> 按钮</div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div class="step-body">输入 SOCKS5 代理地址，格式：<code>socks5://用户名:密码@IP:端口</code></div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <div class="step-body">按 <strong>Enter</strong> 保存，或按 <strong>Esc</strong> 取消</div>
+        </div>
+      </div>
+
+      <div class="callout callout-tip">
+        <div class="callout-label">提示</div>
+        如果可以直接访问 Anthropic API，不需要设置代理，留空即可。清空代理地址并按 Enter 可以移除已配置的代理。
+      </div>
+    </div>
+
+    <!-- ========== 5. 测试连通性 ========== -->
+    <div class="section" id="test">
+      <h2><span class="section-num">5</span>测试账户连通性</h2>
+      <p>设置完成后，点击 <strong>Test</strong> 按钮验证账户是否能正常连接 Anthropic API。</p>
+
+      <div class="illustration">
+        <svg width="420" height="90" viewBox="0 0 420 90" role="img" aria-label="测试连通性示意图">
+          <!-- Test button -->
+          <rect x="10" y="20" width="60" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="40" y="39" text-anchor="middle" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">Test</text>
+          <!-- Arrow -->
+          <path d="M80,34 L110,34" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow-m)"/>
+          <!-- Testing state -->
+          <rect x="120" y="20" width="80" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="160" y="39" text-anchor="middle" fill="#8b949e" font-size="12" font-family="-apple-system, sans-serif">Testing…</text>
+          <!-- Arrow -->
+          <path d="M210,34 L240,34" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow-m)"/>
+          <!-- Success -->
+          <rect x="250" y="10" width="70" height="28" rx="6" fill="#161b22" stroke="#3fb950"/>
+          <text x="285" y="29" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">✓ OK</text>
+          <!-- Fail -->
+          <rect x="250" y="50" width="70" height="28" rx="6" fill="#161b22" stroke="#f85149"/>
+          <text x="285" y="69" text-anchor="middle" fill="#f85149" font-size="12" font-weight="600" font-family="-apple-system, sans-serif">✗ Fail</text>
+          <!-- Annotations -->
+          <text x="340" y="29" fill="#3fb950" font-size="11" font-family="-apple-system, sans-serif">账户连接正常</text>
+          <text x="340" y="69" fill="#f85149" font-size="11" font-family="-apple-system, sans-serif">点击查看错误详情</text>
+          <defs><marker id="arrow-m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b949e"/></marker></defs>
+        </svg>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div class="step-body">在账户行中点击 <strong>Test</strong> 按钮</div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div class="step-body">显示 <span class="chip chip-success">✓ OK</span> 表示连接正常；显示 <span class="chip chip-danger">✗ Fail</span> 时点击按钮可查看错误原因</div>
+        </div>
+      </div>
+
+      <div class="callout callout-warn">
+        <div class="callout-label">注意</div>
+        如果测试失败，请检查：OAuth 是否已完成登录、代理地址是否正确、账户是否被禁用。
+      </div>
+    </div>
+
+    <!-- ========== 6. Telegram 通知 ========== -->
+    <div class="section" id="notify">
+      <h2><span class="section-num">6</span>Telegram 通知（可选）</h2>
+      <p>配置 Telegram 通知后，当你的账户被禁用或封禁时，会自动收到消息提醒。</p>
+
+      <div class="illustration">
+        <svg width="420" height="190" viewBox="0 0 420 190" role="img" aria-label="Telegram 通知设置">
+          <rect x="10" y="10" width="400" height="170" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="30" y="38" fill="#c9d1d9" font-size="14" font-weight="600" font-family="-apple-system, sans-serif">Telegram 通知</text>
+          <!-- Bot Token -->
+          <text x="30" y="64" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">BOT TOKEN</text>
+          <rect x="30" y="70" width="260" height="26" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="40" y="88" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">••••••••7890</text>
+          <!-- Chat ID -->
+          <text x="30" y="112" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">CHAT ID</text>
+          <rect x="30" y="118" width="260" height="26" rx="4" fill="#0d1117" stroke="#30363d"/>
+          <text x="40" y="136" fill="#c9d1d9" font-size="12" font-family="-apple-system, sans-serif">-1001234567890</text>
+          <!-- Buttons -->
+          <rect x="30" y="154" width="80" height="24" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+          <text x="70" y="170" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600" font-family="-apple-system, sans-serif">保存配置</text>
+          <rect x="120" y="154" width="90" height="24" rx="6" fill="#21262d" stroke="#30363d"/>
+          <text x="165" y="170" text-anchor="middle" fill="#c9d1d9" font-size="11" font-family="-apple-system, sans-serif">发送测试消息</text>
+          <!-- Annotation -->
+          <text x="310" y="88" fill="#58a6ff" font-size="11" font-family="-apple-system, sans-serif">← 从 @BotFather</text>
+          <text x="310" y="136" fill="#58a6ff" font-size="11" font-family="-apple-system, sans-serif">← 群组或个人 ID</text>
+        </svg>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div class="step-body">在 Telegram 中找到 <strong>@BotFather</strong>，发送 <code>/newbot</code> 创建机器人，获取 <strong>Bot Token</strong></div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div class="step-body">获取你的 <strong>Chat ID</strong>：将机器人拉入群组后，访问 <code>https://api.telegram.org/bot你的Token/getUpdates</code> 查看 chat id；或者私聊机器人后查看</div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <div class="step-body">将 Bot Token 和 Chat ID 填入仪表盘，点击 <strong>保存配置</strong></div>
+        </div>
+        <div class="step">
+          <span class="step-num">4</span>
+          <div class="step-body">点击 <strong>发送测试消息</strong> 验证是否能正常接收</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== 7. 状态说明 ========== -->
+    <div class="section" id="status">
+      <h2><span class="section-num">7</span>理解状态指示器</h2>
+      <p>仪表盘中的各种状态标签和进度条帮助你了解账户的运行状况。</p>
+
+      <h3 style="margin-top:20px; font-size:16px; color:var(--text);">账户健康状态</h3>
+      <div class="legend-grid">
+        <div class="legend-item">
+          <span class="chip chip-success">Healthy</span>
+          <span>正常运行</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-warn">Cooling down</span>
+          <span>触发限速，冷却中</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-danger">Banned</span>
+          <span>被平台封禁</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-muted">Disabled</span>
+          <span>已禁用（连续 401 等）</span>
+        </div>
+      </div>
+
+      <h3 style="margin-top:20px; font-size:16px; color:var(--text);">Token 状态</h3>
+      <div class="legend-grid">
+        <div class="legend-item">
+          <span class="chip chip-success">valid</span>
+          <span>令牌有效，正常工作</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-warn">expiring soon</span>
+          <span>即将过期，系统会自动刷新</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-danger">expired</span>
+          <span>已过期，需要重新 Login</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-muted">no token</span>
+          <span>未认证，需要 OAuth Login</span>
+        </div>
+      </div>
+
+      <h3 style="margin-top:20px; font-size:16px; color:var(--text);">预算用量</h3>
+      <p class="muted">每个账户有两个滚动窗口的用量追踪：5 小时窗口和 7 天窗口。</p>
+
+      <div class="util-demo">
+        <div class="util-demo-row">
+          <span class="util-demo-label">低用量</span>
+          <div class="util-demo-track"><div class="util-demo-fill" style="width:30%; background:var(--success);"></div></div>
+          <span class="util-demo-desc">正常使用，无需关注</span>
+        </div>
+        <div class="util-demo-row">
+          <span class="util-demo-label">中等用量</span>
+          <div class="util-demo-track"><div class="util-demo-fill" style="width:75%; background:var(--warn);"></div></div>
+          <span class="util-demo-desc">接近限额，系统开始限制调度</span>
+        </div>
+        <div class="util-demo-row">
+          <span class="util-demo-label">高用量</span>
+          <div class="util-demo-track"><div class="util-demo-fill" style="width:95%; background:var(--danger);"></div></div>
+          <span class="util-demo-desc">接近或达到限额</span>
+        </div>
+      </div>
+
+      <h3 style="margin-top:20px; font-size:16px; color:var(--text);">预算状态</h3>
+      <div class="legend-grid">
+        <div class="legend-item">
+          <span class="chip chip-success">Normal</span>
+          <span>正常调度，无限制</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-warn">Sticky</span>
+          <span>仅允许已绑定的会话使用</span>
+        </div>
+        <div class="legend-item">
+          <span class="chip chip-danger">Blocked</span>
+          <span>达到限额，暂停调度</span>
+        </div>
+      </div>
+
+      <div class="callout callout-tip">
+        <div class="callout-label">提示</div>
+        预算用量会随时间自动恢复。5 小时窗口恢复较快，7 天窗口恢复较慢。悬停在进度条上可以看到预计重置时间。
+      </div>
+
+      <h3 style="margin-top:20px; font-size:16px; color:var(--text);">常用操作按钮</h3>
+      <div class="legend-grid">
+        <div class="legend-item">
+          <span style="color:var(--accent); font-weight:600; font-size:13px; white-space:nowrap;">Login</span>
+          <span>发起 OAuth 授权</span>
+        </div>
+        <div class="legend-item">
+          <span style="color:var(--text); font-weight:600; font-size:13px; white-space:nowrap;">Test</span>
+          <span>测试账户连通性</span>
+        </div>
+        <div class="legend-item">
+          <span style="color:var(--text); font-weight:600; font-size:13px; white-space:nowrap;">Refresh</span>
+          <span>强制刷新令牌</span>
+        </div>
+        <div class="legend-item">
+          <span style="color:var(--danger); font-weight:600; font-size:13px; white-space:nowrap;">Remove</span>
+          <span>删除账户及令牌</span>
+        </div>
+        <div class="legend-item">
+          <span style="color:var(--accent); font-weight:600; font-size:13px; white-space:nowrap;">Enable</span>
+          <span>重新启用被禁用的账户</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  // TOC active section tracking
+  (function() {
+    var sections = document.querySelectorAll('.section[id]');
+    var tocLinks = document.querySelectorAll('.toc-item');
+
+    // Smooth scroll on TOC click
+    tocLinks.forEach(function(link) {
+      link.addEventListener('click', function(e) {
+        e.preventDefault();
+        var target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          // Update URL hash without scrolling
+          history.replaceState(null, '', this.getAttribute('href'));
+        }
+      });
+    });
+
+    // IntersectionObserver for active section
+    if ('IntersectionObserver' in window) {
+      var observer = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting) {
+            tocLinks.forEach(function(l) { l.classList.remove('active'); });
+            var active = document.querySelector('.toc-item[href="#' + entry.target.id + '"]');
+            if (active) active.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-20% 0px -70% 0px' });
+
+      sections.forEach(function(s) { observer.observe(s); });
+    }
+
+    // Activate first item by default
+    if (tocLinks.length) tocLinks[0].classList.add('active');
+  })();
+</script>
+</body>
+</html>
