@@ -17,7 +17,7 @@ import (
 
 // OAuthTokenProvider abstracts token retrieval to decouple from oauth.Manager.
 type OAuthTokenProvider interface {
-	GetValidToken(ctx context.Context, accountName string) (accessToken string, err error)
+	GetValidToken(ctx context.Context, accountID string) (accessToken string, err error)
 }
 
 // UsageResponse represents the Anthropic usage API response.
@@ -55,7 +55,7 @@ type UsageFetcher struct {
 	tokenProvider OAuthTokenProvider
 	httpClient    *http.Client
 	userAgent     string
-	onPlatformBan func(accountName, reason string)
+	onPlatformBan func(accountID, reason string)
 	mu            sync.RWMutex
 	cache         map[string]*usageCacheEntry
 	inflight      singleflight.Group
@@ -74,7 +74,7 @@ func NewUsageFetcher(tokenProvider OAuthTokenProvider, userAgent string) *UsageF
 }
 
 // SetOnPlatformBan sets a callback for platform-ban detection.
-func (uf *UsageFetcher) SetOnPlatformBan(fn func(accountName, reason string)) {
+func (uf *UsageFetcher) SetOnPlatformBan(fn func(accountID, reason string)) {
 	uf.mu.Lock()
 	defer uf.mu.Unlock()
 	uf.onPlatformBan = fn

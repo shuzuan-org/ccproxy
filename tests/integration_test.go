@@ -192,6 +192,7 @@ func makeConfig(upstreamURL string) (*config.Config, []config.AccountConfig) {
 	}
 	accounts := []config.AccountConfig{
 		{
+			ID:             "test-account-id",
 			Name:           "test-account",
 			BaseURL:        upstreamURL,
 			MaxConcurrency: 5,
@@ -210,19 +211,19 @@ func buildIntegrationOAuthManager(t *testing.T, accounts []config.AccountConfig)
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	names := make([]string, len(accounts))
+	ids := make([]string, len(accounts))
 	for i, acct := range accounts {
-		names[i] = acct.Name
-		err = store.Save(acct.Name, oauth.OAuthToken{
+		ids[i] = acct.ID
+		err = store.Save(acct.ID, oauth.OAuthToken{
 			AccessToken:  "fake-integration-token",
 			RefreshToken: "rt-ignored",
 			ExpiresAt:    time.Now().Add(2 * time.Hour),
 		})
 		if err != nil {
-			t.Fatalf("store.Save(%q): %v", acct.Name, err)
+			t.Fatalf("store.Save(%q): %v", acct.ID, err)
 		}
 	}
-	return oauth.NewManager(names, store, nil)
+	return oauth.NewManager(ids, store, nil)
 }
 
 // postMessages sends a POST /v1/messages to proxyURL with optional auth token
@@ -457,7 +458,7 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 	upstreamReq.Header.Set("Content-Type", "application/json")
 
 	body := []byte(`{"model":"claude-3-5-haiku-20241022","messages":[{"role":"user","content":"hi"}]}`)
-	_, applied := engine.Apply(origReq, upstreamReq, body, false, "seed", "test-account")
+	_, applied := engine.Apply(origReq, upstreamReq, body, false, "seed", "test-account-id", "test-account")
 	if !applied {
 		t.Error("expected disguise to be applied without Claude Code client header")
 	}

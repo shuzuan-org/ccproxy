@@ -177,7 +177,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			if reason, banned := loadbalancer.DetectPlatformBan(statusCode, errBody); banned {
-				if health := h.balancer.GetHealth(acct.Name); health != nil {
+				if health := h.balancer.GetHealth(acct.ID); health != nil {
 					health.Disable(reason)
 				}
 				log.Warn("platform ban detected, triggering failover",
@@ -266,7 +266,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Request summary log and per-account metrics — error path.
 		summaryAttrs := buildSummaryAttrs(originalModel, isStream, elapsed, result, nil)
 		if result != nil {
-			recordAccountMetrics(result.AccountName, result.StatusCode, true)
+			recordAccountMetrics(result.AccountID, result.StatusCode, true)
 		}
 		log.Warn("request completed", summaryAttrs...)
 
@@ -290,7 +290,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Per-account metrics recording.
-	recordAccountMetrics(result.AccountName, result.StatusCode, false)
+	recordAccountMetrics(result.AccountID, result.StatusCode, false)
 
 	resp := result.Response
 	defer func() { _ = resp.Body.Close() }()
@@ -305,7 +305,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 400 {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 		if reason, banned := loadbalancer.DetectPlatformBan(resp.StatusCode, upstreamBody); banned {
-			if health := h.balancer.GetHealth(result.AccountName); health != nil {
+			if health := h.balancer.GetHealth(result.AccountID); health != nil {
 				health.Disable(reason)
 			}
 		}
@@ -400,7 +400,7 @@ func (h *Handler) doRequest(
 		log.Error("oauth manager not configured", "account", acct.Name)
 		return nil, 0, fmt.Errorf("oauth manager not configured for account %q", acct.Name)
 	}
-	token, err := h.oauthManager.GetValidToken(ctx, acct.Name)
+	token, err := h.oauthManager.GetValidToken(ctx, acct.ID)
 	if err != nil {
 		log.Error("oauth token error", "account", acct.Name, "error", err.Error())
 		return nil, 401, fmt.Errorf("get oauth token: %w", err)
@@ -445,7 +445,7 @@ func (h *Handler) doRequest(
 			sessionSeed = upstreamURL // fallback seed
 		}
 		var modifiedBody []byte
-		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, acct.Name)
+		modifiedBody, disguised = h.disguise.Apply(origReq, upstreamReq, body, isStream, sessionSeed, acct.ID, acct.Name)
 		body = modifiedBody
 		log.Debug("disguise applied", "account", acct.Name, "disguised", disguised)
 	}

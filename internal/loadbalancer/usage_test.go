@@ -129,7 +129,7 @@ func TestUsageFetcher_FetchIfNeeded_RecentData(t *testing.T) {
 	t.Parallel()
 
 	uf := NewUsageFetcher(&mockTokenProvider{token: "tok"}, "")
-	budget := NewBudgetController("test")
+	budget := NewBudgetController("test-id", "test")
 
 	// Set recent data
 	h := http.Header{}
@@ -238,7 +238,7 @@ func TestUsageFetcher_DoesNotBan(t *testing.T) {
 func TestBalancer_SetUsageFetcherWiresPlatformBan(t *testing.T) {
 	t.Parallel()
 
-	b := NewBalancer([]config.AccountConfig{{Name: "acct1", MaxConcurrency: 1, Enabled: true}}, NewConcurrencyTracker())
+	b := NewBalancer([]config.AccountConfig{{ID: "acct1-id", Name: "acct1", MaxConcurrency: 1, Enabled: true}}, NewConcurrencyTracker())
 	uf := NewUsageFetcher(&mockTokenProvider{token: "tok"}, "")
 	b.SetUsageFetcher(uf)
 
@@ -249,9 +249,9 @@ func TestBalancer_SetUsageFetcherWiresPlatformBan(t *testing.T) {
 	defer server.Close()
 	uf.httpClient = server.Client()
 
-	_ = uf.fetchFromURL(context.Background(), "acct1", server.URL)
+	_ = uf.fetchFromURL(context.Background(), "acct1-id", server.URL)
 
-	h := b.GetHealth("acct1")
+	h := b.GetHealth("acct1-id")
 	if h == nil {
 		t.Fatal("expected health tracker")
 	}

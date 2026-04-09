@@ -26,7 +26,7 @@ func TestAccountHealth_IsBanned(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := NewAccountHealth("test")
+			h := NewAccountHealth("test-id", "test")
 			h.Disable(tt.reason)
 
 			if got := h.IsBanned(); got != tt.want {
@@ -55,7 +55,7 @@ func TestAccountHealth_BanReason(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := NewAccountHealth("test")
+			h := NewAccountHealth("test-id", "test")
 			h.Disable(tt.reason)
 
 			if got := h.BanReason(); got != tt.want {
@@ -67,7 +67,7 @@ func TestAccountHealth_BanReason(t *testing.T) {
 
 func TestCooldown_429WithRetryAfter(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// 429 without reset headers → soft cooldown
 	h.RecordError(context.Background(), 429, 60*time.Second, nil)
@@ -78,7 +78,7 @@ func TestCooldown_429WithRetryAfter(t *testing.T) {
 
 func TestCooldown_429WithResetHeaders(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-reset", "2026-03-14T12:00:00Z")
@@ -94,7 +94,7 @@ func TestCooldown_429WithResetHeaders(t *testing.T) {
 
 func TestCooldown_Expiry(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Set a very short cooldown
 	h.SetCooldown(1*time.Millisecond, "test")
@@ -106,7 +106,7 @@ func TestCooldown_Expiry(t *testing.T) {
 
 func TestDisable_403(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	h.RecordError(context.Background(), 403, 0, nil)
 	if h.IsAvailable() {
@@ -122,7 +122,7 @@ func TestDisable_403(t *testing.T) {
 
 func TestErrorRate_SlidingWindow(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Record 3 successes and 1 error
 	h.RecordSuccess(context.Background(), 1000)
@@ -139,7 +139,7 @@ func TestErrorRate_SlidingWindow(t *testing.T) {
 
 func TestLatencyEMA_Convergence(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// First measurement initializes
 	h.RecordSuccess(context.Background(), 1000)
@@ -161,7 +161,7 @@ func TestScore_Composite(t *testing.T) {
 	t.Parallel()
 
 	// Cold start: no errors, no latency, no util → score from load only + jitter
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 	base := 0.0*0.3 + 0.0*0.2 + 0.5*0.2 + 0.0*0.3 // errorRate=0, latency=0, loadRate=50%, util=0
 	// With ±5% jitter, score should be within [base*0.95, base*1.05]
 	score := h.Score(50)
@@ -183,7 +183,7 @@ func TestScore_Composite(t *testing.T) {
 func TestScore_Jitter(t *testing.T) {
 	t.Parallel()
 
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 	// Set some non-zero budget util so scores aren't near zero
 	h.budget.mu.Lock()
 	h.budget.window7d.Utilization = 0.50
@@ -203,7 +203,7 @@ func TestScore_Jitter(t *testing.T) {
 func TestNewAccountHealth_Defaults(t *testing.T) {
 	t.Parallel()
 
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 	if !h.IsAvailable() {
 		t.Error("new health should be available")
 	}
@@ -217,7 +217,7 @@ func TestNewAccountHealth_Defaults(t *testing.T) {
 
 func TestRecordSuccess_ResetsCounters(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Record some errors first
 	h.RecordError(context.Background(), 529, 0, nil)
@@ -235,7 +235,7 @@ func TestRecordSuccess_ResetsCounters(t *testing.T) {
 
 func TestConsecutive401_Disable(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// 3 consecutive 401s within 5 minutes should disable
 	h.RecordError(context.Background(), 401, 0, nil)
@@ -252,7 +252,7 @@ func TestConsecutive401_Disable(t *testing.T) {
 
 func TestEnable_Consecutive401(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Disable via consecutive 401s
 	h.Disable("consecutive_401")
@@ -277,7 +277,7 @@ func TestEnable_Consecutive401(t *testing.T) {
 
 func TestEnable_PlatformBan(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Disable via platform ban
 	h.Disable(PlatformBanReasonForbidden)
@@ -299,7 +299,7 @@ func TestEnable_PlatformBan(t *testing.T) {
 
 func TestEnable_NotDisabled(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// Enable on already-enabled account should return false
 	if h.Enable() {
@@ -309,7 +309,7 @@ func TestEnable_NotDisabled(t *testing.T) {
 
 func TestRecordTimeout(t *testing.T) {
 	t.Parallel()
-	h := NewAccountHealth("test")
+	h := NewAccountHealth("test-id", "test")
 
 	// 3 timeouts should trigger cooldown
 	h.RecordTimeout(context.Background())

@@ -51,6 +51,7 @@ type APIKeyConfig struct {
 // AccountConfig is the runtime representation of an account, built from
 // global config + registry entry. Not parsed from TOML directly.
 type AccountConfig struct {
+	ID             string
 	Name           string
 	MaxConcurrency int
 	BaseURL        string
@@ -252,6 +253,7 @@ func (ac *AccountConfig) IsEnabled() bool {
 // RuntimeAccount builds a full AccountConfig from global settings + a registry entry.
 func (c *Config) RuntimeAccount(acct Account) AccountConfig {
 	return AccountConfig{
+		ID:             acct.ID,
 		Name:           acct.Name,
 		MaxConcurrency: c.Server.MaxConcurrency,
 		BaseURL:        c.Server.BaseURL,

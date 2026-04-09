@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/binn/ccproxy/internal/config"
 )
 
 func TestSaveAndLoadState(t *testing.T) {
@@ -12,8 +14,8 @@ func TestSaveAndLoadState(t *testing.T) {
 	dir := t.TempDir()
 
 	health := map[string]*AccountHealth{
-		"acct-a": NewAccountHealth("acct-a"),
-		"acct-b": NewAccountHealth("acct-b"),
+		"acct-a": NewAccountHealth("acct-a-id", "acct-a"),
+		"acct-b": NewAccountHealth("acct-b-id", "acct-b"),
 	}
 	health["acct-b"].Disable("forbidden")
 
@@ -56,7 +58,7 @@ func TestLoadState_StaleFile(t *testing.T) {
 	dir := t.TempDir()
 
 	health := map[string]*AccountHealth{
-		"acct": NewAccountHealth("acct"),
+		"acct": NewAccountHealth("acct-id", "acct"),
 	}
 	if err := SaveState(dir, health); err != nil {
 		t.Fatalf("SaveState failed: %v", err)
@@ -79,8 +81,8 @@ func TestApplyState_RestoresValues(t *testing.T) {
 	t.Parallel()
 
 	health := map[string]*AccountHealth{
-		"acct-a": NewAccountHealth("acct-a"),
-		"acct-b": NewAccountHealth("acct-b"),
+		"acct-a": NewAccountHealth("acct-a-id", "acct-a"),
+		"acct-b": NewAccountHealth("acct-b-id", "acct-b"),
 	}
 
 	state := &PersistedState{
@@ -99,5 +101,93 @@ func TestApplyState_RestoresValues(t *testing.T) {
 	}
 	if !health["acct-b"].IsDisabled() {
 		t.Error("acct-b should be disabled after apply")
+	}
+}
+
+func TestMigrateHealthStateKeys(t *testing.T) {
+	t.Parallel()
+
+	state := &PersistedState{
+		Accounts: map[string]*PersistedAccount{
+			"alice": {Disabled: true, DisabledReason: "banned"},
+			"bob":   {Disabled: false},
+		},
+		UpdatedAt: time.Now(),
+	}
+
+	nameToID := map[string]string{
+		"alice": "uuid-alice",
+		"bob":   "uuid-bob",
+	}
+
+	migrated := MigrateHealthStateKeys(state, nameToID)
+	if !migrated {
+		t.Fatal("expected migration to occur")
+	}
+
+	if _, ok := state.Accounts["alice"]; ok {
+		t.Error("old key 'alice' should be removed")
+	}
+	if _, ok := state.Accounts["bob"]; ok {
+		t.Error("old key 'bob' should be removed")
+	}
+
+	a := state.Accounts["uuid-alice"]
+	if a == nil || !a.Disabled || a.DisabledReason != "banned" {
+		t.Errorf("alice state not preserved: %+v", a)
+	}
+	b := state.Accounts["uuid-bob"]
+	if b == nil || b.Disabled {
+		t.Errorf("bob state not preserved: %+v", b)
+	}
+}
+
+func TestMigrateHealthStateKeys_AlreadyMigrated(t *testing.T) {
+	t.Parallel()
+
+	state := &PersistedState{
+		Accounts: map[string]*PersistedAccount{
+			"uuid-alice": {Disabled: true},
+		},
+		UpdatedAt: time.Now(),
+	}
+
+	// nameToID maps name→uuid, but state already uses uuid keys
+	nameToID := map[string]string{"alice": "uuid-alice"}
+
+	migrated := MigrateHealthStateKeys(state, nameToID)
+	if migrated {
+		t.Error("should not migrate when keys are already UUIDs")
+	}
+}
+
+func TestBalancer_LoadState_WithMigration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Save state with old name-based keys
+	oldHealth := map[string]*AccountHealth{
+		"old-name": NewAccountHealth("old-name", "old-name"),
+	}
+	oldHealth["old-name"].Disable("test-reason")
+	if err := SaveState(dir, oldHealth); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	// Create balancer with UUID-based accounts
+	accounts := []config.AccountConfig{
+		{ID: "new-uuid", Name: "old-name", MaxConcurrency: 5, Enabled: true},
+	}
+	b := NewBalancer(accounts, NewConcurrencyTracker())
+
+	// Load with migration map
+	b.LoadState(dir, map[string]string{"old-name": "new-uuid"})
+
+	h := b.GetHealth("new-uuid")
+	if h == nil {
+		t.Fatal("expected health for new-uuid")
+	}
+	if !h.IsDisabled() {
+		t.Error("disabled state should be preserved after migration")
 	}
 }

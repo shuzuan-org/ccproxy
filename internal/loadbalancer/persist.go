@@ -20,7 +20,7 @@ const (
 
 // PersistedState is the file-level structure for health state.
 type PersistedState struct {
-	Accounts  map[string]*PersistedAccount `json:"accounts"`
+	Accounts  map[string]*PersistedAccount `json:"accounts"` // key: account ID (UUID)
 	UpdatedAt time.Time                     `json:"updated_at"`
 }
 
@@ -38,7 +38,7 @@ func SaveState(dataDir string, health map[string]*AccountHealth) error {
 		Accounts:  make(map[string]*PersistedAccount, len(health)),
 		UpdatedAt: time.Now(),
 	}
-	for name, h := range health {
+	for id, h := range health {
 		h.mu.RLock()
 		pa := &PersistedAccount{
 			Disabled:       h.disabled,
@@ -54,7 +54,7 @@ func SaveState(dataDir string, health map[string]*AccountHealth) error {
 			pa.Utilization7d = w7.Utilization
 		}
 
-		state.Accounts[name] = pa
+		state.Accounts[id] = pa
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -95,8 +95,8 @@ func ApplyState(health map[string]*AccountHealth, state *PersistedState) {
 	if state == nil {
 		return
 	}
-	for name, pa := range state.Accounts {
-		h, ok := health[name]
+	for id, pa := range state.Accounts {
+		h, ok := health[id]
 		if !ok {
 			continue
 		}
@@ -111,6 +111,23 @@ func ApplyState(health map[string]*AccountHealth, state *PersistedState) {
 			)
 		}
 	}
+}
+
+// MigrateHealthStateKeys re-keys a persisted state from old account names to UUIDs.
+// Returns true if any migration was performed.
+func MigrateHealthStateKeys(state *PersistedState, nameToID map[string]string) bool {
+	if state == nil {
+		return false
+	}
+	migrated := false
+	for key, pa := range state.Accounts {
+		if id, ok := nameToID[key]; ok && id != key {
+			state.Accounts[id] = pa
+			delete(state.Accounts, key)
+			migrated = true
+		}
+	}
+	return migrated
 }
 
 // StartPersistence starts a background goroutine that saves state periodically.
@@ -139,11 +156,19 @@ func (b *Balancer) SaveState(dataDir string) error {
 	return SaveState(dataDir, health)
 }
 
-// LoadState restores health state from disk.
-func (b *Balancer) LoadState(dataDir string) {
+// LoadState restores health state from disk. If nameToID is non-nil, it
+// migrates persisted keys from old account names to UUIDs before applying.
+func (b *Balancer) LoadState(dataDir string, nameToID map[string]string) {
 	state := LoadState(dataDir)
 	if state == nil {
 		return
+	}
+	if MigrateHealthStateKeys(state, nameToID) {
+		data, err := json.MarshalIndent(state, "", "  ")
+		if err == nil {
+			_ = fileutil.AtomicWriteFile(filepath.Join(dataDir, stateFileName), data, 0o600)
+		}
+		slog.Info("health state: migrated keys to UUIDs")
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()

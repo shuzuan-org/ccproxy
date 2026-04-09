@@ -408,8 +408,8 @@ func TestRuntimeAccounts_Multiple(t *testing.T) {
 	}
 	dir := t.TempDir()
 	registry := NewAccountRegistry(dir)
-	_ = registry.Add("alice", "")
-	_ = registry.Add("bob", "")
+	_, _ = registry.Add("alice", "")
+	_, _ = registry.Add("bob", "")
 
 	accounts := cfg.RuntimeAccounts(registry)
 	if len(accounts) != 2 {

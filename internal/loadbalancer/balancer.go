@@ -22,7 +22,7 @@ var (
 const sessionTTL = 1 * time.Hour
 
 type SessionInfo struct {
-	AccountName string
+	AccountID string
 	LastRequest time.Time
 }
 
@@ -36,9 +36,9 @@ type Balancer struct {
 	mu           sync.RWMutex
 	accounts     []config.AccountConfig
 	tracker      *ConcurrencyTracker
-	health       map[string]*AccountHealth // per-account health tracking
+	health       map[string]*AccountHealth // per-account health tracking (key: account ID)
 	sessions     sync.Map                  // sessionKey → *SessionInfo
-	lastUsed     sync.Map                  // accountName → time.Time
+	lastUsed     sync.Map                  // accountID → time.Time
 	throttle     *PoolThrottle
 	usageFetcher *UsageFetcher
 }
@@ -47,7 +47,7 @@ func NewBalancer(accounts []config.AccountConfig, tracker *ConcurrencyTracker) *
 	enabled := filterEnabled(accounts)
 	health := make(map[string]*AccountHealth, len(enabled))
 	for _, acct := range enabled {
-		health[acct.Name] = NewAccountHealth(acct.Name)
+		health[acct.ID] = NewAccountHealth(acct.ID, acct.Name)
 	}
 	queueCap := len(enabled) * 3
 	if queueCap < 10 {
@@ -75,8 +75,8 @@ func filterEnabled(accounts []config.AccountConfig) []config.AccountConfig {
 func (b *Balancer) SetUsageFetcher(f *UsageFetcher) {
 	b.usageFetcher = f
 	if f != nil {
-		f.SetOnPlatformBan(func(accountName, reason string) {
-			if h := b.GetHealth(accountName); h != nil {
+		f.SetOnPlatformBan(func(accountID, reason string) {
+			if h := b.GetHealth(accountID); h != nil {
 				h.Disable(reason)
 			}
 		})
@@ -140,13 +140,10 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 			deleteSession := expired // only delete on true expiry
 
 			if !expired {
-				acct := b.findAccount(si.AccountName)
-				if acct != nil && !excludeAccounts[acct.Name] {
-					h := health[acct.Name]
+				acct := b.findAccount(si.AccountID)
+				if acct != nil && !excludeAccounts[acct.ID] {
+					h := health[acct.ID]
 					if h == nil || h.IsAvailable() {
-						// Check budget state — blocked accounts should not receive
-						// even sticky traffic so the budget can recover.
-						// Session is preserved so affinity resumes after recovery.
 						if h != nil && h.budget != nil && h.budget.State() == StateBlocked {
 							observe.Logger(ctx).Debug("balancer: sticky session skipped (budget blocked)",
 								"account", acct.Name,
@@ -158,11 +155,11 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 							if h != nil {
 								effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
 							}
-							rate := b.tracker.LoadRate(acct.Name, effectiveMax)
+							rate := b.tracker.LoadRate(acct.ID, effectiveMax)
 							if rate < 100 {
-								if release, ok := b.tracker.Acquire(acct.Name, requestID, effectiveMax); ok {
+								if release, ok := b.tracker.Acquire(acct.ID, requestID, effectiveMax); ok {
 									b.sessions.Store(sessionKey, &SessionInfo{
-										AccountName: si.AccountName,
+										AccountID: si.AccountID,
 										LastRequest: time.Now(),
 									})
 									observe.Logger(ctx).Debug("balancer: sticky session hit",
@@ -205,10 +202,10 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	filteredBudget := 0
 	filteredLoad := 0
 	for _, acct := range accounts {
-		if excludeAccounts[acct.Name] {
+		if excludeAccounts[acct.ID] {
 			continue
 		}
-		h := health[acct.Name]
+		h := health[acct.ID]
 		if h != nil && !h.IsAvailable() {
 			continue
 		}
@@ -226,7 +223,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 				continue
 			}
 			if state == StateStickyOnly {
-                activeCount := b.activeStickySessionCount(acct.Name)
+                activeCount := b.activeStickySessionCount(acct.ID)
                 if activeCount >= acct.MaxConcurrency {
                     observe.Logger(ctx).Debug("balancer: account filtered",
                         "account", acct.Name,
@@ -244,7 +241,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 		if h != nil {
 			effectiveMax = EffectiveMaxConcurrency(h.budget, acct.MaxConcurrency)
 		}
-		rate := b.tracker.LoadRate(acct.Name, effectiveMax)
+		rate := b.tracker.LoadRate(acct.ID, effectiveMax)
 		if rate >= 100 {
 			observe.Logger(ctx).Debug("balancer: candidate skipped (overloaded)",
 				"account", acct.Name,
@@ -254,7 +251,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 			continue
 		}
 		var lu time.Time
-		if v, ok := b.lastUsed.Load(acct.Name); ok {
+		if v, ok := b.lastUsed.Load(acct.ID); ok {
 			lu = v.(time.Time)
 		}
 		score := 0.0
@@ -280,17 +277,17 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	if len(candidates) == 1 {
 		c := candidates[0]
 		effectiveMax := c.account.MaxConcurrency
-		if h := health[c.account.Name]; h != nil {
+		if h := health[c.account.ID]; h != nil {
 			effectiveMax = EffectiveMaxConcurrency(h.budget, c.account.MaxConcurrency)
 		}
-		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
-			b.lastUsed.Store(c.account.Name, time.Now())
+		if release, ok := b.tracker.Acquire(c.account.ID, requestID, effectiveMax); ok {
+			b.lastUsed.Store(c.account.ID, time.Now())
 			logAttrs := []any{
 				"account", c.account.Name,
 				"score", c.score,
 				"candidates", 1,
 			}
-			if h := health[c.account.Name]; h != nil {
+			if h := health[c.account.ID]; h != nil {
 				detail := h.ScoreDetail(c.loadRate)
 				logAttrs = append(logAttrs,
 					"err_rate", detail.ErrRate,
@@ -323,13 +320,13 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 
 	// Try to acquire slot
 	for _, c := range candidates {
-		h := health[c.account.Name]
+		h := health[c.account.ID]
 		effectiveMax := c.account.MaxConcurrency
 		if h != nil {
 			effectiveMax = EffectiveMaxConcurrency(h.budget, c.account.MaxConcurrency)
 		}
-		if release, ok := b.tracker.Acquire(c.account.Name, requestID, effectiveMax); ok {
-			b.lastUsed.Store(c.account.Name, time.Now())
+		if release, ok := b.tracker.Acquire(c.account.ID, requestID, effectiveMax); ok {
+			b.lastUsed.Store(c.account.ID, time.Now())
 			// Log score breakdown for the selected account
 			logAttrs := []any{
 				"account", c.account.Name,
@@ -353,11 +350,11 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	return nil, ErrAllAccountsBusy
 }
 
-func (b *Balancer) findAccount(name string) *config.AccountConfig {
+func (b *Balancer) findAccount(id string) *config.AccountConfig {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, acct := range b.accounts {
-		if acct.Name == name {
+		if acct.ID == id {
 			found := acct
 			return &found
 		}
@@ -366,15 +363,15 @@ func (b *Balancer) findAccount(name string) *config.AccountConfig {
 }
 
 // BindSession creates or updates a sticky session binding.
-func (b *Balancer) BindSession(sessionKey, accountName string) {
+func (b *Balancer) BindSession(sessionKey, accountID string) {
 	if sessionKey == "" {
 		return
 	}
 	b.sessions.Store(sessionKey, &SessionInfo{
-		AccountName: accountName,
+		AccountID: accountID,
 		LastRequest: time.Now(),
 	})
-	slog.Debug("session: bound", "account", accountName, "session_key", sessionKey)
+	slog.Debug("session: bound", "account_id", accountID, "session_key", sessionKey)
 }
 
 // ClearSession removes a sticky session binding.
@@ -394,23 +391,25 @@ func (b *Balancer) UpdateAccounts(accounts []config.AccountConfig) {
 	newHealth := make(map[string]*AccountHealth, len(b.accounts))
 	var added, removed []string
 	for _, acct := range b.accounts {
-		if existing, ok := b.health[acct.Name]; ok {
-			newHealth[acct.Name] = existing
+		if existing, ok := b.health[acct.ID]; ok {
+			// Update display name in case it was renamed
+			existing.Name = acct.Name
+			newHealth[acct.ID] = existing
 		} else {
-			newHealth[acct.Name] = NewAccountHealth(acct.Name)
+			newHealth[acct.ID] = NewAccountHealth(acct.ID, acct.Name)
 			added = append(added, acct.Name)
 		}
 	}
-	for name := range b.health {
-		if _, ok := newHealth[name]; !ok {
-			removed = append(removed, name)
+	for id := range b.health {
+		if _, ok := newHealth[id]; !ok {
+			removed = append(removed, id)
 		}
 	}
 	b.health = newHealth
 
 	// Clean up tracker entries for removed accounts
-	for _, name := range removed {
-		b.tracker.RemoveAccount(name)
+	for _, id := range removed {
+		b.tracker.RemoveAccount(id)
 	}
 
 	if len(added) > 0 || len(removed) > 0 {
@@ -450,9 +449,9 @@ func (b *Balancer) cleanupSessions() {
 }
 
 // ReportResult reports a request outcome to the health tracker for the given account.
-func (b *Balancer) ReportResult(ctx context.Context, accountName string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
+func (b *Balancer) ReportResult(ctx context.Context, accountID string, statusCode int, latencyUs int64, retryAfter time.Duration, responseHeaders http.Header) {
 	b.mu.RLock()
-	h := b.health[accountName]
+	h := b.health[accountID]
 	b.mu.RUnlock()
 	if h == nil {
 		return
@@ -467,7 +466,7 @@ func (b *Balancer) ReportResult(ctx context.Context, accountName string, statusC
 		b.throttle.RecordAccept()
 		// Trigger usage fetch if budget data is stale
 		if b.usageFetcher != nil && !h.budget.HasRecentData(usageStaleThreshold) {
-			go b.usageFetcher.FetchIfNeeded(context.Background(), accountName, h.budget)
+			go b.usageFetcher.FetchIfNeeded(context.Background(), accountID, h.budget)
 		}
 	} else {
 		h.RecordError(ctx, statusCode, retryAfter, responseHeaders)
@@ -475,10 +474,10 @@ func (b *Balancer) ReportResult(ctx context.Context, accountName string, statusC
 }
 
 // GetHealth returns the health tracker for a specific account.
-func (b *Balancer) GetHealth(accountName string) *AccountHealth {
+func (b *Balancer) GetHealth(accountID string) *AccountHealth {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.health[accountName]
+	return b.health[accountID]
 }
 
 // AllHealth returns a snapshot of all health trackers.
@@ -498,12 +497,13 @@ func (b *Balancer) AccountStates() map[string]observe.AccountState {
 	defer b.mu.RUnlock()
 	states := make(map[string]observe.AccountState, len(b.accounts))
 	for _, acct := range b.accounts {
-		name := acct.Name
+		id := acct.ID
 		state := observe.AccountState{
-			Concurrency:    b.tracker.ActiveSlots(name),
+			Name:           acct.Name,
+			Concurrency:    b.tracker.ActiveSlots(id),
 			MaxConcurrency: acct.MaxConcurrency,
 		}
-		if h, ok := b.health[name]; ok {
+		if h, ok := b.health[id]; ok {
 			if h.IsBanned() {
 				state.Health = "banned"
 			} else if h.IsDisabled() {
@@ -515,7 +515,7 @@ func (b *Balancer) AccountStates() map[string]observe.AccountState {
 			}
 			state.BudgetState = h.Budget().State().String()
 		}
-		states[name] = state
+		states[id] = state
 	}
 	return states
 }
@@ -546,11 +546,11 @@ func (b *Balancer) ActiveSessions() int {
 
 // activeStickySessionCount returns the count of active sticky sessions for an account.
 // A session is considered active if it was used within the sessionTTL window.
-func (b *Balancer) activeStickySessionCount(accountName string) int {
+func (b *Balancer) activeStickySessionCount(accountID string) int {
 	count := 0
 	b.sessions.Range(func(key, value interface{}) bool {
 		info := value.(*SessionInfo)
-		if info.AccountName == accountName && time.Since(info.LastRequest) < sessionTTL {
+		if info.AccountID == accountID && time.Since(info.LastRequest) < sessionTTL {
 			count++
 		}
 		return true

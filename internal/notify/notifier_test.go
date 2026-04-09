@@ -56,8 +56,8 @@ func TestNotifierRegistry_UserReceivesOnlyOwnDisabled(t *testing.T) {
 	aliceMock := &mockNotifier{}
 	bobMock := &mockNotifier{}
 
-	reg := NewRegistry(func(accountName string) string {
-		if accountName == "acct-alice" {
+	reg := NewRegistry(func(accountID string) string {
+		if accountID == "acct-alice-id" {
 			return "alice"
 		}
 		return "bob"
@@ -67,11 +67,11 @@ func TestNotifierRegistry_UserReceivesOnlyOwnDisabled(t *testing.T) {
 	reg.Set("bob", bobMock)
 
 	// Alice's account gets disabled — alice should get it, bob should not.
-	reg.NotifyAll(context.Background(), Event{AccountName: "acct-alice", Type: EventAccountDisabled})
+	reg.NotifyAll(context.Background(), Event{AccountID: "acct-alice-id", AccountName: "acct-alice", Type: EventAccountDisabled})
 	// Alice's account gets rate limited — only admin gets it (anomaly, not disabled).
-	reg.NotifyAll(context.Background(), Event{AccountName: "acct-alice", Type: EventRateLimited})
+	reg.NotifyAll(context.Background(), Event{AccountID: "acct-alice-id", AccountName: "acct-alice", Type: EventRateLimited})
 	// Bob's account gets banned.
-	reg.NotifyAll(context.Background(), Event{AccountName: "acct-bob", Type: EventAccountBanned})
+	reg.NotifyAll(context.Background(), Event{AccountID: "acct-bob-id", AccountName: "acct-bob", Type: EventAccountBanned})
 
 	if len(adminMock.events) != 3 {
 		t.Errorf("admin should receive 3 events, got %d", len(adminMock.events))

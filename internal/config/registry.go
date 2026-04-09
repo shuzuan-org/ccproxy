@@ -11,10 +11,12 @@ import (
 	"sync"
 
 	"github.com/binn/ccproxy/internal/fileutil"
+	"github.com/google/uuid"
 )
 
 // Account represents a dynamically managed backend account.
 type Account struct {
+	ID      string `json:"id,omitempty"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	Proxy   string `json:"proxy,omitempty"`
@@ -42,52 +44,47 @@ func NewAccountRegistry(dataDir string) *AccountRegistry {
 	return r
 }
 
-// Add adds a new account with the given name and owner. Returns an error if the name
-// is empty, contains invalid characters, or is already taken.
-func (r *AccountRegistry) Add(name, owner string) error {
+// Add adds a new account with the given name and owner. Returns the generated
+// account ID or an error if the name is empty.
+func (r *AccountRegistry) Add(name, owner string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return errors.New("account name cannot be empty")
+		return "", errors.New("account name cannot be empty")
 	}
+
+	id := uuid.New().String()
 
 	r.mu.Lock()
 
-	for _, acct := range r.accounts {
-		if acct.Name == name {
-			r.mu.Unlock()
-			return fmt.Errorf("account %q already exists", name)
-		}
-	}
-
-	r.accounts = append(r.accounts, Account{Name: name, Enabled: true, Owner: owner})
+	r.accounts = append(r.accounts, Account{ID: id, Name: name, Enabled: true, Owner: owner})
 	if err := r.save(); err != nil {
 		// Roll back
 		r.accounts = r.accounts[:len(r.accounts)-1]
 		r.mu.Unlock()
-		return fmt.Errorf("persist account: %w", err)
+		return "", fmt.Errorf("persist account: %w", err)
 	}
 
 	// Send snapshot to serialized change channel
 	r.notifyChange()
 	r.mu.Unlock()
 
-	return nil
+	return id, nil
 }
 
-// Remove removes the account with the given name.
-func (r *AccountRegistry) Remove(name string) error {
+// Remove removes the account with the given ID.
+func (r *AccountRegistry) Remove(id string) error {
 	r.mu.Lock()
 
 	idx := -1
 	for i, acct := range r.accounts {
-		if acct.Name == name {
+		if acct.ID == id {
 			idx = i
 			break
 		}
 	}
 	if idx == -1 {
 		r.mu.Unlock()
-		return fmt.Errorf("account %q not found", name)
+		return fmt.Errorf("account %q not found", id)
 	}
 
 	// Save full snapshot before mutating the slice for safe rollback
@@ -117,12 +114,12 @@ func (r *AccountRegistry) List() []Account {
 	return result
 }
 
-// Has returns true if an account with the given name exists.
-func (r *AccountRegistry) Has(name string) bool {
+// Has returns true if an account with the given ID exists.
+func (r *AccountRegistry) Has(id string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, acct := range r.accounts {
-		if acct.Name == name {
+		if acct.ID == id {
 			return true
 		}
 	}
@@ -140,13 +137,72 @@ func (r *AccountRegistry) Names() []string {
 	return names
 }
 
-// UpdateProxy sets the proxy URL for the named account.
-func (r *AccountRegistry) UpdateProxy(name, proxy string) error {
+// IDs returns a list of all account IDs.
+func (r *AccountRegistry) IDs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, len(r.accounts))
+	for i, acct := range r.accounts {
+		ids[i] = acct.ID
+	}
+	return ids
+}
+
+// GetByID returns the account with the given ID and true, or a zero Account and false.
+func (r *AccountRegistry) GetByID(id string) (Account, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, acct := range r.accounts {
+		if acct.ID == id {
+			return acct, true
+		}
+	}
+	return Account{}, false
+}
+
+// Rename changes the display name of the account with the given ID.
+func (r *AccountRegistry) Rename(id, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("account name cannot be empty")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for i, acct := range r.accounts {
-		if acct.Name == name {
+		if acct.ID == id {
+			old := r.accounts[i].Name
+			r.accounts[i].Name = newName
+			if err := r.save(); err != nil {
+				r.accounts[i].Name = old
+				return fmt.Errorf("persist rename: %w", err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("account %q not found", id)
+}
+
+// NameToIDMap returns a snapshot mapping each account name to its ID.
+// Only valid during initial migration when names are still unique.
+func (r *AccountRegistry) NameToIDMap() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m := make(map[string]string, len(r.accounts))
+	for _, acct := range r.accounts {
+		m[acct.Name] = acct.ID
+	}
+	return m
+}
+
+// UpdateProxy sets the proxy URL for the account with the given ID.
+func (r *AccountRegistry) UpdateProxy(id, proxy string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for i, acct := range r.accounts {
+		if acct.ID == id {
 			r.accounts[i].Proxy = proxy
 			if err := r.save(); err != nil {
 				r.accounts[i].Proxy = acct.Proxy // roll back
@@ -155,15 +211,15 @@ func (r *AccountRegistry) UpdateProxy(name, proxy string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("account %q not found", name)
+	return fmt.Errorf("account %q not found", id)
 }
 
-// GetProxy returns the proxy URL for the named account, or "" if not found.
-func (r *AccountRegistry) GetProxy(name string) string {
+// GetProxy returns the proxy URL for the account with the given ID, or "" if not found.
+func (r *AccountRegistry) GetProxy(id string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, acct := range r.accounts {
-		if acct.Name == name {
+		if acct.ID == id {
 			return acct.Proxy
 		}
 	}
@@ -183,24 +239,24 @@ func (r *AccountRegistry) ListByOwner(owner string) []Account {
 	return result
 }
 
-// IsOwner returns true if the named account exists and is owned by owner.
-func (r *AccountRegistry) IsOwner(accountName, owner string) bool {
+// IsOwner returns true if the account with the given ID exists and is owned by owner.
+func (r *AccountRegistry) IsOwner(accountID, owner string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, acct := range r.accounts {
-		if acct.Name == accountName {
+		if acct.ID == accountID {
 			return acct.Owner == owner
 		}
 	}
 	return false
 }
 
-// GetOwner returns the owner of the named account, or "" if not found.
-func (r *AccountRegistry) GetOwner(accountName string) string {
+// GetOwner returns the owner of the account with the given ID, or "" if not found.
+func (r *AccountRegistry) GetOwner(accountID string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, acct := range r.accounts {
-		if acct.Name == accountName {
+		if acct.ID == accountID {
 			return acct.Owner
 		}
 	}
@@ -286,5 +342,21 @@ func (r *AccountRegistry) load() error {
 		return fmt.Errorf("parse accounts file: %w", err)
 	}
 	r.accounts = accounts
+
+	// Auto-migrate: assign UUIDs to accounts that lack an ID
+	migrated := 0
+	for i := range r.accounts {
+		if r.accounts[i].ID == "" {
+			r.accounts[i].ID = uuid.New().String()
+			migrated++
+		}
+	}
+	if migrated > 0 {
+		if err := r.save(); err != nil {
+			return fmt.Errorf("persist id migration: %w", err)
+		}
+		slog.Info("registry: migrated accounts to UUID", "count", migrated)
+	}
+
 	return nil
 }

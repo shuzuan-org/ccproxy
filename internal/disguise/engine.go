@@ -41,6 +41,11 @@ func NewEngine(dataDir string) *Engine {
 	}
 }
 
+// GetFingerprintStore returns the underlying fingerprint store (for migration).
+func (e *Engine) GetFingerprintStore() *FingerprintStore {
+	return e.fingerprints
+}
+
 // StartSessionCleanup begins periodic cleanup of expired masked sessions.
 func (e *Engine) StartSessionCleanup(ctx context.Context) {
 	e.sessions.StartCleanup(ctx, time.Minute)
@@ -63,7 +68,7 @@ func (e *Engine) StartSessionCleanup(ctx context.Context) {
 // 6. Model ID normalization — short name → full versioned name
 // 7. Thinking cache_control cleanup — remove cache_control from thinking blocks
 // 8. Body sanitization — tools injection, field removal
-func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string, accountName string) ([]byte, bool) {
+func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []byte, isStream bool, sessionSeed string, accountID string, accountName string) ([]byte, bool) {
 	ctx := origReq.Context()
 
 	// Detect using origReq which has full client headers (User-Agent, X-App, etc.)
@@ -72,9 +77,9 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			"account", accountName,
 		)
 		// Learn fingerprint from real CC client for future disguise use
-		e.fingerprints.LearnFromHeaders(accountName, origReq.Header)
+		e.fingerprints.LearnFromHeaders(accountID, origReq.Header)
 		// Get per-account fingerprint (ensures ClientID is initialized for this account).
-		fp := e.fingerprints.Get(accountName)
+		fp := e.fingerprints.Get(accountID)
 
 		// Real CC client via OAuth: lightweight processing only.
 		// 1. Parse body first — filtering and user_id rewriting both require parsed state.
@@ -100,7 +105,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
-		maskedSession := e.sessions.Get(accountName)
+		maskedSession := e.sessions.Get(accountID)
 		uaVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
 		originalUserIDRaw := metadata["user_id"]
 		// user_id may be a string (old format) or map[string]interface{} (new JSON format >= 2.1.78)
@@ -177,7 +182,7 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	}
 
 	// Layer 2: HTTP Headers (per-account fingerprint)
-	fp := e.fingerprints.Get(accountName)
+	fp := e.fingerprints.Get(accountID)
 	ApplyHeaders(upstreamReq, isStream, fp)
 	if fp != nil {
 		observe.Logger(ctx).Debug("disguise: [layer 2] headers applied (per-account fingerprint)",

@@ -69,6 +69,7 @@ func TestRetryDelay(t *testing.T) {
 
 func makeRetryAccount(name string) config.AccountConfig {
 	return config.AccountConfig{
+		ID:             name + "-id",
 		Name:           name,
 		MaxConcurrency: 5,
 		BaseURL:        "https://api.anthropic.com",

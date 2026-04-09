@@ -15,6 +15,7 @@ import (
 
 func makeAccount(name string, maxConc int) config.AccountConfig {
 	return config.AccountConfig{
+		ID:             name + "-id",
 		Name:           name,
 		MaxConcurrency: maxConc,
 		BaseURL:        "https://api.anthropic.com",
@@ -59,10 +60,10 @@ func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Record errors on "unhealthy" to give it a worse score
-	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
-	b.ReportResult(testCtx,"unhealthy", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"unhealthy-id", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"unhealthy-id", 500, 1000, 0, nil)
 	// Clear cooldown so account is available but has high error rate
-	h := b.GetHealth("unhealthy")
+	h := b.GetHealth("unhealthy-id")
 	h.mu.Lock()
 	h.cooldownUntil = time.Time{}
 	h.mu.Unlock()
@@ -86,8 +87,8 @@ func TestBalancer_LoadRateOrder(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Fill acct-a with 2 slots (50% load)
-	r1, _ := b.tracker.Acquire("acct-a", "req1", 4)
-	r2, _ := b.tracker.Acquire("acct-a", "req2", 4)
+	r1, _ := b.tracker.Acquire("acct-a-id", "req1", 4)
+	r2, _ := b.tracker.Acquire("acct-a-id", "req2", 4)
 	defer r1()
 	defer r2()
 
@@ -115,19 +116,20 @@ func TestBalancer_StickySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	firstAccount := r1.Account.Name
+	firstAccountID := r1.Account.ID
+	firstName := r1.Account.Name
 	r1.Release()
 
 	// Bind session
-	b.BindSession("session-1", firstAccount)
+	b.BindSession("session-1", firstAccountID)
 
 	// Second selection with same session key → same account
 	r2, err := b.SelectAccount(testCtx, "session-1", map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error on second select: %v", err)
 	}
-	if r2.Account.Name != firstAccount {
-		t.Errorf("expected sticky account %s, got %s", firstAccount, r2.Account.Name)
+	if r2.Account.Name != firstName {
+		t.Errorf("expected sticky account %s, got %s", firstName, r2.Account.Name)
 	}
 	r2.Release()
 }
@@ -141,7 +143,7 @@ func TestBalancer_SessionExpired(t *testing.T) {
 
 	// Manually insert an expired session
 	b.sessions.Store("old-session", &SessionInfo{
-		AccountName: "acct-a",
+		AccountID: "acct-a-id",
 		LastRequest:  time.Now().Add(-(sessionTTL + time.Second)),
 	})
 
@@ -167,10 +169,10 @@ func TestBalancer_StickyAtCapacity(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Bind session to acct-a
-	b.BindSession("session-x", "acct-a")
+	b.BindSession("session-x", "acct-a-id")
 
 	// Fill acct-a to capacity
-	r1, ok := b.tracker.Acquire("acct-a", "blocker", 1)
+	r1, ok := b.tracker.Acquire("acct-a-id", "blocker", 1)
 	if !ok {
 		t.Fatal("blocker acquire should succeed")
 	}
@@ -195,7 +197,7 @@ func TestBalancer_ExcludeAccounts(t *testing.T) {
 	}
 	b := newTestBalancer(accounts)
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{"acct-a": true}, false)
+	result, err := b.SelectAccount(testCtx, "", map[string]bool{"acct-a-id": true}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,8 +216,8 @@ func TestBalancer_AllBusy(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Fill both to capacity
-	r1, _ := b.tracker.Acquire("acct-a", "block-a", 1)
-	r2, _ := b.tracker.Acquire("acct-b", "block-b", 1)
+	r1, _ := b.tracker.Acquire("acct-a-id", "block-a", 1)
+	r2, _ := b.tracker.Acquire("acct-b-id", "block-b", 1)
 	defer r1()
 	defer r2()
 
@@ -234,7 +236,7 @@ func TestBalancer_BindThenSelect(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Bind to higher-priority-value account (acct-b)
-	b.BindSession("my-session", "acct-b")
+	b.BindSession("my-session", "acct-b-id")
 
 	result, err := b.SelectAccount(testCtx, "my-session", map[string]bool{}, false)
 	if err != nil {
@@ -344,8 +346,8 @@ func TestBalancer_ActiveSessions(t *testing.T) {
 	if b.ActiveSessions() != 0 {
 		t.Error("expected 0 sessions initially")
 	}
-	b.BindSession("s1", "acct1")
-	b.BindSession("s2", "acct1")
+	b.BindSession("s1", "acct1-id")
+	b.BindSession("s2", "acct1-id")
 	if b.ActiveSessions() != 2 {
 		t.Errorf("expected 2 sessions, got %d", b.ActiveSessions())
 	}
@@ -364,7 +366,7 @@ func TestSelectAccount_CooldownSkipped(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Put "cool" in cooldown
-	b.ReportResult(testCtx,"cool", 429, 1000, 30*time.Second, nil)
+	b.ReportResult(testCtx,"cool-id", 429, 1000, 30*time.Second, nil)
 
 	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
@@ -385,7 +387,7 @@ func TestSelectAccount_DisabledSkipped(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Disable "forbidden" with a 403
-	b.ReportResult(testCtx,"forbidden", 403, 1000, 0, nil)
+	b.ReportResult(testCtx,"forbidden-id", 403, 1000, 0, nil)
 
 	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
 	if err != nil {
@@ -401,8 +403,8 @@ func TestSelectAccount_DisabledSkipped(t *testing.T) {
 func TestReportResult_UpdatesHealth(t *testing.T) {
 	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 
-	b.ReportResult(testCtx,"acct1", 200, 1000, 0, nil)
-	h := b.GetHealth("acct1")
+	b.ReportResult(testCtx,"acct1-id", 200, 1000, 0, nil)
+	h := b.GetHealth("acct1-id")
 	if h == nil {
 		t.Fatal("expected health tracker for inst1")
 	}
@@ -411,7 +413,7 @@ func TestReportResult_UpdatesHealth(t *testing.T) {
 	}
 
 	// Report error and check error rate increases
-	b.ReportResult(testCtx,"acct1", 500, 1000, 0, nil)
+	b.ReportResult(testCtx,"acct1-id", 500, 1000, 0, nil)
 	if h.ErrorRate() == 0 {
 		t.Error("expected error rate to increase after error")
 	}
@@ -426,20 +428,20 @@ func TestBalancer_UpdateAccounts_CleansHealth(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Verify both have health
-	if b.GetHealth("acct-a") == nil {
+	if b.GetHealth("acct-a-id") == nil {
 		t.Fatal("expected health for acct-a")
 	}
-	if b.GetHealth("acct-b") == nil {
+	if b.GetHealth("acct-b-id") == nil {
 		t.Fatal("expected health for acct-b")
 	}
 
 	// Update to only acct-b
 	b.UpdateAccounts([]config.AccountConfig{makeAccount("acct-b", 5)})
 
-	if b.GetHealth("acct-a") != nil {
+	if b.GetHealth("acct-a-id") != nil {
 		t.Error("expected health for acct-a to be cleaned up")
 	}
-	if b.GetHealth("acct-b") == nil {
+	if b.GetHealth("acct-b-id") == nil {
 		t.Error("expected health for acct-b to still exist")
 	}
 }
@@ -453,7 +455,7 @@ func TestBalancer_BudgetStateFiltering(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Set high utilization on one account to make it Blocked
-	h := b.GetHealth("high-util")
+	h := b.GetHealth("high-util-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.90")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
@@ -479,7 +481,7 @@ func TestBalancer_StickyOnlyWithoutActiveSessions(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Set utilization to trigger sticky_only state (90% <= util < 95%)
-	h := b.GetHealth("sticky-only")
+	h := b.GetHealth("sticky-only-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
@@ -504,13 +506,13 @@ func TestBalancer_StickyOnlyWithoutActiveSessions(t *testing.T) {
 // can accept new sessions when active sessions < max concurrency.
 func TestBalancer_StickyOnlyBelowSessionLimit(t *testing.T) {
 	accounts := []config.AccountConfig{
-		{Name: "sticky-only", MaxConcurrency: 3, Enabled: true},
+		{ID: "sticky-only-id", Name: "sticky-only", MaxConcurrency: 3, Enabled: true},
 		makeAccount("normal", 5),
 	}
 	b := newTestBalancer(accounts)
 
 	// Set utilization to trigger sticky_only state
-	h := b.GetHealth("sticky-only")
+	h := b.GetHealth("sticky-only-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
@@ -545,13 +547,13 @@ func TestBalancer_StickyOnlyBelowSessionLimit(t *testing.T) {
 // is skipped when active sessions >= max concurrency.
 func TestBalancer_StickyOnlyAtSessionLimit(t *testing.T) {
 	accounts := []config.AccountConfig{
-		{Name: "sticky-only", MaxConcurrency: 2, Enabled: true},
+		{ID: "sticky-only-id", Name: "sticky-only", MaxConcurrency: 2, Enabled: true},
 		makeAccount("normal", 5),
 	}
 	b := newTestBalancer(accounts)
 
 	// Set utilization to trigger sticky_only state
-	h := b.GetHealth("sticky-only")
+	h := b.GetHealth("sticky-only-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
@@ -591,22 +593,22 @@ func TestBalancer_AccountStates(t *testing.T) {
 		makeAccount("banned", 2),
 	})
 
-	b.GetHealth("cooldown").SetCooldown(time.Minute, "rate_limited")
-	b.GetHealth("disabled").Disable("consecutive_401")
-	b.GetHealth("banned").Disable(PlatformBanReasonOrganizationDisabled)
+	b.GetHealth("cooldown-id").SetCooldown(time.Minute, "rate_limited")
+	b.GetHealth("disabled-id").Disable("consecutive_401")
+	b.GetHealth("banned-id").Disable(PlatformBanReasonOrganizationDisabled)
 
 	states := b.AccountStates()
 
-	if got := states["healthy"].Health; got != "healthy" {
+	if got := states["healthy-id"].Health; got != "healthy" {
 		t.Fatalf("healthy state = %q, want healthy", got)
 	}
-	if got := states["cooldown"].Health; got != "cooldown" {
+	if got := states["cooldown-id"].Health; got != "cooldown" {
 		t.Fatalf("cooldown state = %q, want cooldown", got)
 	}
-	if got := states["disabled"].Health; got != "disabled" {
+	if got := states["disabled-id"].Health; got != "disabled" {
 		t.Fatalf("disabled state = %q, want disabled", got)
 	}
-	if got := states["banned"].Health; got != "banned" {
+	if got := states["banned-id"].Health; got != "banned" {
 		t.Fatalf("banned state = %q, want banned", got)
 	}
 }
@@ -621,10 +623,10 @@ func TestBalancer_StickySessionBudgetBlocked(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Bind a sticky session to blocked-acct
-	b.BindSession("test-session", "blocked-acct")
+	b.BindSession("test-session", "blocked-acct-id")
 
 	// Push blocked-acct into StateBlocked (util >= 95%)
-	h := b.GetHealth("blocked-acct")
+	h := b.GetHealth("blocked-acct-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.96")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.80")
@@ -660,10 +662,10 @@ func TestBalancer_StickySessionBudgetStickyOnly(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// Bind a sticky session to sticky-only-acct
-	b.BindSession("test-session", "sticky-only-acct")
+	b.BindSession("test-session", "sticky-only-acct-id")
 
 	// Push into StateStickyOnly (90% <= util < 95%)
-	h := b.GetHealth("sticky-only-acct")
+	h := b.GetHealth("sticky-only-acct-id")
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")

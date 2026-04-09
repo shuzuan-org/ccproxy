@@ -124,6 +124,35 @@ func (s *TokenStore) List() []string {
 	return names
 }
 
+// MigrateKeys re-keys the token store from old account names to UUIDs.
+// Must be called before any Load/Save operations (before populateCache runs).
+func (s *TokenStore) MigrateKeys(nameToID map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data := s.loadFile()
+	migrated := false
+	for key, encrypted := range data.Tokens {
+		if id, ok := nameToID[key]; ok && id != key {
+			data.Tokens[id] = encrypted
+			delete(data.Tokens, key)
+			migrated = true
+		}
+	}
+	if migrated {
+		b, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			slog.Warn("oauth/store: failed to marshal migrated tokens", "error", err.Error())
+			return
+		}
+		if err := fileutil.AtomicWriteFile(s.path, b, 0600); err != nil {
+			slog.Warn("oauth/store: failed to persist migrated tokens", "error", err.Error())
+			return
+		}
+		slog.Info("oauth/store: migrated token keys to UUIDs", "count", len(nameToID))
+	}
+}
+
 // populateCache loads all tokens from disk into the in-memory cache.
 // Called via sync.Once to ensure it runs exactly once.
 func (s *TokenStore) populateCache() {

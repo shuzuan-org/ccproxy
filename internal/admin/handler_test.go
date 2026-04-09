@@ -14,12 +14,15 @@ import (
 	"github.com/binn/ccproxy/internal/oauth"
 )
 
-func newTestHandler(t *testing.T) *Handler {
+func newTestHandler(t *testing.T) (*Handler, string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth", "testuser")
+	id, err := registry.Add("test-oauth", "testuser")
+	if err != nil {
+		t.Fatalf("registry.Add: %v", err)
+	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -36,9 +39,9 @@ func newTestHandler(t *testing.T) *Handler {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr := oauth.NewManager(registry.IDs(), store, nil)
 	sessions := oauth.NewSessionStore()
-	return NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
+	return NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir), id
 }
 
 // asUser wraps request with testuser auth context (non-admin, owns "test-oauth").
@@ -52,13 +55,13 @@ func asAdmin(r *http.Request) *http.Request {
 }
 
 func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
 	tok := oauth.OAuthToken{
 		AccessToken: "test",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
-	if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+	if err := h.oauthMgr.GetStore().Save(acctID, tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -77,13 +80,16 @@ func TestHandleAccounts_IncludesTokenStatus(t *testing.T) {
 	if len(states) != 1 {
 		t.Fatalf("len = %d, want 1", len(states))
 	}
+	if states[0].ID == "" {
+		t.Error("expected non-empty id field")
+	}
 	if states[0].TokenStatus != "valid" {
 		t.Errorf("token_status = %q, want valid", states[0].TokenStatus)
 	}
 }
 
 func TestHandleAccounts_NoToken(t *testing.T) {
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	w := httptest.NewRecorder()
@@ -147,16 +153,16 @@ func TestHandleAccounts_IncludesHealthState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newTestHandler(t)
+			h, acctID := newTestHandler(t)
 			tok := oauth.OAuthToken{
 				AccessToken: "test",
 				ExpiresAt:   time.Now().Add(time.Hour),
 			}
-			if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+			if err := h.oauthMgr.GetStore().Save(acctID, tok); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
 
-			health := h.balancer.GetHealth("test-oauth")
+			health := h.balancer.GetHealth(acctID)
 			if health == nil {
 				t.Fatal("expected health tracker")
 			}
@@ -204,9 +210,9 @@ func TestHandleAccounts_IncludesHealthState(t *testing.T) {
 }
 
 func TestHandleOAuthLoginStart(t *testing.T) {
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": acctID})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthLoginStart(w, asUser(req))
@@ -228,7 +234,7 @@ func TestHandleOAuthLoginStart(t *testing.T) {
 }
 
 func TestHandleOAuthLoginStart_InvalidAccount(t *testing.T) {
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(map[string]string{"account": "nonexistent"})
 	req := httptest.NewRequest("POST", "/api/oauth/login/start", bytes.NewReader(body))
@@ -242,9 +248,9 @@ func TestHandleOAuthLoginStart_InvalidAccount(t *testing.T) {
 }
 
 func TestHandleOAuthRefresh_NoToken(t *testing.T) {
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": acctID})
 	req := httptest.NewRequest("POST", "/api/oauth/refresh", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthRefresh(w, asUser(req))
@@ -255,14 +261,14 @@ func TestHandleOAuthRefresh_NoToken(t *testing.T) {
 }
 
 func TestHandleOAuthLogout(t *testing.T) {
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
 	tok := oauth.OAuthToken{AccessToken: "x", ExpiresAt: time.Now().Add(time.Hour)}
-	if err := h.oauthMgr.GetStore().Save("test-oauth", tok); err != nil {
+	if err := h.oauthMgr.GetStore().Save(acctID, tok); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"account": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"account": acctID})
 	req := httptest.NewRequest("POST", "/api/oauth/logout", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleOAuthLogout(w, asUser(req))
@@ -271,14 +277,14 @@ func TestHandleOAuthLogout(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 
-	got, _ := h.oauthMgr.GetStore().Load("test-oauth")
+	got, _ := h.oauthMgr.GetStore().Load(acctID)
 	if got != nil {
 		t.Error("token should be deleted after logout")
 	}
 }
 
 func TestHandleAddAccount(t *testing.T) {
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(map[string]string{"name": "new-account"})
 	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
@@ -289,29 +295,40 @@ func TestHandleAddAccount(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	// Verify it shows up in the list
-	if !h.registry.Has("new-account") {
-		t.Error("new-account not found in registry")
+	// Decode response to get the returned ID
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	newID, ok := resp["id"].(string)
+	if !ok || newID == "" {
+		t.Fatal("expected non-empty id in response")
+	}
+
+	// Verify it shows up in the list by ID
+	if !h.registry.Has(newID) {
+		t.Error("new account not found in registry by ID")
 	}
 }
 
-func TestHandleAddAccount_Duplicate(t *testing.T) {
-	h := newTestHandler(t)
+func TestHandleAddAccount_SameNameAllowed(t *testing.T) {
+	h, _ := newTestHandler(t)
 
+	// With UUID-based system, adding another account with the same display name is allowed.
 	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
 	req := httptest.NewRequest("POST", "/api/accounts/add", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleAddAccount(w, asUser(req))
 
-	if w.Code != 400 {
-		t.Errorf("status = %d, want 400 for duplicate", w.Code)
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200 (duplicate names allowed with UUID system)", w.Code)
 	}
 }
 
 func TestHandleRemoveAccount(t *testing.T) {
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"name": "test-oauth"})
+	body, _ := json.Marshal(map[string]string{"id": acctID})
 	req := httptest.NewRequest("POST", "/api/accounts/remove", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleRemoveAccount(w, asUser(req))
@@ -320,16 +337,16 @@ func TestHandleRemoveAccount(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	if h.registry.Has("test-oauth") {
-		t.Error("test-oauth should have been removed")
+	if h.registry.Has(acctID) {
+		t.Error("account should have been removed")
 	}
 }
 
 func TestHandleRemoveAccount_NotFound(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"name": "does-not-exist"})
+	body, _ := json.Marshal(map[string]string{"id": "does-not-exist"})
 	req := httptest.NewRequest("POST", "/api/accounts/remove", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleRemoveAccount(w, asUser(req))
@@ -342,9 +359,9 @@ func TestHandleRemoveAccount_NotFound(t *testing.T) {
 
 func TestHandleUpdateProxy(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"name": "test-oauth", "proxy": "socks5://127.0.0.1:1080"})
+	body, _ := json.Marshal(map[string]string{"id": acctID, "proxy": "socks5://127.0.0.1:1080"})
 	req := httptest.NewRequest("POST", "/api/accounts/proxy", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleUpdateProxy(w, asUser(req))
@@ -353,7 +370,7 @@ func TestHandleUpdateProxy(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	got := h.registry.GetProxy("test-oauth")
+	got := h.registry.GetProxy(acctID)
 	if got != "socks5://127.0.0.1:1080" {
 		t.Errorf("proxy = %q, want socks5://127.0.0.1:1080", got)
 	}
@@ -361,9 +378,9 @@ func TestHandleUpdateProxy(t *testing.T) {
 
 func TestHandleUpdateProxy_NotFound(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
-	body, _ := json.Marshal(map[string]string{"name": "nonexistent", "proxy": "socks5://127.0.0.1:1080"})
+	body, _ := json.Marshal(map[string]string{"id": "nonexistent", "proxy": "socks5://127.0.0.1:1080"})
 	req := httptest.NewRequest("POST", "/api/accounts/proxy", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleUpdateProxy(w, asUser(req))
@@ -376,7 +393,7 @@ func TestHandleUpdateProxy_NotFound(t *testing.T) {
 
 func TestHandleSessions(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	w := httptest.NewRecorder()
@@ -393,7 +410,7 @@ func TestHandleSessions(t *testing.T) {
 
 func TestHandleDashboard(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	handler := h.HandleDashboard()
 	req := httptest.NewRequest("GET", "/index.html", nil)
@@ -430,7 +447,7 @@ func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
 	// Build handler with provider pointing to mock server.
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth", "testuser")
+	acctID, _ := registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -444,13 +461,13 @@ func TestHandleOAuthLoginComplete_PassesFullCodeWithState(t *testing.T) {
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
 	store, _ := oauth.NewTokenStore(t.TempDir())
-	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr := oauth.NewManager(registry.IDs(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
 	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
 	// Start a PKCE session to get a valid session ID and state.
-	sessionID, _, err := sessions.Create("test-oauth")
+	sessionID, _, err := sessions.Create(acctID)
 	if err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
@@ -492,7 +509,7 @@ func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth", "testuser")
+	acctID, _ := registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -506,12 +523,12 @@ func TestHandleOAuthLoginComplete_SessionPreservedOnExchangeFailure(t *testing.T
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
 	store, _ := oauth.NewTokenStore(t.TempDir())
-	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr := oauth.NewManager(registry.IDs(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
 	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
-	sessionID, _, _ := sessions.Create("test-oauth")
+	sessionID, _, _ := sessions.Create(acctID)
 	session, _ := sessions.Get(sessionID)
 
 	fullCode := "somecode#" + session.State
@@ -545,7 +562,7 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 
 	dir := t.TempDir()
 	registry := config.NewAccountRegistry(dir)
-	_ = registry.Add("test-oauth", "testuser")
+	acctID, _ := registry.Add("test-oauth", "testuser")
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -559,12 +576,12 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
 	store, _ := oauth.NewTokenStore(t.TempDir())
-	mgr := oauth.NewManager(registry.Names(), store, nil)
+	mgr := oauth.NewManager(registry.IDs(), store, nil)
 	mgr.GetProvider().SetTokenURL(tokenSrv.URL)
 	sessions := oauth.NewSessionStore()
 	h := NewHandler(balancer, mgr, sessions, cfg, registry, nil, dir)
 
-	sessionID, _, _ := sessions.Create("test-oauth")
+	sessionID, _, _ := sessions.Create(acctID)
 	session, _ := sessions.Get(sessionID)
 
 	fullCode := "somecode#" + session.State
@@ -589,7 +606,7 @@ func TestHandleOAuthLoginComplete_ErrorResponseIsNotHTTP5xx(t *testing.T) {
 
 func TestHandleOAuthLoginComplete_InvalidSession(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(map[string]string{
 		"session_id": "nonexistent-session-id",
@@ -606,10 +623,10 @@ func TestHandleOAuthLoginComplete_InvalidSession(t *testing.T) {
 
 func TestHandleOAuthLoginComplete_StateMismatch(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, acctID := newTestHandler(t)
 
 	// Start a real PKCE session.
-	sessionID, _, err := h.sessions.Create("test-oauth")
+	sessionID, _, err := h.sessions.Create(acctID)
 	if err != nil {
 		t.Fatalf("Create session: %v", err)
 	}

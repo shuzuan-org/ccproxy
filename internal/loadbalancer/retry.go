@@ -59,13 +59,14 @@ type RequestFunc func(account config.AccountConfig, requestID string) (*http.Res
 
 // RetryCallbacks holds optional callbacks for retry events.
 type RetryCallbacks struct {
-	OnTokenRefreshNeeded func(ctx context.Context, accountName string)
+	OnTokenRefreshNeeded func(ctx context.Context, accountID string)
 }
 
 // RetryResult contains the result of ExecuteWithRetry.
 type RetryResult struct {
 	Response       *http.Response
 	StatusCode     int
+	AccountID      string
 	AccountName    string
 	Body           []byte // for error responses that should be forwarded
 	AccountsTried  []string
@@ -112,6 +113,7 @@ func ExecuteWithRetry(
 			return nil, fmt.Errorf("select account: %w", err)
 		}
 
+		accountID := result.Account.ID
 		accountName := result.Account.Name
 		accountsTried = append(accountsTried, accountName)
 		sameAccountRetries := 0
@@ -141,12 +143,13 @@ func ExecuteWithRetry(
 				if resp != nil {
 					headers = resp.Header
 				}
-				balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, 0, headers)
-				balancer.BindSession(sessionKey, accountName)
+				balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, 0, headers)
+				balancer.BindSession(sessionKey, accountID)
 				result.Release()
 				return &RetryResult{
 					Response:       resp,
 					StatusCode:     statusCode,
+					AccountID:      accountID,
 					AccountName:    accountName,
 					AccountsTried:  accountsTried,
 					Retries:        retries,
@@ -173,6 +176,7 @@ func ExecuteWithRetry(
 				return &RetryResult{
 					Response:       resp,
 					StatusCode:     statusCode,
+					AccountID:      accountID,
 					AccountName:    accountName,
 					AccountsTried:  accountsTried,
 					Retries:        retries,
@@ -184,7 +188,7 @@ func ExecuteWithRetry(
 				switch statusCode {
 				case 429:
 					observe.Global.Accounts429.Add(1)
-					observe.Global.Account(accountName).Errors429.Add(1)
+					observe.Global.Account(accountID).Errors429.Add(1)
 					hasResetHeaders := respHeaders != nil &&
 						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
 							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
@@ -195,9 +199,9 @@ func ExecuteWithRetry(
 					)
 				case 529:
 					observe.Global.Accounts529.Add(1)
-					observe.Global.Account(accountName).Errors529.Add(1)
+					observe.Global.Account(accountID).Errors529.Add(1)
 					total529s++
-					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
 					if total529s >= 2 {
 						// Multiple accounts returning 529 — system-wide overload, stop retrying
 						observe.Logger(ctx).Warn("consecutive 529s across accounts, returning to client",
@@ -206,6 +210,7 @@ func ExecuteWithRetry(
 						return &RetryResult{
 							Response:       resp,
 							StatusCode:     529,
+							AccountID:      accountID,
 							AccountName:    accountName,
 							AccountsTried:  accountsTried,
 							Retries:        retries,
@@ -214,7 +219,7 @@ func ExecuteWithRetry(
 					}
 				case 401:
 					if callbacks.OnTokenRefreshNeeded != nil {
-						callbacks.OnTokenRefreshNeeded(ctx, accountName)
+						callbacks.OnTokenRefreshNeeded(ctx, accountID)
 					}
 				}
 
@@ -225,14 +230,14 @@ func ExecuteWithRetry(
 						"switch", switchCount+1,
 						"retry_after", retryAfter.String(),
 					)
-					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
 				}
 
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
 				result.Release()
-				failedAccounts[accountName] = true
+				failedAccounts[accountID] = true
 				balancer.ClearSession(sessionKey)
 				switchCount++
 				failovers++
@@ -253,9 +258,9 @@ func ExecuteWithRetry(
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
 					}
-					balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
+					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
 					result.Release()
-					failedAccounts[accountName] = true
+					failedAccounts[accountID] = true
 					balancer.ClearSession(sessionKey)
 					switchCount++
 					failovers++
@@ -264,7 +269,7 @@ func ExecuteWithRetry(
 					break
 				}
 				// Report the failed attempt (but don't trigger failover yet).
-				balancer.ReportResult(ctx, accountName, statusCode, attemptLatency, retryAfter, respHeaders)
+				balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
 				// Close previous response body before retrying.
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()

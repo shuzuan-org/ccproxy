@@ -27,7 +27,8 @@ const (
 
 // AccountHealth tracks dynamic health state for one account.
 type AccountHealth struct {
-	Name string
+	ID   string // stable internal identifier (UUID)
+	Name string // display name for logs and notifications
 
 	// Budget controller for rate-limit tracking
 	budget *BudgetController
@@ -61,10 +62,11 @@ type AccountHealth struct {
 }
 
 // NewAccountHealth creates a new health tracker for an account.
-func NewAccountHealth(name string) *AccountHealth {
+func NewAccountHealth(id, name string) *AccountHealth {
 	return &AccountHealth{
+		ID:     id,
 		Name:   name,
-		budget: NewBudgetController(name),
+		budget: NewBudgetController(id, name),
 	}
 }
 
@@ -110,6 +112,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 			h.setCooldownWithTracking(cd, "rate_limited")
 			h.recordWindow(true)
 			notify.NotifyAllGlobal(ctx, notify.Event{
+				AccountID:   h.ID,
 				AccountName: h.Name,
 				Type:        notify.EventRateLimited,
 				Detail:      fmt.Sprintf("cooldown: %s", cd),
@@ -133,6 +136,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		h.consecutive529++
 		h.mu.Unlock()
 		notify.NotifyAllGlobal(ctx, notify.Event{
+			AccountID:   h.ID,
 			AccountName: h.Name,
 			Type:        notify.EventOverloaded,
 			Detail:      fmt.Sprintf("cooldown: %s", cd),
@@ -189,6 +193,7 @@ func (h *AccountHealth) RecordTimeout(ctx context.Context) {
 		observe.Logger(ctx).Warn("account cooldown: timeout threshold reached", "account", h.Name, "count", count)
 		h.setCooldownWithTracking(2*time.Minute, "timeout_threshold")
 		notify.NotifyAllGlobal(ctx, notify.Event{
+			AccountID:   h.ID,
 			AccountName: h.Name,
 			Type:        notify.EventTimeoutCooldown,
 			Detail:      fmt.Sprintf("count: %d, cooldown: 2m", count),
@@ -322,13 +327,15 @@ func (h *AccountHealth) Disable(reason string) {
 		eventType = notify.EventAccountBanned
 	}
 	notify.NotifyAllGlobal(context.Background(), notify.Event{
+		AccountID:   h.ID,
 		AccountName: h.Name,
 		Type:        eventType,
 		Detail:      "reason: " + reason,
 	})
 }
 
-// Enable re-enables a disabled account, clearing the disabled state and 401 counter.
+// Enable re-enables a disabled account, clearing the disabled state,
+// 401 counter, and any active cooldown so the account is immediately available.
 // Returns true if the account was actually re-enabled.
 func (h *AccountHealth) Enable() bool {
 	h.mu.Lock()
@@ -340,9 +347,12 @@ func (h *AccountHealth) Enable() bool {
 	h.disabledReason = ""
 	h.consecutive401 = 0
 	h.first401At = time.Time{}
+	h.cooldownUntil = time.Time{}
+	h.cooldownReason = ""
 	h.mu.Unlock()
 
 	notify.NotifyAllGlobal(context.Background(), notify.Event{
+		AccountID:   h.ID,
 		AccountName: h.Name,
 		Type:        notify.EventAccountReEnabled,
 		Detail:      "account re-enabled",

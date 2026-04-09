@@ -495,7 +495,13 @@
       tdName.className = 'td-name';
       var strong = document.createElement('strong');
       strong.textContent = acct.name;
+      strong.style.cursor = 'pointer';
+      strong.title = 'Double-click to rename';
       tdName.appendChild(strong);
+      // Double-click to rename
+      tdName.addEventListener('dblclick', (function(id, name, td) {
+        return function() { editName(id, name, td); };
+      })(acct.id, acct.name, tdName));
       tr.appendChild(tdName);
 
       // Owner cell
@@ -522,14 +528,14 @@
       var proxyEditBtn = document.createElement('button');
       proxyEditBtn.className = 'btn proxy-edit-btn';
       proxyEditBtn.textContent = 'Edit';
-      proxyEditBtn.addEventListener('click', (function(name, td) {
-        return function(e) { e.stopPropagation(); editProxy(name, td); };
-      })(acct.name, tdProxy));
+      proxyEditBtn.addEventListener('click', (function(id, td) {
+        return function(e) { e.stopPropagation(); editProxy(id, td); };
+      })(acct.id, tdProxy));
       tdProxy.appendChild(proxyEditBtn);
       // PC: double-click to edit
-      tdProxy.addEventListener('dblclick', (function(name, td) {
-        return function() { editProxy(name, td); };
-      })(acct.name, tdProxy));
+      tdProxy.addEventListener('dblclick', (function(id, td) {
+        return function() { editProxy(id, td); };
+      })(acct.id, tdProxy));
       tr.appendChild(tdProxy);
 
       // Account status cell
@@ -569,44 +575,44 @@
       var loginBtn = document.createElement('button');
       loginBtn.className = 'btn btn-accent';
       loginBtn.textContent = 'Login';
-      loginBtn.addEventListener('click', (function(name) {
-        return function() { startLogin(name); };
-      })(acct.name));
+      loginBtn.addEventListener('click', (function(id, name) {
+        return function() { startLogin(id, name); };
+      })(acct.id, acct.name));
       actionsDiv.appendChild(loginBtn);
 
       var testBtn = document.createElement('button');
       testBtn.className = 'btn';
       testBtn.textContent = 'Test';
-      testBtn.addEventListener('click', (function(name, btn) {
-        return function() { doTest(name, btn); };
-      })(acct.name, testBtn));
+      testBtn.addEventListener('click', (function(id, btn) {
+        return function() { doTest(id, btn); };
+      })(acct.id, testBtn));
       actionsDiv.appendChild(testBtn);
 
       if (acct.token_status !== 'no token') {
         var refreshBtn = document.createElement('button');
         refreshBtn.className = 'btn btn-refresh';
         refreshBtn.textContent = 'Refresh';
-        refreshBtn.addEventListener('click', (function(name) {
-          return function() { doRefresh(name); };
-        })(acct.name));
+        refreshBtn.addEventListener('click', (function(id, name) {
+          return function() { doRefresh(id, name); };
+        })(acct.id, acct.name));
         actionsDiv.appendChild(refreshBtn);
       }
 
       var removeBtn = document.createElement('button');
       removeBtn.className = 'btn btn-danger';
       removeBtn.textContent = 'Remove';
-      removeBtn.addEventListener('click', (function(name) {
-        return function() { doRemove(name); };
-      })(acct.name));
+      removeBtn.addEventListener('click', (function(id, name) {
+        return function() { doRemove(id, name); };
+      })(acct.id, acct.name));
       actionsDiv.appendChild(removeBtn);
 
       if (acct.health === 'disabled' || acct.health === 'banned') {
         var enableBtn = document.createElement('button');
         enableBtn.className = 'btn btn-accent';
         enableBtn.textContent = 'Enable';
-        enableBtn.addEventListener('click', (function(name, btn) {
-          return function() { doEnable(name, btn); };
-        })(acct.name, enableBtn));
+        enableBtn.addEventListener('click', (function(id, btn) {
+          return function() { doEnable(id, btn); };
+        })(acct.id, enableBtn));
         actionsDiv.appendChild(enableBtn);
       }
 
@@ -654,7 +660,7 @@
 
   // --- OAuth Actions ---
 
-  async function startLogin(accountName) {
+  async function startLogin(accountId, accountName) {
     const statusEl = document.getElementById('modal-status');
     const codeInput = document.getElementById('modal-code');
     const urlBox = document.getElementById('auth-url-box');
@@ -671,7 +677,7 @@
       const resp = await fetchJSON('/api/oauth/login/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: accountName }),
+        body: JSON.stringify({ account: accountId }),
       });
       currentSessionId = resp.session_id;
       urlInput.value = resp.authorization_url;
@@ -749,13 +755,13 @@
     currentSessionId = null;
   }
 
-  async function doRefresh(accountName) {
+  async function doRefresh(accountId, accountName) {
     if (!confirm('Force refresh token for ' + esc(accountName) + '?')) return;
     try {
       await fetchJSON('/api/oauth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: accountName }),
+        body: JSON.stringify({ account: accountId }),
       });
       refresh();
     } catch (err) {
@@ -763,7 +769,7 @@
     }
   }
 
-  async function doTest(accountName, btn) {
+  async function doTest(accountId, btn) {
     btn.disabled = true;
     btn.textContent = 'Testing…';
     btn.className = 'btn';
@@ -771,7 +777,7 @@
       const data = await fetchJSON('/api/accounts/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: accountName }),
+        body: JSON.stringify({ account: accountId }),
       });
       btn.textContent = '✓ OK';
       btn.className = 'btn btn-ok';
@@ -785,6 +791,54 @@
     }
   }
 
+  // --- Name Inline Edit ---
+
+  function editName(accountId, currentName, td) {
+    if (td.querySelector('.inline-name-input')) return;
+
+    td.innerHTML = '<input class="inline-name-input" type="text" value="' + esc(currentName) + '" />';
+    var input = td.querySelector('.inline-name-input');
+    input.focus();
+    input.select();
+
+    var saving = false;
+
+    async function save() {
+      if (saving) return;
+      var val = input.value.trim();
+      if (!val || val === currentName) { cancel(); return; }
+      saving = true;
+      try {
+        await fetchJSON('/api/accounts/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: accountId, name: val }),
+        });
+        refresh();
+      } catch (err) {
+        alert('Rename failed: ' + err.message);
+        cancel();
+      }
+    }
+
+    function cancel() {
+      td.innerHTML = '';
+      var strong = document.createElement('strong');
+      strong.textContent = currentName;
+      strong.style.cursor = 'pointer';
+      strong.title = 'Double-click to rename';
+      td.appendChild(strong);
+    }
+
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', function() {
+      setTimeout(function() { if (!saving) cancel(); }, 150);
+    });
+  }
+
   // --- Proxy Inline Edit ---
 
   function isValidProxy(s) {
@@ -796,7 +850,7 @@
     }
   }
 
-  function editProxy(accountName, td) {
+  function editProxy(accountId, td) {
     if (td.querySelector('.inline-proxy-input')) return;
 
     // Exclude the edit button text from "current value"
@@ -817,7 +871,7 @@
       var val = input.value.trim();
       if (val === '') {
         saving = true;
-        await submitProxy(accountName, '', td);
+        await submitProxy(accountId, '', td);
         return;
       }
       if (!isValidProxy(val)) {
@@ -825,7 +879,7 @@
         return;
       }
       saving = true;
-      await submitProxy(accountName, val, td);
+      await submitProxy(accountId, val, td);
     }
 
     function cancel() {
@@ -836,7 +890,7 @@
       }
       // Re-attach edit button listener
       td.querySelector('.proxy-edit-btn').addEventListener('click', function(e) {
-        e.stopPropagation(); editProxy(accountName, td);
+        e.stopPropagation(); editProxy(accountId, td);
       });
     }
 
@@ -849,12 +903,12 @@
     });
   }
 
-  async function submitProxy(accountName, proxy, td) {
+  async function submitProxy(accountId, proxy, td) {
     try {
       await fetchJSON('/api/accounts/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: accountName, proxy: proxy }),
+        body: JSON.stringify({ id: accountId, proxy: proxy }),
       });
       refresh();
     } catch (err) {
@@ -926,13 +980,13 @@
     });
   }
 
-  async function doRemove(accountName) {
+  async function doRemove(accountId, accountName) {
     if (!confirm('Remove account "' + esc(accountName) + '"? This will also delete its OAuth token.')) return;
     try {
       await fetchJSON('/api/accounts/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: accountName }),
+        body: JSON.stringify({ id: accountId }),
       });
       refresh();
     } catch (err) {
@@ -940,14 +994,14 @@
     }
   }
 
-  async function doEnable(accountName, btn) {
+  async function doEnable(accountId, btn) {
     btn.disabled = true;
     btn.textContent = 'Enabling…';
     try {
       await fetchJSON('/api/accounts/enable', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: accountName }),
+        body: JSON.stringify({ account: accountId }),
       });
       refresh();
     } catch (err) {

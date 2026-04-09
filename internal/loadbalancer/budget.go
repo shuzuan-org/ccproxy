@@ -58,7 +58,8 @@ type BudgetWindow struct {
 
 // BudgetController tracks dual-window (5h/7d) rate-limit budget for one account.
 type BudgetController struct {
-	name           string // account name for logging
+	id             string // stable account ID for internal use
+	displayName    string // human-readable name for logging
 	mu             sync.RWMutex
 	window5h       BudgetWindow
 	window7d       BudgetWindow
@@ -69,9 +70,9 @@ type BudgetController struct {
 	lastState      SchedulingState // cached for state-change detection
 }
 
-// NewBudgetController creates a new budget controller for the named account.
-func NewBudgetController(name string) *BudgetController {
-	return &BudgetController{name: name}
+// NewBudgetController creates a new budget controller for the given account.
+func NewBudgetController(id, displayName string) *BudgetController {
+	return &BudgetController{id: id, displayName: displayName}
 }
 
 // UpdateFromHeaders parses anthropic-ratelimit-unified-* response headers.
@@ -133,7 +134,7 @@ func (bc *BudgetController) UpdateFromHeaders(ctx context.Context, headers http.
 	}
 
 	observe.Logger(ctx).Debug("budget: headers updated",
-		"account", bc.name,
+		"account", bc.displayName,
 		"util_5h", bc.window5h.Utilization,
 		"util_7d", bc.window7d.Utilization,
 		"reset_5h", bc.window5h.ResetAt.Format(time.RFC3339),
@@ -170,7 +171,7 @@ func (bc *BudgetController) UpdateFromUsageAPI(fiveHour, sevenDay UsageAPIWindow
 	}
 
 	slog.Debug("budget: usage API updated",
-		"account", bc.name,
+		"account", bc.displayName,
 		"util_5h", bc.window5h.Utilization,
 		"util_7d", bc.window7d.Utilization,
 		"state", bc.stateLocked().String(),
@@ -202,17 +203,19 @@ func (bc *BudgetController) checkStateChange(ctx context.Context) {
 	current := bc.stateLocked()
 	if current != bc.lastState {
 		observe.Logger(ctx).Info("budget: state changed",
-			"account", bc.name,
+			"account", bc.displayName,
 			"from", bc.lastState.String(),
 			"to", current.String(),
 		)
 		bc.lastState = current
 		if current == StateBlocked {
-			name := bc.name
+			id := bc.id
+			name := bc.displayName
 			util5h := bc.window5h.Utilization
 			util7d := bc.window7d.Utilization
 			go func() {
 				notify.NotifyAllGlobal(context.Background(), notify.Event{
+					AccountID:   id,
 					AccountName: name,
 					Type:        notify.EventBudgetBlocked,
 					Detail:      fmt.Sprintf("util_5h=%.0f%%, util_7d=%.0f%%", util5h*100, util7d*100),
@@ -278,7 +281,7 @@ func (bc *BudgetController) Record429(ctx context.Context, hasResetHeaders bool)
 		bc.penaltyShift = penaltyMax
 	}
 	observe.Logger(ctx).Warn("budget: 429 recorded",
-		"account", bc.name,
+		"account", bc.displayName,
 		"true_429", hasResetHeaders,
 		"consecutive", bc.consecutive429,
 		"penalty", bc.penaltyShift,
@@ -300,7 +303,7 @@ func (bc *BudgetController) RecordSuccess(ctx context.Context) {
 		}
 		bc.lastPenaltyAt = time.Now() // reset timer for next step
 		observe.Logger(ctx).Info("budget: penalty recovered",
-			"account", bc.name,
+			"account", bc.displayName,
 			"penalty", bc.penaltyShift,
 		)
 		bc.checkStateChange(ctx)
@@ -334,7 +337,7 @@ func (bc *BudgetController) DynamicMaxConcurrency(hardLimit int) int {
 	}
 	if dynamic != hardLimit {
 		slog.Debug("budget: dynamic concurrency adjusted",
-			"account", bc.name,
+			"account", bc.displayName,
 			"default_max", hardLimit,
 			"effective_max", dynamic,
 			"max_util", maxUtil,

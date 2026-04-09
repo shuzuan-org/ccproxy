@@ -33,6 +33,7 @@ type UpdateStatus struct {
 
 // AccountState represents the runtime state of a single account.
 type AccountState struct {
+	Name           string
 	Health         string
 	Concurrency    int
 	MaxConcurrency int
@@ -135,10 +136,10 @@ func (m *Metrics) StartPeriodicLog(ctx context.Context, interval time.Duration, 
 				)
 
 				if state != nil {
-					for name, as := range state.AccountStates() {
-						am := m.Account(name)
+					for id, as := range state.AccountStates() {
+						am := m.Account(id)
 						logger.Info("metrics account",
-							"account", name,
+							"account", as.Name,
 							"requests", am.RequestsTotal.Load(),
 							"success", am.RequestsSuccess.Load(),
 							"errors", am.RequestsError.Load(),

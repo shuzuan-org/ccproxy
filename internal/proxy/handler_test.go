@@ -65,6 +65,7 @@ func buildBalancer(acct config.AccountConfig) *loadbalancer.Balancer {
 func buildOAuthAccount(baseURL string) config.AccountConfig {
 	enabled := true
 	return config.AccountConfig{
+		ID:             "test-oauth-id",
 		Name:           "test-oauth",
 		BaseURL:        baseURL,
 		MaxConcurrency: 10,
@@ -81,7 +82,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	err = store.Save("test-oauth", oauth.OAuthToken{
+	err = store.Save("test-oauth-id", oauth.OAuthToken{
 		AccessToken:  token,
 		RefreshToken: "rt-ignored",
 		ExpiresAt:    time.Now().Add(2 * time.Hour),
@@ -90,7 +91,7 @@ func buildOAuthManager(t *testing.T, token string) *oauth.Manager {
 		t.Fatalf("store.Save: %v", err)
 	}
 
-	manager := oauth.NewManager([]string{"test-oauth"}, store, nil)
+	manager := oauth.NewManager([]string{"test-oauth-id"}, store, nil)
 	return manager
 }
 
@@ -519,7 +520,7 @@ func TestHandler_BansAccount(t *testing.T) {
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, req)
 
-			health := balancer.GetHealth("test-oauth")
+			health := balancer.GetHealth("test-oauth-id")
 			if health == nil {
 				t.Fatal("expected health tracker")
 			}
@@ -567,7 +568,7 @@ func TestHandler_DoesNotBan(t *testing.T) {
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, req)
 
-			health := balancer.GetHealth("test-oauth")
+			health := balancer.GetHealth("test-oauth-id")
 			if health == nil {
 				t.Fatal("expected health tracker")
 			}

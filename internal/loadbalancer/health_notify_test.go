@@ -49,7 +49,7 @@ func withMockNotifier(t *testing.T) *mockNotifier {
 
 func TestDisable_NotifiesAccountDisabled(t *testing.T) {
 	mock := withMockNotifier(t)
-	h := NewAccountHealth("acct1")
+	h := NewAccountHealth("acct1-id", "acct1")
 	h.Disable("consecutive_401")
 	events := mock.Events()
 	if len(events) != 1 {
@@ -65,7 +65,7 @@ func TestDisable_NotifiesAccountDisabled(t *testing.T) {
 
 func TestDisable_NotifiesAccountBanned(t *testing.T) {
 	mock := withMockNotifier(t)
-	h := NewAccountHealth("acct2")
+	h := NewAccountHealth("acct2-id", "acct2")
 	h.Disable(PlatformBanReasonForbidden)
 	events := mock.Events()
 	if len(events) != 1 {
@@ -78,7 +78,7 @@ func TestDisable_NotifiesAccountBanned(t *testing.T) {
 
 func TestRecordError_429True_NotifiesRateLimited(t *testing.T) {
 	mock := withMockNotifier(t)
-	h := NewAccountHealth("acct3")
+	h := NewAccountHealth("acct3-id", "acct3")
 	headers := http.Header{
 		"Anthropic-Ratelimit-Unified-5h-Reset": []string{time.Now().Add(time.Minute).Format(time.RFC3339)},
 	}
@@ -94,7 +94,7 @@ func TestRecordError_429True_NotifiesRateLimited(t *testing.T) {
 
 func TestRecordError_529_NotifiesOverloaded(t *testing.T) {
 	mock := withMockNotifier(t)
-	h := NewAccountHealth("acct4")
+	h := NewAccountHealth("acct4-id", "acct4")
 	h.RecordError(context.Background(), 529, 0, nil)
 	events := mock.Events()
 	if len(events) != 1 {
@@ -107,7 +107,7 @@ func TestRecordError_529_NotifiesOverloaded(t *testing.T) {
 
 func TestRecordTimeout_ThresholdReached_NotifiesTimeoutCooldown(t *testing.T) {
 	mock := withMockNotifier(t)
-	h := NewAccountHealth("acct5")
+	h := NewAccountHealth("acct5-id", "acct5")
 	ctx := context.Background()
 	for i := 0; i < timeoutThreshold; i++ {
 		h.RecordTimeout(ctx)

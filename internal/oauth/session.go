@@ -12,10 +12,10 @@ const defaultSessionTTL = 10 * time.Minute
 
 // PKCESession stores the state of an in-progress OAuth login.
 type PKCESession struct {
-	AccountName string
-	Verifier     string
-	State        string
-	CreatedAt    time.Time
+	AccountID string
+	Verifier  string
+	State     string
+	CreatedAt time.Time
 }
 
 // SessionStore manages PKCE sessions in memory with auto-expiry.
@@ -35,7 +35,7 @@ func NewSessionStore() *SessionStore {
 
 // Create starts a new PKCE session for the given account.
 // Returns the session ID and the authorization URL.
-func (s *SessionStore) Create(accountName string) (sessionID, authURL string, err error) {
+func (s *SessionStore) Create(accountID string) (sessionID, authURL string, err error) {
 	verifier := GenerateVerifier()
 	challenge := GenerateChallenge(verifier)
 	state := GenerateState()
@@ -51,10 +51,10 @@ func (s *SessionStore) Create(accountName string) (sessionID, authURL string, er
 
 	s.mu.Lock()
 	s.sessions[sessionID] = &PKCESession{
-		AccountName: accountName,
-		Verifier:     verifier,
-		State:        state,
-		CreatedAt:    time.Now(),
+		AccountID: accountID,
+		Verifier:  verifier,
+		State:     state,
+		CreatedAt: time.Now(),
 	}
 	s.mu.Unlock()
 

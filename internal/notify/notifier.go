@@ -42,7 +42,8 @@ func (e EventType) Category() EventCategory {
 
 // Event represents an account anomaly to be notified.
 type Event struct {
-	AccountName string
+	AccountID   string    // stable internal identifier
+	AccountName string    // display name for messages
 	Type        EventType
 	Detail      string // human-readable context, e.g. "cooldown: 60s"
 }
@@ -57,14 +58,14 @@ type NoopNotifier struct{}
 
 func (n *NoopNotifier) Notify(_ context.Context, _ Event) error { return nil }
 
-// OwnerResolver looks up the owner of an account by name.
-type OwnerResolver func(accountName string) string
+// OwnerResolver looks up the owner of an account by ID.
+type OwnerResolver func(accountID string) string
 
 // NotifierRegistry manages per-user notifiers and dispatches events.
 type NotifierRegistry struct {
 	mu       sync.RWMutex
 	entries  map[string]Notifier // username → notifier
-	resolver OwnerResolver       // resolves account name → owner username
+	resolver OwnerResolver       // resolves account ID → owner username
 }
 
 // NewRegistry creates a NotifierRegistry with the given owner resolver.
@@ -102,7 +103,7 @@ func (r *NotifierRegistry) NotifyAll(ctx context.Context, event Event) {
 
 	owner := ""
 	if r.resolver != nil {
-		owner = r.resolver(event.AccountName)
+		owner = r.resolver(event.AccountID)
 	}
 
 	for username, notifier := range snapshot {

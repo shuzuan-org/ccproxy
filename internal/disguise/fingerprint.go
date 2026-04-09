@@ -123,6 +123,28 @@ func (s *FingerprintStore) Remove(accountName string) error {
 	return s.saveLocked()
 }
 
+// MigrateKeys re-keys the fingerprint store from old account names to UUIDs.
+func (s *FingerprintStore) MigrateKeys(nameToID map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	migrated := false
+	for key, fp := range s.fingerprints {
+		if id, ok := nameToID[key]; ok && id != key {
+			s.fingerprints[id] = fp
+			delete(s.fingerprints, key)
+			migrated = true
+		}
+	}
+	if migrated {
+		if err := s.saveLocked(); err != nil {
+			slog.Warn("fingerprints: failed to persist key migration", "error", err.Error())
+		} else {
+			slog.Info("fingerprints: migrated keys to UUIDs", "count", len(nameToID))
+		}
+	}
+}
+
 func generateFingerprint(now time.Time) *Fingerprint {
 	return &Fingerprint{
 		ClientID:                GenerateClientID(),

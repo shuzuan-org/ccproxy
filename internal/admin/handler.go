@@ -92,6 +92,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // AccountState holds the runtime state of a single backend account.
 type AccountState struct {
+	ID             string  `json:"id"`
 	Name           string  `json:"name"`
 	Owner          string  `json:"owner,omitempty"`
 	AuthMode       string  `json:"auth_mode"`
@@ -148,10 +149,11 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range entries {
 		var loadRate, activeSlots int
 		if entry.Enabled {
-			activeSlots, _, loadRate = tracker.LoadInfo(entry.Name, maxConcurrency)
+			activeSlots, _, loadRate = tracker.LoadInfo(entry.ID, maxConcurrency)
 		}
 
 		state := AccountState{
+			ID:             entry.ID,
 			Name:           entry.Name,
 			Owner:          entry.Owner,
 			AuthMode:       "oauth",
@@ -162,7 +164,7 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 			Proxy:          entry.Proxy,
 		}
 
-		if health := h.balancer.GetHealth(entry.Name); health != nil {
+		if health := h.balancer.GetHealth(entry.ID); health != nil {
 			state.Health = "healthy"
 			if health.IsBanned() {
 				state.Health = "banned"
@@ -194,7 +196,7 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 
 		// Add token info
 		if h.oauthMgr != nil {
-			token, _ := h.oauthMgr.Status(entry.Name)
+			token, _ := h.oauthMgr.Status(entry.ID)
 			state.TokenStatus = tokenStatus(token)
 			if token != nil {
 				exp := token.ExpiresAt.Format(time.RFC3339)
@@ -228,12 +230,12 @@ func (h *Handler) HandleOAuthLoginStart(w http.ResponseWriter, r *http.Request) 
 
 	sessionID, authURL, err := h.sessions.Create(req.Account)
 	if err != nil {
-		slog.Error("oauth: failed to create PKCE session", "account", req.Account, "error", err.Error())
+		slog.Error("oauth: failed to create PKCE session", "account_id", req.Account, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
-	slog.Info("oauth: login started", "account", req.Account, "session_id", sessionID)
+	slog.Info("oauth: login started", "account", h.accountDisplayName(req.Account), "account_id", req.Account, "session_id", sessionID)
 	writeJSON(w, map[string]string{
 		"session_id":        sessionID,
 		"authorization_url": authURL,
@@ -258,7 +260,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, ownerOK := h.requireOwner(w, r, session.AccountName); !ownerOK {
+	if _, ownerOK := h.requireOwner(w, r, session.AccountID); !ownerOK {
 		return
 	}
 
@@ -269,19 +271,19 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 		codeState = req.Code[idx+1:]
 	}
 	if subtle.ConstantTimeCompare([]byte(session.State), []byte(codeState)) != 1 {
-		slog.Warn("oauth: login complete failed", "reason", "state_mismatch", "account", session.AccountName, "session_id", req.SessionID)
+		slog.Warn("oauth: login complete failed", "reason", "state_mismatch", "account_id", session.AccountID, "session_id", req.SessionID)
 		h.sessions.Delete(req.SessionID)
 		writeError(w, http.StatusBadRequest, "invalid OAuth state parameter")
 		return
 	}
 
 	// Exchange code for token (pass full code with #state so provider sends state to Anthropic)
-	slog.Info("oauth: completing login", "account", session.AccountName, "session_id", req.SessionID)
-	proxyURL := h.registry.GetProxy(session.AccountName)
-	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.AccountName, req.Code, session.Verifier, proxyURL)
+	slog.Info("oauth: completing login", "account_id", session.AccountID, "session_id", req.SessionID)
+	proxyURL := h.registry.GetProxy(session.AccountID)
+	token, err := h.oauthMgr.ExchangeAndSave(r.Context(), session.AccountID, req.Code, session.Verifier, proxyURL)
 	if err != nil {
 		slog.Error("oauth: login code exchange failed",
-			"account", session.AccountName,
+			"account_id", session.AccountID,
 			"error", err.Error(),
 		)
 		writeError(w, http.StatusBadRequest, "code exchange failed: "+err.Error())
@@ -292,11 +294,11 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 
 	// Auto re-enable if account was disabled (including platform ban).
 	// A successful OAuth login proves the account is valid again.
-	if health := h.balancer.GetHealth(session.AccountName); health != nil {
+	if health := h.balancer.GetHealth(session.AccountID); health != nil {
 		if health.IsDisabled() {
 			if health.Enable() {
 				slog.Info("oauth: account re-enabled after login",
-					"account", session.AccountName,
+					"account_id", session.AccountID,
 				)
 				if err := h.balancer.SaveState(h.dataDir); err != nil {
 					slog.Warn("failed to persist health state after auto re-enable", "error", err)
@@ -306,7 +308,7 @@ func (h *Handler) HandleOAuthLoginComplete(w http.ResponseWriter, r *http.Reques
 	}
 
 	slog.Info("oauth: login complete",
-		"account", session.AccountName,
+		"account_id", session.AccountID,
 		"expires_at", token.ExpiresAt.Format(time.RFC3339),
 	)
 	writeJSON(w, map[string]any{
@@ -334,16 +336,17 @@ func (h *Handler) HandleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("oauth: manual refresh requested", "account", req.Account)
+	slog.Info("oauth: manual refresh requested", "account", h.accountDisplayName(req.Account), "account_id", req.Account)
 	newToken, err := h.oauthMgr.ForceRefresh(r.Context(), req.Account)
 	if err != nil {
-		slog.Error("oauth: manual refresh failed", "account", req.Account, "error", err.Error())
+		slog.Error("oauth: manual refresh failed", "account_id", req.Account, "error", err.Error())
 		writeError(w, http.StatusBadRequest, "refresh failed: "+err.Error())
 		return
 	}
 
 	slog.Info("oauth: manual refresh success",
-		"account", req.Account,
+		"account", h.accountDisplayName(req.Account),
+		"account_id", req.Account,
 		"expires_at", newToken.ExpiresAt.Format(time.RFC3339),
 	)
 	writeJSON(w, map[string]any{
@@ -367,12 +370,12 @@ func (h *Handler) HandleOAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.oauthMgr.Logout(req.Account); err != nil {
-		slog.Error("oauth: logout failed to delete token", "account", req.Account, "error", err.Error())
+		slog.Error("oauth: logout failed to delete token", "account_id", req.Account, "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete token")
 		return
 	}
 
-	slog.Info("oauth: logout success", "account", req.Account)
+	slog.Info("oauth: logout success", "account", h.accountDisplayName(req.Account), "account_id", req.Account)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -392,9 +395,17 @@ func (h *Handler) HandleDashboard() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-// isOAuthAccount checks if the given name is a configured account.
-func (h *Handler) isOAuthAccount(name string) bool {
-	return h.registry.Has(name)
+// isOAuthAccount checks if the given ID is a configured account.
+func (h *Handler) isOAuthAccount(id string) bool {
+	return h.registry.Has(id)
+}
+
+// accountDisplayName resolves an account ID to its display name for logging.
+func (h *Handler) accountDisplayName(id string) string {
+	if acct, ok := h.registry.GetByID(id); ok {
+		return acct.Name
+	}
+	return id
 }
 
 // requireUser checks that the request is from a non-admin user.
@@ -412,14 +423,14 @@ func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) (string, b
 	return auth.Username, true
 }
 
-// requireOwner checks that the request is from the owner of the named account.
+// requireOwner checks that the request is from the owner of the given account.
 // Returns the username or writes an error response.
-func (h *Handler) requireOwner(w http.ResponseWriter, r *http.Request, accountName string) (string, bool) {
+func (h *Handler) requireOwner(w http.ResponseWriter, r *http.Request, accountID string) (string, bool) {
 	username, ok := h.requireUser(w, r)
 	if !ok {
 		return "", false
 	}
-	if !h.registry.IsOwner(accountName, username) {
+	if !h.registry.IsOwner(accountID, username) {
 		writeError(w, http.StatusForbidden, "you do not own this account")
 		return "", false
 	}
@@ -428,7 +439,7 @@ func (h *Handler) requireOwner(w http.ResponseWriter, r *http.Request, accountNa
 
 // requireOwnerOrAdmin checks that the request is from the account owner or admin.
 // Admin can operate on any account; regular users can only operate on their own.
-func (h *Handler) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, accountName string) (string, bool) {
+func (h *Handler) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, accountID string) (string, bool) {
 	auth := GetAdminAuth(r.Context())
 	if auth == nil {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -437,7 +448,7 @@ func (h *Handler) requireOwnerOrAdmin(w http.ResponseWriter, r *http.Request, ac
 	if auth.IsAdmin {
 		return auth.Username, true
 	}
-	if !h.registry.IsOwner(accountName, auth.Username) {
+	if !h.registry.IsOwner(accountID, auth.Username) {
 		writeError(w, http.StatusForbidden, "you do not own this account")
 		return "", false
 	}
@@ -474,17 +485,18 @@ func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.registry.Add(req.Name, username); err != nil {
+	newID, err := h.registry.Add(req.Name, username)
+	if err != nil {
 		slog.Warn("add account failed", "name", req.Name, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Ensure the oauth manager knows about the new account.
-	h.oauthMgr.UpdateAccounts(h.registry.Names())
+	h.oauthMgr.UpdateAccounts(h.registry.IDs())
 
-	slog.Info("account added", "name", req.Name)
-	writeJSON(w, map[string]bool{"ok": true})
+	slog.Info("account added", "name", req.Name, "id", newID)
+	writeJSON(w, map[string]any{"ok": true, "id": newID})
 }
 
 // HandleRemoveAccount removes an account from the registry and cleans up its OAuth token.
@@ -492,31 +504,31 @@ func (h *Handler) HandleAddAccount(w http.ResponseWriter, r *http.Request) {
 // POST /api/accounts/remove
 func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		ID string `json:"id"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if _, ok := h.requireOwnerOrAdmin(w, r, req.Name); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.ID); !ok {
 		return
 	}
 
 	// Clean up OAuth token before removing.
-	if err := h.oauthMgr.Logout(req.Name); err != nil {
-		slog.Warn("failed to delete oauth token on account removal", "name", req.Name, "error", err.Error())
+	if err := h.oauthMgr.Logout(req.ID); err != nil {
+		slog.Warn("failed to delete oauth token on account removal", "id", req.ID, "error", err.Error())
 	}
 
-	if err := h.registry.Remove(req.Name); err != nil {
-		slog.Warn("remove account failed", "name", req.Name, "error", err.Error())
+	if err := h.registry.Remove(req.ID); err != nil {
+		slog.Warn("remove account failed", "id", req.ID, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Update oauth manager account list.
-	h.oauthMgr.UpdateAccounts(h.registry.Names())
+	h.oauthMgr.UpdateAccounts(h.registry.IDs())
 
-	slog.Info("account removed", "name", req.Name)
+	slog.Info("account removed", "id", req.ID)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -525,23 +537,47 @@ func (h *Handler) HandleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 // POST /api/accounts/proxy
 func (h *Handler) HandleUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name  string `json:"name"`
+		ID    string `json:"id"`
 		Proxy string `json:"proxy"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 
-	if _, ok := h.requireOwnerOrAdmin(w, r, req.Name); !ok {
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.ID); !ok {
 		return
 	}
 
-	if err := h.registry.UpdateProxy(req.Name, req.Proxy); err != nil {
+	if err := h.registry.UpdateProxy(req.ID, req.Proxy); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	slog.Info("account proxy updated", "name", req.Name, "proxy", req.Proxy)
+	slog.Info("account proxy updated", "id", req.ID, "proxy", req.Proxy)
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// HandleRenameAccount changes the display name of an account.
+// POST /api/accounts/rename
+func (h *Handler) HandleRenameAccount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+
+	if _, ok := h.requireOwnerOrAdmin(w, r, req.ID); !ok {
+		return
+	}
+
+	if err := h.registry.Rename(req.ID, req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	slog.Info("account renamed", "id", req.ID, "name", req.Name)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -647,7 +683,7 @@ func (h *Handler) HandleTestAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleAccountEnable re-enables a disabled account.
-// POST /api/accounts/{name}/enable
+// POST /api/accounts/enable
 func (h *Handler) HandleAccountEnable(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Account string `json:"account"`
@@ -672,7 +708,7 @@ func (h *Handler) HandleAccountEnable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if health.Enable() {
-		slog.Info("account re-enabled via admin", "account", req.Account)
+		slog.Info("account re-enabled via admin", "account", h.accountDisplayName(req.Account), "account_id", req.Account)
 		if err := h.balancer.SaveState(h.dataDir); err != nil {
 			slog.Warn("failed to persist health state after enable", "error", err)
 		}

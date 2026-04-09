@@ -19,7 +19,7 @@ import (
 
 func TestBudgetCheckStateChange_BlockedNotifies(t *testing.T) {
 	mock := withMockNotifier(t) // reuse helper from health_notify_test.go
-	bc := NewBudgetController("budget-acct")
+	bc := NewBudgetController("budget-acct-id", "budget-acct")
 
 	// Drive state into Blocked by injecting headers with high utilization.
 	// Note: http.Header literal keys are NOT canonicalized, so we must use
@@ -47,7 +47,7 @@ func TestBudgetCheckStateChange_BlockedNotifies(t *testing.T) {
 
 func TestBudgetCheckStateChange_NormalDoesNotNotify(t *testing.T) {
 	mock := withMockNotifier(t)
-	bc := NewBudgetController("budget-acct2")
+	bc := NewBudgetController("budget-acct2-id", "budget-acct2")
 
 	headers := http.Header{
 		"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.50"},

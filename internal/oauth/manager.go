@@ -15,22 +15,22 @@ const tokenRefreshThreshold = 1 * time.Hour
 
 type Manager struct {
 	mu            sync.RWMutex
-	accounts     []string // names of oauth accounts
+	accounts     []string // IDs of oauth accounts
 	provider      *AnthropicProvider
 	store         *TokenStore
 	refreshMu     map[string]*sync.Mutex
-	proxyResolver func(accountName string) string // resolves proxy URL per account
+	proxyResolver func(accountID string) string // resolves proxy URL per account
 }
 
-// NewManager creates an OAuth manager for the given account names.
+// NewManager creates an OAuth manager for the given account IDs.
 // proxyResolver may be nil if no proxy resolution is needed.
-func NewManager(names []string, store *TokenStore, proxyResolver func(string) string) *Manager {
-	refreshMu := make(map[string]*sync.Mutex, len(names))
-	for _, name := range names {
-		refreshMu[name] = &sync.Mutex{}
+func NewManager(ids []string, store *TokenStore, proxyResolver func(string) string) *Manager {
+	refreshMu := make(map[string]*sync.Mutex, len(ids))
+	for _, id := range ids {
+		refreshMu[id] = &sync.Mutex{}
 	}
-	accountsCopy := make([]string, len(names))
-	copy(accountsCopy, names)
+	accountsCopy := make([]string, len(ids))
+	copy(accountsCopy, ids)
 	return &Manager{
 		accounts:     accountsCopy,
 		provider:      NewAnthropicProvider(),
@@ -40,16 +40,16 @@ func NewManager(names []string, store *TokenStore, proxyResolver func(string) st
 	}
 }
 
-// UpdateAccounts dynamically replaces the account name list and refresh mutex map.
-func (m *Manager) UpdateAccounts(names []string) {
+// UpdateAccounts dynamically replaces the account ID list and refresh mutex map.
+func (m *Manager) UpdateAccounts(ids []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.accounts = make([]string, len(names))
-	copy(m.accounts, names)
+	m.accounts = make([]string, len(ids))
+	copy(m.accounts, ids)
 	// Add new mutexes for new accounts, keep existing ones.
-	for _, name := range names {
-		if _, ok := m.refreshMu[name]; !ok {
-			m.refreshMu[name] = &sync.Mutex{}
+	for _, id := range ids {
+		if _, ok := m.refreshMu[id]; !ok {
+			m.refreshMu[id] = &sync.Mutex{}
 		}
 	}
 }

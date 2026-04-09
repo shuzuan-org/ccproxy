@@ -25,7 +25,7 @@ func withUserAuth(r *http.Request, username string) *http.Request {
 
 func TestHandleNotifyConfig_GET_MasksToken(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	// Pre-save config so GET returns data
 	if err := notify.SaveConfig(h.dataDir, "admin", notify.NotifyConfig{
 		BotToken:       "bot:token1234",
@@ -58,7 +58,7 @@ func TestHandleNotifyConfig_GET_MasksToken(t *testing.T) {
 
 func TestHandleNotifyConfig_GET_EmptyConfig(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	r := withAdminAuth(httptest.NewRequest(http.MethodGet, "/api/notify/config", nil))
 	w := httptest.NewRecorder()
 	h.HandleNotifyConfig(w, r)
@@ -69,7 +69,7 @@ func TestHandleNotifyConfig_GET_EmptyConfig(t *testing.T) {
 
 func TestHandleNotifyConfig_POST_SavesConfig(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	body := map[string]interface{}{
 		"bot_token":       "new-bot-token",
 		"chat_id":         "-100111",
@@ -102,7 +102,7 @@ func TestHandleNotifyConfig_POST_SavesConfig(t *testing.T) {
 
 func TestHandleNotifyConfig_POST_PreservesMaskedToken(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	// Pre-save a token
 	notify.SaveConfig(h.dataDir, "admin", notify.NotifyConfig{BotToken: "secret-token", ChatID: "-1"})
 
@@ -128,7 +128,7 @@ func TestHandleNotifyConfig_POST_PreservesMaskedToken(t *testing.T) {
 
 func TestHandleNotifyConfig_POST_UserForcesDisabledOnly(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	body := map[string]interface{}{
 		"bot_token":       "user-bot-token",
 		"chat_id":         "-100222",
@@ -155,7 +155,7 @@ func TestHandleNotifyConfig_POST_UserForcesDisabledOnly(t *testing.T) {
 
 func TestHandleNotifyTest_NoConfig(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	r := withAdminAuth(httptest.NewRequest(http.MethodPost, "/api/notify/test", nil))
 	w := httptest.NewRecorder()
 	h.HandleNotifyTest(w, r)
@@ -166,7 +166,7 @@ func TestHandleNotifyTest_NoConfig(t *testing.T) {
 
 func TestHandleNotifyConfig_GET_NoAuth(t *testing.T) {
 	t.Parallel()
-	h := newTestHandler(t)
+	h, _ := newTestHandler(t)
 	r := httptest.NewRequest(http.MethodGet, "/api/notify/config", nil)
 	// No auth context
 	w := httptest.NewRecorder()

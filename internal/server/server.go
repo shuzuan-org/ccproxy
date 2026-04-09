@@ -50,16 +50,20 @@ func New(cfg *config.Config, version string) (*Server, error) {
 
 	runtimeAccounts := cfg.RuntimeAccounts(registry)
 
+	// Migrate persistent file keys from account names to UUIDs (one-time).
+	nameToID := registry.NameToIDMap()
+
 	// 2. Create concurrency tracker and load balancer.
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(runtimeAccounts, tracker)
-	balancer.LoadState("data")
+	balancer.LoadState("data", nameToID)
 	balancer.StartCleanup(ctx)
 	balancer.StartPersistence(ctx, "data")
 
 	// 3. Create disguise engine.
 	disguiseEngine := disguise.NewEngine("data")
 	disguiseEngine.StartSessionCleanup(ctx)
+	disguiseEngine.GetFingerprintStore().MigrateKeys(nameToID)
 
 	// 4. Create OAuth manager (all accounts use OAuth).
 	store, err := oauth.NewTokenStore("data")
@@ -67,7 +71,10 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		cancel()
 		return nil, fmt.Errorf("create oauth token store: %w", err)
 	}
-	oauthMgr := oauth.NewManager(registry.Names(), store, registry.GetProxy)
+
+	store.MigrateKeys(nameToID)
+
+	oauthMgr := oauth.NewManager(registry.IDs(), store, registry.GetProxy)
 
 	// 5. Create PKCE session store for browser-based OAuth login.
 	oauthSessions := oauth.NewSessionStore()
@@ -89,7 +96,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 
 	// Log OAuth token status on startup.
 	for _, acct := range runtimeAccounts {
-		token, err := store.Load(acct.Name)
+		token, err := store.Load(acct.ID)
 		if err != nil {
 			slog.Warn("startup: token load error", "account", acct.Name, "error", err.Error())
 		} else if token == nil {
@@ -112,16 +119,16 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	)
 	balancer.SetUsageFetcher(usageFetcher)
 	usageFetcher.StartBackground(ctx,
-		func() []string { return registry.Names() },
-		func(name string) *loadbalancer.BudgetController {
-			h := balancer.GetHealth(name)
+		func() []string { return registry.IDs() },
+		func(id string) *loadbalancer.BudgetController {
+			h := balancer.GetHealth(id)
 			if h != nil {
 				return h.Budget()
 			}
 			return nil
 		},
-		func(name string) bool {
-			h := balancer.GetHealth(name)
+		func(id string) bool {
+			h := balancer.GetHealth(id)
 			return h != nil && !h.IsDisabled()
 		},
 	)
@@ -150,7 +157,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	registry.SetOnChange(func(accounts []config.Account) {
 		runtime := cfg.RuntimeAccounts(registry)
 		balancer.UpdateAccounts(runtime)
-		oauthMgr.UpdateAccounts(registry.Names())
+		oauthMgr.UpdateAccounts(registry.IDs())
 		slog.Info("accounts updated dynamically", "count", len(accounts))
 	})
 
@@ -193,6 +200,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	mux.Handle("/api/accounts/add", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAddAccount))))
 	mux.Handle("/api/accounts/remove", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRemoveAccount))))
 	mux.Handle("/api/accounts/proxy", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleUpdateProxy))))
+	mux.Handle("/api/accounts/rename", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRenameAccount))))
 	mux.Handle("/api/accounts/test", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleTestAccount))))
 	mux.Handle("/api/accounts/enable", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAccountEnable))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
