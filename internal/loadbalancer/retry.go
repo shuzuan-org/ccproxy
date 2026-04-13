@@ -75,10 +75,13 @@ type RetryResult struct {
 }
 
 // ExecuteWithRetry runs the request function with retry and failover logic.
+// scope (optional, may be nil) restricts candidate accounts by owner. Errors
+// of type ErrScopeEmpty are returned to the caller without retrying.
 func ExecuteWithRetry(
 	ctx context.Context,
 	balancer *Balancer,
 	sessionKey string,
+	scope *config.ResolvedScope,
 	isStream bool,
 	callbacks RetryCallbacks,
 	requestFn RequestFunc,
@@ -103,7 +106,7 @@ func ExecuteWithRetry(
 		}
 
 		// Select account
-		result, err := balancer.SelectAccount(ctx, sessionKey, failedAccounts, isStream)
+		result, err := balancer.SelectAccount(ctx, sessionKey, scope, failedAccounts, isStream)
 		if err != nil {
 			observe.Logger(ctx).Warn("no account available",
 				"error", err.Error(),

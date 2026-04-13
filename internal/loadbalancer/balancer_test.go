@@ -41,7 +41,7 @@ var testCtx = context.Background()
 func TestBalancer_SingleAccount(t *testing.T) {
 	b := newTestBalancer([]config.AccountConfig{makeAccount("acct1", 5)})
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestBalancer_ScoreBasedOrder(t *testing.T) {
 	h.cooldownUntil = time.Time{}
 	h.mu.Unlock()
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestBalancer_LoadRateOrder(t *testing.T) {
 	defer r2()
 
 	// acct-b is at 0% load → should be selected
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestBalancer_StickySession(t *testing.T) {
 	b := newTestBalancer(accounts)
 
 	// First selection
-	r1, err := b.SelectAccount(testCtx, "session-1", map[string]bool{}, false)
+	r1, err := b.SelectAccount(testCtx, "session-1", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBalancer_StickySession(t *testing.T) {
 	b.BindSession("session-1", firstAccountID)
 
 	// Second selection with same session key → same account
-	r2, err := b.SelectAccount(testCtx, "session-1", map[string]bool{}, false)
+	r2, err := b.SelectAccount(testCtx, "session-1", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error on second select: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestBalancer_SessionExpired(t *testing.T) {
 	})
 
 	// Should still work (expired session cleared, fallback to layer 2)
-	result, err := b.SelectAccount(testCtx, "old-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "old-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestBalancer_StickyAtCapacity(t *testing.T) {
 	defer r1()
 
 	// Session points to acct-a but it's full → should fall through to acct-b
-	result, err := b.SelectAccount(testCtx, "session-x", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "session-x", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestBalancer_ExcludeAccounts(t *testing.T) {
 	}
 	b := newTestBalancer(accounts)
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{"acct-a-id": true}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{"acct-a-id": true}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestBalancer_AllBusy(t *testing.T) {
 	defer r1()
 	defer r2()
 
-	_, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	_, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != ErrAllAccountsBusy {
 		t.Errorf("expected ErrAllAccountsBusy, got %v", err)
 	}
@@ -238,7 +238,7 @@ func TestBalancer_BindThenSelect(t *testing.T) {
 	// Bind to higher-priority-value account (acct-b)
 	b.BindSession("my-session", "acct-b-id")
 
-	result, err := b.SelectAccount(testCtx, "my-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "my-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+			result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 			if err != nil {
 				return // acceptable if all slots are briefly full
 			}
@@ -312,7 +312,7 @@ func TestBalancer_ConcurrentSelect(t *testing.T) {
 // Test: No healthy accounts → ErrNoHealthyAccounts
 func TestBalancer_NoAccounts(t *testing.T) {
 	b := newTestBalancer([]config.AccountConfig{})
-	_, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	_, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != ErrNoHealthyAccounts {
 		t.Errorf("expected ErrNoHealthyAccounts, got %v", err)
 	}
@@ -368,7 +368,7 @@ func TestSelectAccount_CooldownSkipped(t *testing.T) {
 	// Put "cool" in cooldown
 	b.ReportResult(testCtx,"cool-id", 429, 1000, 30*time.Second, nil)
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestSelectAccount_DisabledSkipped(t *testing.T) {
 	// Disable "forbidden" with a 403
 	b.ReportResult(testCtx,"forbidden-id", 403, 1000, 0, nil)
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestBalancer_BudgetStateFiltering(t *testing.T) {
 	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.10")
 	h.Budget().UpdateFromHeaders(context.Background(), headers)
 
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestBalancer_StickyOnlyWithoutActiveSessions(t *testing.T) {
 	}
 
 	// Account should be selectable because there are no active sticky sessions
-	result, err := b.SelectAccount(testCtx, "", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestBalancer_StickyOnlyBelowSessionLimit(t *testing.T) {
 
 	// Create 2 active sticky sessions (< MaxConcurrency of 3)
 	for i := 0; i < 2; i++ {
-		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), map[string]bool{}, false)
+		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), nil, map[string]bool{}, false)
 		if err != nil {
 			t.Fatalf("unexpected error creating session %d: %v", i, err)
 		}
@@ -532,7 +532,7 @@ func TestBalancer_StickyOnlyBelowSessionLimit(t *testing.T) {
 	}
 
 	// Account should still be selectable because active sessions (2) < max (3)
-	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestBalancer_StickyOnlyAtSessionLimit(t *testing.T) {
 
 	// Create MaxConcurrency (2) active sticky sessions
 	for i := 0; i < 2; i++ {
-		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), map[string]bool{}, false)
+		result, err := b.SelectAccount(testCtx, fmt.Sprintf("test-api-key:session-%d", i), nil, map[string]bool{}, false)
 		if err != nil {
 			t.Fatalf("unexpected error creating session %d: %v", i, err)
 		}
@@ -574,7 +574,7 @@ func TestBalancer_StickyOnlyAtSessionLimit(t *testing.T) {
 
 	// Now sticky-only should be filtered (active sessions >= max)
 	// New sessions must go to normal account
-	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "test-api-key:new-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestBalancer_StickySessionBudgetBlocked(t *testing.T) {
 	}
 
 	// Select with the sticky session — should NOT use blocked-acct
-	result, err := b.SelectAccount(testCtx, "test-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "test-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestBalancer_StickySessionBudgetStickyOnly(t *testing.T) {
 	}
 
 	// Select with the sticky session — should still use sticky-only-acct
-	result, err := b.SelectAccount(testCtx, "test-session", map[string]bool{}, false)
+	result, err := b.SelectAccount(testCtx, "test-session", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -684,4 +684,112 @@ func TestBalancer_StickySessionBudgetStickyOnly(t *testing.T) {
 		t.Errorf("sticky session should still use StickyOnly account, got %s", result.Account.Name)
 	}
 	result.Release()
+}
+
+// --- Scheduling scope filtering ---
+
+func makeOwnedAccount(name, owner string) config.AccountConfig {
+	acct := makeAccount(name, 5)
+	acct.Owner = owner
+	return acct
+}
+
+// Test: scope restricts selection to accounts matching the allowed owners.
+func TestBalancer_ScopeFiltersByOwner(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeOwnedAccount("alice-acct", "alice"),
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(accounts)
+	scope := &config.ResolvedScope{AllowedOwners: map[string]bool{"alice": true}}
+
+	result, err := b.SelectAccount(testCtx, "", scope, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Owner != "alice" {
+		t.Errorf("expected alice-owned account, got owner %q", result.Account.Owner)
+	}
+	result.Release()
+}
+
+// Test: empty scope (no owner matches) returns ErrScopeEmpty before consuming throttle.
+func TestBalancer_ScopeEmptyFailsFast(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeOwnedAccount("alice-acct", "alice"),
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(accounts)
+	scope := &config.ResolvedScope{AllowedOwners: map[string]bool{"charlie": true}}
+
+	_, err := b.SelectAccount(testCtx, "", scope, map[string]bool{}, false)
+	if err == nil {
+		t.Fatal("expected error when scope matches no accounts")
+	}
+	if err != ErrScopeEmpty {
+		t.Errorf("expected ErrScopeEmpty, got %v", err)
+	}
+}
+
+// Test: nil scope preserves legacy global-pool behaviour.
+func TestBalancer_NilScopeNoFilter(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeOwnedAccount("alice-acct", "alice"),
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(accounts)
+
+	result, err := b.SelectAccount(testCtx, "", nil, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Owner == "" {
+		t.Error("expected a real account")
+	}
+	result.Release()
+}
+
+// Test: AllowAll scope behaves identically to nil scope.
+func TestBalancer_AllowAllScope(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeOwnedAccount("alice-acct", "alice"),
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(accounts)
+	scope := &config.ResolvedScope{AllowAll: true}
+
+	result, err := b.SelectAccount(testCtx, "", scope, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result.Release()
+}
+
+// Test: sticky session pointing at an out-of-scope account is invalidated and falls back.
+func TestBalancer_StickySessionInvalidatedByScope(t *testing.T) {
+	accounts := []config.AccountConfig{
+		makeOwnedAccount("alice-acct", "alice"),
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(accounts)
+
+	// Seed a sticky binding to bob-acct.
+	b.BindSession("session-x", "bob-acct-id")
+
+	// Now select with a scope that excludes bob. The sticky hit should be
+	// invalidated and selection should fall through to alice.
+	scope := &config.ResolvedScope{AllowedOwners: map[string]bool{"alice": true}}
+	result, err := b.SelectAccount(testCtx, "session-x", scope, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Account.Owner != "alice" {
+		t.Errorf("expected alice after sticky invalidation, got owner %q", result.Account.Owner)
+	}
+	result.Release()
+
+	// Sticky binding should have been cleared.
+	if _, ok := b.sessions.Load("session-x"); ok {
+		t.Error("expected sticky session to be cleared after scope mismatch")
+	}
 }

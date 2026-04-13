@@ -162,7 +162,12 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	})
 
 	// 7. Create proxy handler.
-	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
+	schedulingScopes, err := cfg.BuildSchedulingScopes()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("build scheduling scopes: %w", err)
+	}
+	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr, schedulingScopes)
 
 	// Initialize per-user Telegram notifier registry.
 	notify.MigrateOldConfig("data")
@@ -203,6 +208,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	mux.Handle("/api/accounts/rename", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleRenameAccount))))
 	mux.Handle("/api/accounts/test", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleTestAccount))))
 	mux.Handle("/api/accounts/enable", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleAccountEnable))))
+	mux.Handle("/api/scheduling/groups", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSchedulingGroups))))
 	mux.Handle("/api/sessions", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleSessions))))
 	mux.Handle("/api/oauth/login/start", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginStart))))
 	mux.Handle("/api/oauth/login/complete", adminRL(adminAuth(http.HandlerFunc(adminHandler.HandleOAuthLoginComplete))))

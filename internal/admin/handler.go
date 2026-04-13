@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -207,6 +208,86 @@ func (h *Handler) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 		states = append(states, state)
 	}
 	writeJSON(w, states)
+}
+
+// SchedulingGroup buckets API keys that share the same resolved scheduling scope.
+// Admin-only — regular users never see this view.
+type SchedulingGroup struct {
+	ID      string   `json:"id"`      // stable signature key
+	Label   string   `json:"label"`   // human-readable name (pool name, "Global", or "custom")
+	Members []string `json:"members"` // usernames in this group, sorted
+}
+
+// HandleSchedulingGroups returns API keys bucketed by their scheduling scope.
+// Admin only. GET /api/scheduling/groups
+func (h *Handler) HandleSchedulingGroups(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
+	scopes, err := h.cfg.BuildSchedulingScopes()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve scheduling scopes: "+err.Error())
+		return
+	}
+
+	// Bucket API keys by scope signature.
+	buckets := map[string][]string{}
+	for _, k := range h.cfg.APIKeys {
+		if k.Name == "" {
+			continue
+		}
+		scope := scopes[k.Name]
+		sig := scope.Signature()
+		buckets[sig] = append(buckets[sig], k.Name)
+	}
+
+	// Build pool-signature → name index so we can label groups that happen
+	// to match a configured pool's expansion exactly.
+	poolSignatures := map[string]string{}
+	for _, p := range h.cfg.Pools {
+		pseudo := &config.ResolvedScope{AllowedOwners: map[string]bool{}}
+		for _, m := range p.Members {
+			if m = strings.TrimSpace(m); m != "" {
+				pseudo.AllowedOwners[m] = true
+			}
+		}
+		poolSignatures[pseudo.Signature()] = p.Name
+	}
+
+	groups := make([]SchedulingGroup, 0, len(buckets))
+	for sig, members := range buckets {
+		sort.Strings(members)
+		label := "custom"
+		switch {
+		case sig == "*":
+			label = "Global"
+		case sig == "(empty)":
+			label = "Isolated"
+		default:
+			if name, ok := poolSignatures[sig]; ok {
+				label = name
+			}
+		}
+		groups = append(groups, SchedulingGroup{
+			ID:      sig,
+			Label:   label,
+			Members: members,
+		})
+	}
+
+	// Deterministic order: Global first, then alphabetic.
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Label == "Global" {
+			return true
+		}
+		if groups[j].Label == "Global" {
+			return false
+		}
+		return groups[i].Label < groups[j].Label
+	})
+
+	writeJSON(w, map[string]any{"groups": groups})
 }
 
 // HandleOAuthLoginStart starts a PKCE OAuth flow for an account.

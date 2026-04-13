@@ -136,7 +136,7 @@ func buildHandler(t *testing.T, cfg *config.Config, accounts []config.AccountCon
 
 	// Create OAuth manager with pre-saved tokens for all accounts.
 	oauthMgr := buildIntegrationOAuthManager(t, accounts)
-	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr)
+	proxyHandler := proxy.NewHandler(cfg.Server.BaseURL, cfg.Server.RequestTimeout, balancer, disguiseEngine, oauthMgr, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/messages", auth.Middleware(cfg.APIKeys)(http.HandlerFunc(proxyHandler.ServeHTTP)))

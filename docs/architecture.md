@@ -182,6 +182,39 @@ L3 Score — 负载感知选择 + 预算状态过滤
 - 响应头 `anthropic-ratelimit-unified-{5h,7d}-{utilization,status,reset}`
 - `UsageFetcher` 后台定时拉取 API（`https://api.anthropic.com/api/oauth/usage`，beta: `oauth-2025-04-20`，3 分钟检查间隔，数据 >5 分钟视为陈旧触发刷新）
 
+#### 调度范围（Scheduling Scope）
+
+默认情况下所有启用账户进入全局调度池，任意 API key 都可以被分配到任意账户。通过在 `config.toml` 的 `[[api_keys]]` 上设置 `scheduling` 字段，可以把某个 api_key 限制在一个按 owner 划分的子池中。
+
+**配置语法**（详见 `config.toml.example`）：
+
+| 条目 | 含义 |
+|---|---|
+| `self` | `account.owner == api_key.name` 的账户 |
+| `owner:<name>` | 指定 owner 的账户 |
+| `pool:<name>` | 展开为 `[[pools]].members` 中列出的所有 owner |
+| `*` | 所有启用账户（默认值，短路其他条目）|
+| `unowned` | `account.owner == ""` 的账户（历史遗留场景）|
+
+`[[pools]]` 是纯粹的配置复用机制，不是运行时实体。启动时展开为 owner 集合后不再存在。
+
+**解析与应用**：
+- `config.Load` 在启动时一次性把每个 api_key 的 `scheduling` 解析为 `ResolvedScope`（位于 `internal/config/scheduling.go`），未知前缀或未定义的 pool 引用会导致启动失败
+- `server.New` 通过 `cfg.BuildSchedulingScopes()` 构建 `username → *ResolvedScope` map，注入到 proxy handler
+- 每个请求在 `proxy/handler.go` 根据 `authInfo.APIKeyName` 查到 scope，传入 `loadbalancer.ExecuteWithRetry`
+- 负载均衡器在 L1 入队前就快速检查"scope 是否匹配任何账户"，不匹配则返回 `ErrScopeEmpty`（映射为 HTTP 503，消息"No accounts available in your scheduling scope"）
+- L2 Sticky 命中已绑定账户时会校验其 owner 是否仍在 scope 内；若 scope 被修改导致已绑定账户失效，sticky 会被解绑并降级到 L3 Score 重新选择（日志：`balancer: sticky session invalidated by scope change`）
+- L3 Score 在候选过滤阶段按 `scope.Contains(account.Owner)` 剔除越界账户
+
+**不支持运行时热加载**：修改 `scheduling` 或 `[[pools]]` 需要重启 ccproxy 才能生效。
+
+**与 owner 字段的关系**：
+- `Account.Owner` 决定仪表盘编辑权限和 Telegram 通知归属（不受本机制影响）
+- `scheduling` 决定调度可见性（本机制）
+- 二者解耦：owner=alice 创建的账户可以被 pool 共享给 bob/charlie 调度使用，但仍然只有 alice 能在仪表盘里编辑/删除它
+
+**管理仪表盘**：Admin 视图在账户列表顶部显示 "Scheduling Groups" 卡片，把解析出相同 scope 签名（`ResolvedScope.Signature()`）的 API key 聚合为同一组 chip 展示；普通用户不可见。后端 API 为 `GET /api/scheduling/groups`（admin only）。
+
 ### 2. 伪装引擎 (internal/disguise)
 
 #### 客户端检测 (`IsClaudeCodeClient`)

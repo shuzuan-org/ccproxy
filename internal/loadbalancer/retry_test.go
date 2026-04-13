@@ -102,7 +102,7 @@ func TestExecuteWithRetry_SuccessFirstTry(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestExecuteWithRetry_503ThenSuccess(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestExecuteWithRetry_400NoRetry(t *testing.T) {
 		return &http.Response{StatusCode: 400, Header: http.Header{}}, 400, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestExecuteWithRetry_429Failover(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestExecuteWithRetry_AllFail(t *testing.T) {
 		return &http.Response{StatusCode: 429, Header: http.Header{}}, 429, nil
 	}
 
-	_, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	_, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err == nil {
 		t.Fatal("expected error when all accounts fail")
 	}
@@ -224,7 +224,7 @@ func TestExecuteWithRetry_ContextCancelled(t *testing.T) {
 		return &http.Response{StatusCode: 503, Header: http.Header{}}, 503, nil
 	}
 
-	_, err := ExecuteWithRetry(ctx, b, "", false, noCallbacks, fn)
+	_, err := ExecuteWithRetry(ctx, b, "", nil, false, noCallbacks, fn)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
@@ -244,7 +244,7 @@ func TestExecuteWithRetry_NetworkError(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, noCallbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestExecuteWithRetry_401TriggersRefresh(t *testing.T) {
 		return okResponse(), 200, nil
 	}
 
-	result, err := ExecuteWithRetry(context.Background(), b, "", false, callbacks, fn)
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, callbacks, fn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

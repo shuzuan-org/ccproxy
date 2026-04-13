@@ -44,11 +44,12 @@ var forwardHeaders = []string{
 // Handler routes incoming /v1/messages and /v1/messages/count_tokens requests
 // to upstream Anthropic accounts.
 type Handler struct {
-	balancer     *loadbalancer.Balancer
-	disguise     *disguise.Engine
-	oauthManager *oauth.Manager
-	httpClient   *http.Client // shared client for all accounts
-	baseURL      string       // global upstream base URL
+	balancer         *loadbalancer.Balancer
+	disguise         *disguise.Engine
+	oauthManager     *oauth.Manager
+	httpClient       *http.Client // shared client for all accounts
+	baseURL          string       // global upstream base URL
+	schedulingScopes map[string]*config.ResolvedScope
 }
 
 // NewHandler constructs a Handler with a shared HTTP client.
@@ -58,6 +59,7 @@ func NewHandler(
 	balancer *loadbalancer.Balancer,
 	disguiseEngine *disguise.Engine,
 	oauthManager *oauth.Manager,
+	schedulingScopes map[string]*config.ResolvedScope,
 ) *Handler {
 	timeout := time.Duration(requestTimeout) * time.Second
 	if timeout == 0 {
@@ -73,7 +75,8 @@ func NewHandler(
 			Transport: transport,
 			Timeout:   timeout,
 		},
-		baseURL: baseURL,
+		baseURL:          baseURL,
+		schedulingScopes: schedulingScopes,
 	}
 }
 
@@ -252,7 +255,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestStart := time.Now()
-	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, isStream, callbacks, requestFn)
+	scope := h.schedulingScopes[authInfo.APIKeyName]
+	result, err := loadbalancer.ExecuteWithRetry(r.Context(), h.balancer, sessionKey, scope, isStream, callbacks, requestFn)
 	elapsed := time.Since(requestStart)
 
 	if err != nil {
@@ -271,9 +275,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Warn("request completed", summaryAttrs...)
 
 		// Step 6: Map internal error to Anthropic-compatible response.
+		// Scheduling scope removed every account     → 503 api_error (distinct message)
 		// No healthy accounts (all disabled/empty pool) → 503 api_error
 		// Accounts busy or upstream retries exhausted  → 529 overloaded_error
-		if errors.Is(err, loadbalancer.ErrNoHealthyAccounts) {
+		if errors.Is(err, loadbalancer.ErrScopeEmpty) {
+			WriteError(w, http.StatusServiceUnavailable, "api_error", "No accounts available in your scheduling scope")
+		} else if errors.Is(err, loadbalancer.ErrNoHealthyAccounts) {
 			WriteError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
 		} else {
 			WriteError(w, 529, "overloaded_error", "Overloaded")

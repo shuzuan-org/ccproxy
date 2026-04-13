@@ -17,6 +17,7 @@ import (
 var (
 	ErrNoHealthyAccounts = errors.New("no healthy accounts available")
 	ErrAllAccountsBusy   = errors.New("all accounts at capacity")
+	ErrScopeEmpty        = errors.New("no accounts in scheduling scope")
 )
 
 const sessionTTL = 1 * time.Hour
@@ -95,7 +96,27 @@ type accountCandidate struct {
 // L1 Pool: SRE throttling + utilization delay + wait queue
 // L2 Sticky: Session affinity (1h TTL) with budget-aware concurrency
 // L3 Score: Load-aware selection with budget state filtering
-func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, excludeAccounts map[string]bool, isStream bool) (*SelectResult, error) {
+//
+// scope, if non-nil, restricts candidate accounts by owner. A nil scope
+// disables per-account filtering and preserves legacy global-pool behaviour.
+func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, scope *config.ResolvedScope, excludeAccounts map[string]bool, isStream bool) (*SelectResult, error) {
+	// Early scope check: if scope filters out every account, fail fast
+	// without paying the throttle/utilization cost.
+	if scope != nil && !scope.AllowAll {
+		b.mu.RLock()
+		anyInScope := false
+		for _, acct := range b.accounts {
+			if scope.Contains(acct.Owner) {
+				anyInScope = true
+				break
+			}
+		}
+		b.mu.RUnlock()
+		if !anyInScope {
+			return nil, ErrScopeEmpty
+		}
+	}
+
 	// L1: Pool-level backpressure
 	b.throttle.RecordRequest()
 	if b.throttle.ShouldThrottle() {
@@ -141,7 +162,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 
 			if !expired {
 				acct := b.findAccount(si.AccountID)
-				if acct != nil && !excludeAccounts[acct.ID] {
+				if acct != nil && !excludeAccounts[acct.ID] && scope.Contains(acct.Owner) {
 					h := health[acct.ID]
 					if h == nil || h.IsAvailable() {
 						if h != nil && h.budget != nil && h.budget.State() == StateBlocked {
@@ -182,7 +203,13 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 						deleteSession = true
 					}
 				} else {
-					// Account removed or excluded — clean up binding
+					// Account removed, excluded, or no longer in scheduling scope — clean up binding.
+					if acct != nil && !scope.Contains(acct.Owner) {
+						observe.Logger(ctx).Info("balancer: sticky session invalidated by scope change",
+							"account", acct.Name,
+							"session_key", sessionKey,
+						)
+					}
 					deleteSession = true
 				}
 			}
@@ -201,8 +228,13 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 	candidates := make([]accountCandidate, 0, len(accounts))
 	filteredBudget := 0
 	filteredLoad := 0
+	filteredScope := 0
 	for _, acct := range accounts {
 		if excludeAccounts[acct.ID] {
+			continue
+		}
+		if !scope.Contains(acct.Owner) {
+			filteredScope++
 			continue
 		}
 		h := health[acct.ID]
@@ -267,9 +299,16 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, exclude
 		observe.Logger(ctx).Debug("balancer: no candidates after filtering",
 			"total_accounts", len(accounts),
 			"excluded", len(excludeAccounts),
+			"filtered_scope", filteredScope,
 			"filtered_budget", filteredBudget,
 			"filtered_load", filteredLoad,
 		)
+		// Note: ErrScopeEmpty is only surfaced by the L1 early check above,
+		// where we can authoritatively decide "the scope contains no accounts
+		// at all". At this point, filteredScope > 0 only means some accounts
+		// were filtered — not that the scope is empty — so we fall through to
+		// ErrAllAccountsBusy, which is semantically "your scope's accounts are
+		// all busy/blocked/excluded".
 		return nil, ErrAllAccountsBusy
 	}
 

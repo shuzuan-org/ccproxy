@@ -309,6 +309,15 @@
 </header>
 
 <div class="container">
+  <div class="card" id="scheduling-groups-card" style="display:none;">
+    <div class="card-header">
+      <h2>Scheduling Groups</h2>
+      <span class="badge" id="scheduling-groups-count">—</span>
+    </div>
+    <div id="scheduling-groups-body" style="padding:16px; display:flex; flex-wrap:wrap; gap:10px;">
+      <span style="color:var(--muted); font-size:13px;">Loading…</span>
+    </div>
+  </div>
   <div class="card">
     <div class="card-header">
       <h2>OAuth Accounts</h2>
@@ -647,15 +656,59 @@
     const el = document.getElementById('refresh-status');
     el.textContent = 'Refreshing…';
     try {
-      const [data, upd] = await Promise.all([
+      const isAdmin = currentUser && currentUser.is_admin;
+      const fetches = [
         fetchJSON('/api/accounts'),
         fetchJSON('/api/update/status'),
-      ]);
+      ];
+      if (isAdmin) {
+        fetches.push(fetchJSON('/api/scheduling/groups').catch(function(){ return null; }));
+      }
+      const results = await Promise.all(fetches);
+      const data = results[0];
+      const upd = results[1];
       renderAccounts(data);
+      if (isAdmin) {
+        renderSchedulingGroups(results[2]);
+      }
       el.textContent = 'v' + upd.current_version;
     } catch (err) {
       el.textContent = 'Error: ' + err.message;
     }
+  }
+
+  function renderSchedulingGroups(data) {
+    var card = document.getElementById('scheduling-groups-card');
+    var body = document.getElementById('scheduling-groups-body');
+    var countEl = document.getElementById('scheduling-groups-count');
+    if (!card || !body) return;
+    if (!data || !Array.isArray(data.groups) || data.groups.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    countEl.textContent = data.groups.length + ' group' + (data.groups.length === 1 ? '' : 's');
+    // Deterministic chip palette keyed by group id.
+    var palette = ['#2563eb','#7c3aed','#db2777','#059669','#d97706','#0891b2','#dc2626','#4f46e5'];
+    function colorFor(id) {
+      var h = 0;
+      for (var i = 0; i < id.length; i++) { h = (h * 31 + id.charCodeAt(i)) >>> 0; }
+      return palette[h % palette.length];
+    }
+    body.innerHTML = '';
+    data.groups.forEach(function(g) {
+      var chip = document.createElement('div');
+      chip.style.cssText = 'display:inline-flex; flex-direction:column; gap:4px; padding:10px 14px; border-radius:10px; background:rgba(148,163,184,0.08); border-left:3px solid ' + colorFor(g.id) + ';';
+      var title = document.createElement('div');
+      title.style.cssText = 'font-weight:600; font-size:13px; color:var(--fg);';
+      title.textContent = g.label;
+      var members = document.createElement('div');
+      members.style.cssText = 'font-size:12px; color:var(--muted);';
+      members.textContent = g.members.join(', ');
+      chip.appendChild(title);
+      chip.appendChild(members);
+      body.appendChild(chip);
+    });
   }
 
   // --- OAuth Actions ---
@@ -1112,6 +1165,9 @@
     // Anomaly checkbox: hidden for non-admin
     var anomalyRow = document.getElementById('notify-anomaly-row');
     if (anomalyRow) anomalyRow.style.display = isAdmin ? '' : 'none';
+    // Scheduling groups card: admin only (refresh() will populate it on admin load)
+    var schedCard = document.getElementById('scheduling-groups-card');
+    if (schedCard && !isAdmin) schedCard.style.display = 'none';
   }
 
   // --- Init ---
