@@ -543,6 +543,36 @@ func TestValidate_UpdateChannel_Stable(t *testing.T) {
 	}
 }
 
+// TestValidate_EmptySchedulingScope verifies that a scheduling directive
+// that resolves to zero allowed owners (e.g. "pool:<empty>") is rejected at
+// config load time rather than surfacing as a runtime 503.
+func TestValidate_EmptySchedulingScope(t *testing.T) {
+	t.Parallel()
+	cfg := baseValidConfig()
+	cfg.Pools = []PoolConfig{{Name: "empty-pool", Members: nil}}
+	cfg.APIKeys[0].Scheduling = []string{"pool:empty-pool"}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty scheduling scope, got nil")
+	}
+	if !strings.Contains(err.Error(), "scheduling scope is empty") {
+		t.Errorf("error %q should mention empty scheduling scope", err.Error())
+	}
+}
+
+// TestValidate_SchedulingUnownedOnly verifies that "unowned" alone is a
+// valid scope (non-empty, explicit intent to serve only migrated accounts).
+func TestValidate_SchedulingUnownedOnly(t *testing.T) {
+	t.Parallel()
+	cfg := baseValidConfig()
+	cfg.APIKeys[0].Scheduling = []string{"unowned"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no error for unowned-only scheduling, got %v", err)
+	}
+}
+
 func TestRuntimeAccount(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{

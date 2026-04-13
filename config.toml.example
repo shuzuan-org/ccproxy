@@ -21,10 +21,54 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 # name = "alice"
 # password = ""  # Leave empty or omit to auto-generate
 # enabled = true
+# scheduling = ["*"]  # Optional — see "Scheduling scope" below.
+
+# ----------------------------------------------------------------------------
+# Scheduling scope (optional)
+# ----------------------------------------------------------------------------
+# By default every api_key dispatches requests to all enabled accounts
+# (scheduling = ["*"]). To restrict which accounts a key can use, set
+# "scheduling" on the api_key. Entries use the following syntax:
+#
+#   "self"         — accounts whose owner == this api_key name
+#   "owner:<name>" — accounts whose owner matches the given name
+#   "pool:<name>"  — expands to the members of the named [[pools]] block
+#   "*"            — all enabled accounts (default; short-circuits other entries)
+#   "unowned"      — accounts with no owner (rare; legacy/migrated only)
+#
+# [[pools]] is a naming convenience for reusing the same member list across
+# multiple api_keys. It is not a runtime entity.
+#
+# Example: alice and bob share the "team-a" pool; charlie is isolated.
+#
+# [[pools]]
+# name = "team-a"
+# members = ["alice", "bob"]
+#
+# [[api_keys]]
+# name = "alice"
+# key = "sk-..."
+# enabled = true
+# scheduling = ["pool:team-a"]
+#
+# [[api_keys]]
+# name = "bob"
+# key = "sk-..."
+# enabled = true
+# scheduling = ["pool:team-a"]
+#
+# [[api_keys]]
+# name = "charlie"
+# key = "sk-..."
+# enabled = true
+# scheduling = ["self"]
+#
+# Changes to scheduling or pools require a restart (no hot reload).
 
 # Accounts are managed dynamically per-user via the admin dashboard (Add Claude button).
 # Each account has an "owner" field linking it to the api_key user who created it.
-# All accounts participate in global load balancing regardless of owner.
+# By default all enabled accounts participate in global load balancing regardless
+# of owner — set "scheduling" on an api_key to restrict its candidate pool.
 # They are persisted in data/accounts.json — no TOML config needed.
 #
 # Dashboard login:

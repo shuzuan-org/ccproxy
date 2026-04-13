@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Server  ServerConfig   `toml:"server"`
 	APIKeys []APIKeyConfig `toml:"api_keys"`
+	Pools   []PoolConfig   `toml:"pools"`
 }
 
 type ServerConfig struct {
@@ -46,6 +47,18 @@ type APIKeyConfig struct {
 	Name     string `toml:"name"`
 	Password string `toml:"password"`
 	Enabled  bool   `toml:"enabled"`
+	// Scheduling declares which accounts this key can dispatch to.
+	// Entries accept prefixes: "self", "owner:<name>", "pool:<name>", "*", "unowned".
+	// Empty or unset defaults to ["*"] (global pool, backwards compatible).
+	Scheduling []string `toml:"scheduling"`
+}
+
+// PoolConfig is a named group of usernames. It is a configuration-level
+// reuse mechanism, not a runtime entity: pool references are expanded to
+// their member list at config load time.
+type PoolConfig struct {
+	Name    string   `toml:"name"`
+	Members []string `toml:"members"`
 }
 
 // AccountConfig is the runtime representation of an account, built from
@@ -58,6 +71,7 @@ type AccountConfig struct {
 	RequestTimeout int
 	Enabled        bool
 	Proxy          string // SOCKS5 proxy URL for this account (e.g. "socks5://host:port" or "socks5h://host:port")
+	Owner          string // API key name of the account creator; empty for legacy/migrated records
 }
 
 // Load reads, parses, applies defaults, auto-generates missing credentials,
@@ -212,6 +226,56 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("update_channel must be \"stable\" or \"beta\", got %q", c.Server.UpdateChannel))
 	}
 
+	// Scheduling: pool references must resolve and entry syntax must be valid.
+	// Owner references to non-existent api_keys are allowed but logged as a warning.
+	knownKeys := make(map[string]bool, len(c.APIKeys))
+	for _, k := range c.APIKeys {
+		if k.Name != "" {
+			knownKeys[k.Name] = true
+		}
+	}
+	poolNames := make(map[string]bool, len(c.Pools))
+	for _, p := range c.Pools {
+		if p.Name == "" {
+			errs = append(errs, errors.New("pool name must not be empty"))
+			continue
+		}
+		if poolNames[p.Name] {
+			errs = append(errs, fmt.Errorf("duplicate pool name %q", p.Name))
+		}
+		poolNames[p.Name] = true
+		for _, m := range p.Members {
+			if m == "" {
+				continue
+			}
+			if !knownKeys[m] {
+				slog.Warn("pool references unknown api_key", "pool", p.Name, "member", m)
+			}
+		}
+	}
+	for _, k := range c.APIKeys {
+		scope, err := ResolveScheduling(k.Name, k.Scheduling, c.Pools)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		// Fail fast if the resolved scope is empty (non-AllowAll with no
+		// owners and no unowned flag). Without this check the error only
+		// surfaces on the first request as a 503, which is confusing.
+		if scope != nil && !scope.AllowAll && len(scope.AllowedOwners) == 0 && !scope.AllowUnowned {
+			errs = append(errs, fmt.Errorf("api_key %q: scheduling scope is empty (no allowed owners)", k.Name))
+			continue
+		}
+		// Warn on owner:<name> references that do not (yet) exist as api_keys.
+		if scope != nil && !scope.AllowAll {
+			for owner := range scope.AllowedOwners {
+				if !knownKeys[owner] {
+					slog.Warn("scheduling references unknown owner", "api_key", k.Name, "owner", owner)
+				}
+			}
+		}
+	}
+
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -260,6 +324,7 @@ func (c *Config) RuntimeAccount(acct Account) AccountConfig {
 		RequestTimeout: c.Server.RequestTimeout,
 		Enabled:        acct.Enabled,
 		Proxy:          acct.Proxy,
+		Owner:          acct.Owner,
 	}
 }
 
