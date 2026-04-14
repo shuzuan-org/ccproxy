@@ -262,6 +262,27 @@ Scope 的输入 **完全来自 TOML**（`APIKeyConfig.Scheduling` 和 `[[pools]]
 
 **Billing 算法漂移探针 (`BillingAlgoProbe`)：** 被动观察工具，对每个客户端 billing 块按 `(ua_version, state)` 去重计算历史 SHA256 复刻值与客户端真值的对比，记录 INFO 级日志（match / mismatch / no_suffix）。**不影响生产路径**，只用于离线 reverse engineer 算法演进。dedup map 上限 1000，进程重启清空。
 
+#### 真实 Claude CLI 的遥测旁路（`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 依赖）
+
+ccproxy 的 8 层伪装只覆盖经过 `/v1/messages` 的请求。真实 Claude CLI 还会发起另外**十几条硬编码直连** `api.anthropic.com` 的后台请求，它们**不受 `ANTHROPIC_BASE_URL` 控制**，不会经过 ccproxy：
+
+| 路径 | 来源（instructkr/claude-code 反编译） | 泄漏内容 |
+|---|---|---|
+| `POST /api/event_logging/batch` | `services/analytics/firstPartyEventLoggingExporter.ts:114` | 640+ 事件类型、device_id、email、完整 env 对象、process 指标，每 5 秒一批 |
+| Datadog RUM / APM | `services/analytics/datadog.ts` | 独立 SDK 通道，客户端性能数据和 session token |
+| BigQuery metrics exporter | `utils/telemetry/bigqueryExporter.ts` | 聚合指标 |
+| `GET /api/claude_code/organizations/metrics_enabled` | `services/api/metricsOptOut.ts:45` | 硬编码 URL，带 OAuth token 查询组织配置 |
+| `fetchBootstrapAPI` | `services/api/bootstrap.ts:42` | 客户端启动期配置拉取 |
+| grove / release notes / model capabilities / fast mode / feedback / overageCredit / referral / MCP official registry | 多个模块 | 低频身份关联探测 |
+
+这些路径全部通过 `utils/privacyLevel.ts` 的 `isEssentialTrafficOnly()` 守卫统一关闭，环境变量 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 是唯一的总闸。ccproxy 无法从代理层拦截这些旁路（它们根本不发到我们这），**必须要求用户在客户端侧设置这个环境变量**。
+
+**天然免疫路径：** `policy_limits`、`settingsSync`、`teamMemorySync`、`remoteManagedSettings` 四条路径各自带 `isFirstPartyAnthropicBaseUrl()` 守卫（`utils/model/providers.ts:25`），当 `ANTHROPIC_BASE_URL` 指向非首方域名（即指向 ccproxy）时 CLI 自己就不发起这些请求，无需额外配置。
+
+**`/api/oauth/usage`** 是 essential traffic（用户需要它查询 5h/7d 额度 UI），硬编码走 oauth BASE_API_URL，`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 对它无效。但响应内容只是额度百分比，**不含指纹**，风险可忽略。
+
+**`cch` 字段的真相：** 我们曾复刻的 SHA256 算法（盐 `59cf53e54c78`，索引 `[4,7,20]`）**不是** Claude CLI 真正用的算法。`constants/system.ts:82` 注释明确说明 `cch=00000` 是占位符，由 Bun/Zig 原生 HTTP 栈（`bun-anthropic/src/http/Attestation.zig`）在请求体序列化后原地覆写，由 `NATIVE_CLIENT_ATTESTATION` feature flag 控制。我们从 auth2api 抓到的 SHA256 常量很可能是旧版本 fallback 或抓包时的观察幻觉。BillingAlgoProbe 观测到的漂移（见上）不是算法升级，而是 JS 层根本就不能产生正确的 cch。v0.1.12 的"保留客户端真后缀"决策因此比 review 时认为的还要正确。
+
 **会话掩码 (`SessionMaskStore`)：** 每账号生成一个 UUID 掩码 session（15 分钟滑动 TTL），替换 `user_id` 中的 session 部分，防止跨用户关联。定时清理过期掩码。
 
 **每账号指纹 (`FingerprintStore`)：** 从 `data/fingerprints.json` 加载每账号的 User-Agent、Stainless OS/Arch 等信息，让不同账号呈现不同的客户端特征。指纹 7 天过期，24 小时自动续期，支持从真实 CC 客户端请求中学习版本号。

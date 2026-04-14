@@ -88,6 +88,30 @@ make build
 
 代理默认监听 `http://127.0.0.1:3000`。如需对外暴露，将 `config.toml` 中的 `host` 改为 `"0.0.0.0"`（推荐通过反向代理如 Caddy/Nginx 转发）。将你的 Claude 兼容客户端指向此地址，使用生成的 API 密钥作为 Bearer token。
 
+### 使用真实 Claude CLI + ccproxy 时的强制环境变量
+
+如果客户端是真正的 Claude CLI（`claude` 命令），**必须**在启动前设置以下三个环境变量：
+
+```bash
+export ANTHROPIC_BASE_URL=https://ccproxy.example.com          # 指向你的 ccproxy
+export ANTHROPIC_AUTH_TOKEN=sk-ccproxy-...                      # ccproxy 分配的 API key
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1               # 必须设置
+```
+
+第三个变量 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 是**不可省略**的。Claude CLI 存在多条**硬编码直连** `api.anthropic.com` 的后台通道，这些通道不受 `ANTHROPIC_BASE_URL` 控制，会在你每次启动 CLI 后持续向上游泄漏：
+
+- **`/api/event_logging/batch`**（首方遥测，每 5 秒一批）：`device_id`、`email`、`account_uuid`、完整 `env` 对象（平台/架构/shell/working dir）、`process` 指标（RSS/heap/内存）、640+ 事件类型
+- **Datadog APM 遥测**（独立通道）：客户端性能数据和 session token
+- **BigQuery metrics exporter**：匿名聚合指标
+- **`/api/claude_code/organizations/metrics_enabled`**：组织级配置查询
+- **Bootstrap、grove、release notes、model capabilities** 等多条低频探测
+
+这些路径全部通过 CLI 内部的 `isEssentialTrafficOnly()` 守卫统一关闭，`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 是唯一的总闸。不设置这个变量，ccproxy 的 8 层伪装对 `/v1/messages` 有效，但上述旁路通道仍然会用**真实的 device_id 和 OAuth token** 直接向 `api.anthropic.com` 报告你的身份和指纹。
+
+**不会产生副作用：** policy_limits、settings sync、team memory sync、usage 查询这几条路径在 `ANTHROPIC_BASE_URL` 指向非首方域名时自带 `isFirstPartyAnthropicBaseUrl` 守卫，会自动 no-op。设置 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 不会让你失去任何可见功能。
+
+**非 Claude CLI 的兼容客户端**（Cursor、Cline、OpenCode 等 OAI/Anthropic 协议转接器）不需要这个变量——它们不发这些遥测路径，只需配 `ANTHROPIC_BASE_URL` + API key 即可。
+
 ## 配置参考
 
 配置从 `config.toml` 读取（使用 `-c <path>` 覆盖）。修改后需要重启才能生效。
