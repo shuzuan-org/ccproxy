@@ -106,8 +106,8 @@ func TestBillingProbe_MismatchLogsOnceAsWarnWithRawBlock(t *testing.T) {
 	if !strings.Contains(out, "state=mismatch") {
 		t.Errorf("expected state=mismatch in log, got: %s", out)
 	}
-	if !strings.Contains(out, "level=WARN") {
-		t.Errorf("expected WARN level for mismatch, got: %s", out)
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected INFO level for mismatch (probe is observation-only as of v0.1.12), got: %s", out)
 	}
 	// Mismatch logs MUST include the raw block — that's the evidence needed
 	// to reverse-engineer the new algorithm offline.
@@ -153,8 +153,8 @@ func TestBillingProbe_NoSuffixLogsAsWarnWithRawBlock(t *testing.T) {
 	if !strings.Contains(out, "state=no_suffix") {
 		t.Errorf("expected state=no_suffix, got: %s", out)
 	}
-	if !strings.Contains(out, "level=WARN") {
-		t.Errorf("expected WARN level for no_suffix, got: %s", out)
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected INFO level for no_suffix (probe is observation-only as of v0.1.12), got: %s", out)
 	}
 	if !strings.Contains(out, "cc_entrypoint=cli") {
 		t.Errorf("no_suffix log must include raw block, got: %s", out)

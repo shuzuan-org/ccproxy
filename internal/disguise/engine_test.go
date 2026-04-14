@@ -342,11 +342,11 @@ func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
 		t.Errorf("upstream UA should not leak client version, got %q", gotUA)
 	}
 
-	// 2. Body billing header should be synced to fp UA version. The 3-char
-	//    fingerprint suffix is SHA256(SALT + msg[4,7,20] + version)[:3]. For
-	//    user message "hi" (all three indices out of range → chars "000") at
-	//    version 2.1.88 the suffix is "758" (pinned in billing_header_test.go).
-	//    The client's original ".df2" suffix must be replaced, not preserved.
+	// 2. Body billing header should be synced to fp UA version, but the
+	//    3-char message-derived suffix MUST be preserved verbatim from
+	//    whatever the client originally sent. As of v0.1.12 ccproxy no
+	//    longer recomputes the suffix (the historical SHA256 replica
+	//    drifted at CLI 2.1.105+), so the client's ".df2" must survive.
 	fpVersion := extractUAVersion(fpUA)
 	if fpVersion == "" {
 		t.Fatalf("could not extract version from fp UA %q", fpUA)
@@ -364,10 +364,9 @@ func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
 		t.Fatal("expected system[0] to be an object")
 	}
 	billingText, _ := billingBlock["text"].(string)
-	wantSuffix := computeBillingFingerprint("hi", fpVersion)
-	wantBilling := "x-anthropic-billing-header: cc_version=" + fpVersion + "." + wantSuffix + "; cc_entrypoint=cli; cch=abc12"
+	wantBilling := "x-anthropic-billing-header: cc_version=" + fpVersion + ".df2; cc_entrypoint=cli; cch=abc12"
 	if billingText != wantBilling {
-		t.Errorf("billing header not synced:\n  want %q\n  got  %q", wantBilling, billingText)
+		t.Errorf("billing header not synced (or suffix not preserved):\n  want %q\n  got  %q", wantBilling, billingText)
 	}
 
 	// 3. X-Stainless-Package-Version should also be the fp value, not the

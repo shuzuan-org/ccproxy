@@ -12,23 +12,28 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 )
 
-// BillingAlgoProbe passively validates our replica of Claude CLI's billing
-// header fingerprint algorithm against real client traffic.
+// BillingAlgoProbe passively observes Claude CLI's billing header
+// fingerprint algorithm against real client traffic to support offline
+// reverse engineering of the suffix algorithm as it evolves.
 //
-// Why this exists: our computeBillingFingerprint implementation is pinned to
-// the algorithm observed in Claude CLI 2.1.88 (salt "59cf53e54c78", indices
-// [4,7,20], sha256[:3]). If upstream changes the algorithm — different salt,
-// different indices, different hash, different char offsets — any version
-// upgrade we do via syncBillingHeaderVersion will produce wrong suffixes,
-// which is a deterministic detection signal.
+// Background: ccproxy used to ship a replicated SHA256-based suffix
+// generator (salt "59cf53e54c78", indices [4,7,20]) which was
+// cross-checked against auth2api's reference. The probe revealed that
+// algorithm stops matching real clients at Claude CLI 2.1.105+, so the
+// generator was removed in v0.1.12 — see billing_header.go for the new
+// "preserve client suffix verbatim" approach.
 //
-// We can't proactively test this because Anthropic doesn't publish the
-// algorithm. Instead we PASSIVELY observe real CC clients: every time a
-// client sends a billing header, we recompute what the suffix *would* be
-// under our replica and compare to what the client actually sent. Match
-// means the algorithm still applies to that client version; mismatch means
-// we need to reverse engineer the new algorithm — and the log entry is the
-// evidence we need to do so offline.
+// The probe itself is retained because it's the cheapest way to detect
+// further drift: every observed billing header is compared against the
+// historical replica, and (state, ua_version) tuples are logged once
+// each. A future "match" on a new CLI version would tell us the algorithm
+// has stabilized again; a permanent "mismatch" landscape across all
+// versions tells us the algorithm has changed and needs new reverse
+// engineering. Either way the raw client_block in mismatch logs is the
+// single most useful piece of evidence for that work.
+//
+// The replica is now ONLY used by the probe — it has no production
+// effect on outbound requests.
 //
 // Sampling: one entry per (UA_version, match_state) tuple. This gives two
 // log lines per version at steady state (one "match" confirmation, one
@@ -40,6 +45,85 @@ import (
 // the cap (1000) covers several hundred versions before the probe starts
 // silently dropping — well past any realistic operational need.
 const billingProbeSeenCap = 1000
+
+// Historical replica constants. These reflect the algorithm Claude CLI used
+// circa 2.1.88. Used by the probe to detect drift and by nothing else.
+const (
+	billingFingerprintSalt = "59cf53e54c78"
+)
+
+var billingFingerprintCharIndices = [...]int{4, 7, 20}
+
+// computeBillingFingerprintReplica reproduces the historical Claude CLI
+// fingerprint algorithm circa 2.1.88:
+//
+//	SHA256(SALT + msg[4] + msg[7] + msg[20] + version).hex()[:3]
+//
+// where msg is the first user message's text (or "0" for any out-of-range
+// index, byte-indexed). Returns lowercase 3-hex-char output.
+//
+// This is no longer used to mutate outbound traffic — it lives here purely
+// so the probe can compare it against client-sent suffixes and surface
+// drift. If the real algorithm changes, the only consequence is more
+// "mismatch" log lines until the probe is updated to a new replica.
+func computeBillingFingerprintReplica(messageText, version string) string {
+	var chars [len(billingFingerprintCharIndices)]byte
+	for i, idx := range billingFingerprintCharIndices {
+		if idx < len(messageText) {
+			chars[i] = messageText[idx]
+		} else {
+			chars[i] = '0'
+		}
+	}
+	var sb strings.Builder
+	sb.Grow(len(billingFingerprintSalt) + len(chars) + len(version))
+	sb.WriteString(billingFingerprintSalt)
+	sb.Write(chars[:])
+	sb.WriteString(version)
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:])[:3]
+}
+
+// extractFirstUserMessageText returns the text content of the first message
+// with role=user. Mirrors Claude Code's extractFirstUserMessageText:
+//   - string content → return as-is
+//   - array content → return the first {type:"text"} block's text
+//   - anything else → return ""
+func extractFirstUserMessageText(parsed map[string]interface{}) string {
+	messages, ok := parsed["messages"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, raw := range messages {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		if role != "user" {
+			continue
+		}
+		switch content := m["content"].(type) {
+		case string:
+			return content
+		case []interface{}:
+			for _, b := range content {
+				block, ok := b.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if t, _ := block["type"].(string); t == "text" {
+					if text, ok := block["text"].(string); ok {
+						return text
+					}
+				}
+			}
+		}
+		// First user message consumed — don't look further.
+		return ""
+	}
+	return ""
+}
 
 type BillingAlgoProbe struct {
 	mu   sync.Mutex
@@ -99,7 +183,7 @@ func (p *BillingAlgoProbe) Observe(ctx context.Context, uaVersion, blockText, fi
 	// Recompute using our replica. The algorithm takes the cc_version triple
 	// from the block (NOT the UA version) because that's what a real client
 	// would have hashed: the block's version field is its own self-claim.
-	expectedSuffix := computeBillingFingerprint(firstUserMessageText, clientVerTriple)
+	expectedSuffix := computeBillingFingerprintReplica(firstUserMessageText, clientVerTriple)
 
 	var state string
 	switch {
@@ -160,9 +244,18 @@ func (p *BillingAlgoProbe) Observe(ctx context.Context, uaVersion, blockText, fi
 	// algorithm, and the raw block is the single most useful input. Match
 	// logs omit it to keep the noise low (match is confirmation, not
 	// evidence).
+	//
+	// Severity note: as of v0.1.12 the production path no longer uses this
+	// replica to mutate outbound traffic — the probe is purely an
+	// observation tool. A "mismatch" therefore does not imply anything is
+	// wrong with the request being processed; it only records that the
+	// historical replica algorithm has drifted from what this CLI version
+	// produces. We keep INFO level for "mismatch" because operators do not
+	// need to be paged for it; the entry is just data for offline reverse
+	// engineering of the new algorithm.
 	if state == "mismatch" || state == "no_suffix" {
 		attrs = append(attrs, "client_block", blockText)
-		logger.Warn("disguise: billing algo probe — client suffix does not match our replica", attrs...)
+		logger.Info("disguise: billing algo probe — client suffix differs from historical replica (observation only)", attrs...)
 	} else {
 		logger.Info("disguise: billing algo probe — client suffix matches replica", attrs...)
 	}

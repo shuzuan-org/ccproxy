@@ -1,34 +1,18 @@
 package disguise
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
-// Claude Code's cc_version=X.Y.Z.abc fingerprint algorithm — exact replica of
-// the client-side utils/fingerprint.ts, cross-checked against
-// ../auth2api/src/proxy/cloaking.ts:computeFingerprint. The 3-char suffix
-// is SHA256(SALT + msg[4] + msg[7] + msg[20] + version)[:3] where msg is
-// the first user message's text (or "0" for missing positions).
+// ccVersionInBillingRe matches the semver triple portion of cc_version
+// (X.Y.Z) ONLY. It deliberately does not capture the trailing 3-char
+// message-derived suffix (".abc"), because we no longer rewrite that suffix
+// — it is preserved verbatim from whatever the client originally sent.
 //
-// The salt and indices must match what Anthropic's server-side validator
-// expects — if upstream ever recomputes this to check the request, any
-// deviation is a deterministic detection signal. Do NOT edit these constants
-// unless you've confirmed the upstream algorithm has changed.
-const (
-	billingFingerprintSalt = "59cf53e54c78"
-)
-
-var billingFingerprintCharIndices = [...]int{4, 7, 20}
-
-// ccVersionInBillingRe captures the entire cc_version=X.Y.Z[.abc] segment
-// and its components. Group 1 is the semver triple, group 2 (optional) is
-// the 3-char fingerprint suffix. Used for both matching (is this block a
-// billing header?) and parsing (what version did the client send?).
-var ccVersionInBillingRe = regexp.MustCompile(`cc_version=(\d+)\.(\d+)\.(\d+)(?:\.([A-Za-z0-9]{3}))?`)
+// This is the same regex sub2api uses in its gateway_billing_header.go
+// (see commit e51c9e50 in the sub2api repo).
+var ccVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
 
 // billingHeaderPrefix is the marker that identifies a system block carrying
 // the x-anthropic-billing-header metadata. Only blocks whose text starts
@@ -36,113 +20,40 @@ var ccVersionInBillingRe = regexp.MustCompile(`cc_version=(\d+)\.(\d+)\.(\d+)(?:
 // happens to contain a "cc_version=..." substring.
 const billingHeaderPrefix = "x-anthropic-billing-header"
 
-// computeBillingFingerprint mirrors Claude Code's utils/fingerprint.ts:
+// syncBillingHeaderVersion rewrites the X.Y.Z portion of cc_version inside
+// any x-anthropic-billing-header system block, replacing it with the
+// version embedded in the fingerprint UA. The 3-char message-derived suffix
+// (.abc) and every other field (cc_entrypoint, cch, cc_workload, …) are
+// preserved byte-for-byte from whatever the client sent.
 //
-//	SHA256(SALT + msg[4] + msg[7] + msg[20] + version).slice(0, 3)
+// Why we do not compute the suffix ourselves:
 //
-// where msg is the first user message's text (or "0" for any out-of-range
-// index). The 3-char suffix is lowercase hex. messageText may be empty, in
-// which case all three chars are "0".
-func computeBillingFingerprint(messageText, version string) string {
-	var chars [len(billingFingerprintCharIndices)]byte
-	for i, idx := range billingFingerprintCharIndices {
-		if idx < len(messageText) {
-			chars[i] = messageText[idx]
-		} else {
-			chars[i] = '0'
-		}
-	}
-	var sb strings.Builder
-	sb.Grow(len(billingFingerprintSalt) + len(chars) + len(version))
-	sb.WriteString(billingFingerprintSalt)
-	sb.Write(chars[:])
-	sb.WriteString(version)
-	sum := sha256.Sum256([]byte(sb.String()))
-	return hex.EncodeToString(sum[:])[:3]
-}
-
-// extractFirstUserMessageText returns the text content of the first message
-// with role=user. Matches Claude Code's extractFirstUserMessageText:
-//   - string content → return as-is
-//   - array content → return the first {type:"text"} block's text
-//   - anything else → return ""
-func extractFirstUserMessageText(parsed map[string]interface{}) string {
-	messages, ok := parsed["messages"].([]interface{})
-	if !ok {
-		return ""
-	}
-	for _, raw := range messages {
-		m, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := m["role"].(string)
-		if role != "user" {
-			continue
-		}
-		switch content := m["content"].(type) {
-		case string:
-			return content
-		case []interface{}:
-			for _, b := range content {
-				block, ok := b.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if t, _ := block["type"].(string); t == "text" {
-					if text, ok := block["text"].(string); ok {
-						return text
-					}
-				}
-			}
-		}
-		// First user message consumed — don't look further.
-		return ""
-	}
-	return ""
-}
-
-// parseSemverTriple parses "X.Y.Z" into a semver struct. Returns an invalid
-// semver{} on any parse failure. Only the major.minor.patch portion is
-// consumed — trailing content (like ".abc" fingerprint suffix) is ignored.
-func parseSemverTriple(maj, min, pat string) semver {
-	a, err1 := strconv.Atoi(maj)
-	b, err2 := strconv.Atoi(min)
-	c, err3 := strconv.Atoi(pat)
-	if err1 != nil || err2 != nil || err3 != nil {
-		return semver{}
-	}
-	return semver{major: a, minor: b, patch: c, valid: true}
-}
-
-// syncBillingHeaderVersion conditionally rewrites cc_version=X.Y.Z.abc inside
-// billing-header system blocks, upgrading old client versions to match the
-// fingerprint UA version we send upstream.
+// The suffix is produced by a SHA256-based algorithm on the client side
+// whose exact form (salt and character indices) we cannot reliably
+// replicate. We previously shipped an implementation derived from
+// auth2api's reference, but the BillingAlgoProbe observed deterministic
+// mismatches starting with Claude CLI 2.1.105 — meaning the algorithm has
+// changed at least once since the reference was written. Emitting a wrong
+// suffix is strictly worse than emitting a slightly outdated one: a fake
+// suffix is a deterministic "this request did not come from a real CLI"
+// signal, while leaving the client's real suffix in place produces, at
+// worst, a "headers-vs-body" version drift that looks like a normal
+// client mid-upgrade.
 //
-// Upgrade rule: a block's cc_version is rewritten ONLY when its semver triple
-// is STRICTLY OLDER than uaVersion. In that case both the triple and the
-// 3-char fingerprint suffix are recomputed via computeBillingFingerprint so
-// the result is self-consistent at uaVersion. When the client's cc_version
-// is equal or newer, the block is passed through untouched — this trusts
-// the client's own (real) fingerprint and avoids damage from any tiny drift
-// between our replicated algorithm and upstream's. The only cost of trust
-// is a request whose UA claims fp-version while its body claims a newer
-// version; that's a real (rare) situation where we lag the CLI release, and
-// the trade-off is deliberate.
-//
-// Other fields of the billing header (cc_entrypoint, cch, cc_workload, …)
-// are preserved byte-for-byte.
-//
-// This is a no-op when:
-//   - uaVersion is empty or unparseable,
-//   - parsed is nil,
-//   - parsed has no "system" field,
-//   - "system" is not a string or array of objects,
-//   - no system block carries the billing header prefix,
-//   - every billing block's cc_version is already >= uaVersion.
+// Side effect: when the fingerprint UA version differs from the client
+// CLI version, the resulting block has a triple from one version and a
+// suffix from another. This is the same compromise sub2api makes — see
+// gateway_billing_header.go in that repo.
 //
 // Mutates parsed in place. Callers marshal parsed once after all body
 // transforms are complete.
+//
+// No-op when:
+//   - uaVersion is empty,
+//   - parsed is nil,
+//   - parsed has no "system" field,
+//   - "system" is not a string or array of objects,
+//   - no system block carries the billing header prefix.
 //
 // Call-order requirement (non-CC disguise path): must run AFTER
 // injectSystemPromptInPlace. That function may prepend a new system block
@@ -154,39 +65,10 @@ func syncBillingHeaderVersion(parsed map[string]interface{}, uaVersion string) {
 	if uaVersion == "" || parsed == nil {
 		return
 	}
-	targetVer := parseVersion(uaVersion)
-	if !targetVer.valid {
-		return
-	}
-
-	// Lazy: only extract message text when we're about to rewrite. Most
-	// requests from modern clients will skip the upgrade entirely, so we
-	// don't want to pay the walk cost on every call.
-	var msgText string
-	var msgTextLoaded bool
-	getMsgText := func() string {
-		if !msgTextLoaded {
-			msgText = extractFirstUserMessageText(parsed)
-			msgTextLoaded = true
-		}
-		return msgText
-	}
+	replacement := "cc_version=" + uaVersion
 
 	rewriteBlockText := func(text string) string {
-		return ccVersionInBillingRe.ReplaceAllStringFunc(text, func(match string) string {
-			sub := ccVersionInBillingRe.FindStringSubmatch(match)
-			// sub[1..3] = major, minor, patch; sub[4] = optional suffix.
-			clientVer := parseSemverTriple(sub[1], sub[2], sub[3])
-			if clientVer.valid && !isNewerVersion(targetVer, clientVer) {
-				// Client is already at (or above) the fp UA version — trust
-				// its original value, including its real-algorithm suffix.
-				return match
-			}
-			// Upgrade: rewrite both the semver triple and the suffix so the
-			// result is self-consistent at uaVersion.
-			suffix := computeBillingFingerprint(getMsgText(), uaVersion)
-			return "cc_version=" + uaVersion + "." + suffix
-		})
+		return ccVersionInBillingRe.ReplaceAllString(text, replacement)
 	}
 
 	system, ok := parsed["system"]

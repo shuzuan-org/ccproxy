@@ -258,6 +258,10 @@ Scope 的输入 **完全来自 TOML**（`APIKeyConfig.Scheduling` 和 `[[pools]]
 
 **CC 客户端轻量处理：** 学习客户端指纹（`LearnFromHeaders`）+ 补充 beta header + 重写 `metadata.user_id`（会话掩码）
 
+**Billing header 同步 (`syncBillingHeaderVersion`)：** CC 路径和非 CC 路径均会扫描 system 块中的 `x-anthropic-billing-header` 文本，将其中的 `cc_version=X.Y.Z` 三元组替换为 fp.UserAgent 对应的版本。3 字符消息派生后缀 `.abc` **原样保留**客户端的真值（不重算）。这一策略与 sub2api 的 `gateway_billing_header.go` 一致 —— 我们曾经实现 SHA256 复刻算法（盐 `59cf53e54c78`，索引 `[4,7,20]`），但 BillingAlgoProbe 在 Claude CLI 2.1.105+ 上观测到该算法已经漂移；自 v0.1.12 起改为只重写三元组、保留客户端真后缀。代价是当 fp UA 与客户端 CLI 版本不一致时 body 中三元组与后缀对应不同版本（统计性头体偏移），收益是不会再产生确定性可检测的"伪后缀"。`cch` 字段同样不动，由客户端原值透传。
+
+**Billing 算法漂移探针 (`BillingAlgoProbe`)：** 被动观察工具，对每个客户端 billing 块按 `(ua_version, state)` 去重计算历史 SHA256 复刻值与客户端真值的对比，记录 INFO 级日志（match / mismatch / no_suffix）。**不影响生产路径**，只用于离线 reverse engineer 算法演进。dedup map 上限 1000，进程重启清空。
+
 **会话掩码 (`SessionMaskStore`)：** 每账号生成一个 UUID 掩码 session（15 分钟滑动 TTL），替换 `user_id` 中的 session 部分，防止跨用户关联。定时清理过期掩码。
 
 **每账号指纹 (`FingerprintStore`)：** 从 `data/fingerprints.json` 加载每账号的 User-Agent、Stainless OS/Arch 等信息，让不同账号呈现不同的客户端特征。指纹 7 天过期，24 小时自动续期，支持从真实 CC 客户端请求中学习版本号。
