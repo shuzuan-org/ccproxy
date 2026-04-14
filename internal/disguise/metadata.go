@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -263,4 +264,37 @@ func isNewMetadataFormatVersion(uaVersion string) bool {
 		return false
 	}
 	return compareVersions(uaVersion, NewMetadataFormatMinVersion) >= 0
+}
+
+// collectMetadataSiblingFields returns a sorted list of keys in the metadata
+// map other than "user_id". Real Claude CLI only sends metadata.user_id (see
+// claude-code src/services/api/claude.ts:519-527), so any other key is either:
+//   - a third-party compatible client (OpenCode, Cline, Cursor, etc.) injecting
+//     its own telemetry field (application_id, trace_id, user_email, ...)
+//   - a future Claude CLI release adding a new metadata field
+//
+// This function is observation-only and used for debug logging. It is NOT
+// called from any mutation path — we deliberately preserve sibling fields
+// unchanged (matching sub2api's "minimize byte churn" philosophy) and want
+// to surface how often they appear on real traffic before deciding whether
+// to strip or transform them. Returns nil when the map has no siblings.
+//
+// Callers log only the returned keys, never the values, because sibling
+// values may contain PII (emails, user IDs, session tokens).
+func collectMetadataSiblingFields(metadata map[string]interface{}) []string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	siblings := make([]string, 0, len(metadata))
+	for k := range metadata {
+		if k == "user_id" {
+			continue
+		}
+		siblings = append(siblings, k)
+	}
+	if len(siblings) == 0 {
+		return nil
+	}
+	sort.Strings(siblings)
+	return siblings
 }

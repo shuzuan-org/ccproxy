@@ -458,3 +458,68 @@ func TestRewriteUserIDWithFixedClient_EmptyFixedID_GeneratesRandom(t *testing.T)
 		t.Errorf("expected random device_ids when fixedClientID is empty, got identical: %q", r1)
 	}
 }
+
+// TestCollectMetadataSiblingFields_EmptyMap returns nil on empty or nil input.
+func TestCollectMetadataSiblingFields_EmptyMap(t *testing.T) {
+	t.Parallel()
+	if got := collectMetadataSiblingFields(nil); got != nil {
+		t.Errorf("nil map → nil, got %v", got)
+	}
+	if got := collectMetadataSiblingFields(map[string]interface{}{}); got != nil {
+		t.Errorf("empty map → nil, got %v", got)
+	}
+}
+
+// TestCollectMetadataSiblingFields_OnlyUserID returns nil when the only
+// key is user_id — this is the common case for real Claude CLI traffic.
+func TestCollectMetadataSiblingFields_OnlyUserID(t *testing.T) {
+	t.Parallel()
+	meta := map[string]interface{}{
+		"user_id": "{\"device_id\":\"abc\",\"session_id\":\"def\"}",
+	}
+	if got := collectMetadataSiblingFields(meta); got != nil {
+		t.Errorf("only-user_id map → nil, got %v", got)
+	}
+}
+
+// TestCollectMetadataSiblingFields_ReturnsSortedSiblings surfaces the
+// non-user_id keys in deterministic order. Values are never inspected.
+func TestCollectMetadataSiblingFields_ReturnsSortedSiblings(t *testing.T) {
+	t.Parallel()
+	meta := map[string]interface{}{
+		"user_id":        "sentinel",
+		"trace_id":       "may-contain-pii",
+		"application_id": "app-123",
+		"user_email":     "alice@example.com",
+	}
+	got := collectMetadataSiblingFields(meta)
+	want := []string{"application_id", "trace_id", "user_email"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d siblings, got %d: %v", len(want), len(got), got)
+	}
+	for i, k := range want {
+		if got[i] != k {
+			t.Errorf("siblings[%d] = %q, want %q (sorted)", i, got[i], k)
+		}
+	}
+	// Sanity: user_id must NEVER appear in the result.
+	for _, k := range got {
+		if k == "user_id" {
+			t.Errorf("user_id leaked into sibling list: %v", got)
+		}
+	}
+}
+
+// TestCollectMetadataSiblingFields_NoUserID returns the siblings even when
+// user_id is absent. This covers the edge case where ccproxy is about to
+// inject a user_id but the client sent other metadata fields.
+func TestCollectMetadataSiblingFields_NoUserID(t *testing.T) {
+	t.Parallel()
+	meta := map[string]interface{}{
+		"custom_field": "x",
+	}
+	got := collectMetadataSiblingFields(meta)
+	if len(got) != 1 || got[0] != "custom_field" {
+		t.Errorf("expected [custom_field], got %v", got)
+	}
+}

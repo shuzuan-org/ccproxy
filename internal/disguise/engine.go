@@ -123,6 +123,19 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
+		// Observation-only: record any non-standard metadata sibling fields (user_id
+		// is the only field real Claude CLI sends — see claude-code
+		// src/services/api/claude.ts:519-527). Third-party compatible clients may
+		// inject custom fields here; we do NOT strip them (sub2api passes them
+		// through as well, following "minimize byte churn" philosophy) but we want
+		// to know how often this actually happens on the wire. Field names only —
+		// never values, which may be PII.
+		if siblings := collectMetadataSiblingFields(metadata); len(siblings) > 0 {
+			observe.Logger(ctx).Debug("disguise: metadata sibling fields observed (CC pass-through)",
+				"account", accountName,
+				"sibling_fields", siblings,
+			)
+		}
 		maskedSession := e.sessions.Get(accountID)
 		fpUA := ""
 		if fp != nil {
@@ -303,6 +316,16 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		fpUAVersion = extractUAVersion(fp.UserAgent)
 	} else {
 		fpUAVersion = extractUAVersion(DefaultHeaders["User-Agent"])
+	}
+	// Observation-only: record any non-standard metadata sibling fields before
+	// the user_id injection. See the CC pass-through path above for rationale.
+	if existingMeta, ok := parsed["metadata"].(map[string]interface{}); ok {
+		if siblings := collectMetadataSiblingFields(existingMeta); len(siblings) > 0 {
+			observe.Logger(ctx).Debug("disguise: metadata sibling fields observed (non-CC disguise)",
+				"account", accountName,
+				"sibling_fields", siblings,
+			)
+		}
 	}
 	injectMetadataUserIDInPlace(parsed, fpClientIDOrEmpty(fp), maskedSession, fpUAVersion)
 	newUserID := ""
