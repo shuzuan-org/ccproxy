@@ -189,6 +189,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			syncBillingHeaderVersion(parsed, uaVersion)
 		}
 
+		// Rewrite <env> block fingerprint lines to per-account canonical
+		// values. Real Claude CLI injects getCwd()/os.platform()/uname -sr
+		// into every request; for multi-user shared-account setups the raw
+		// values leak which human is behind the token. We guard on Claude
+		// Code prompt prefix inside the rewriter so user content is safe.
+		rewriteEnvBlockInPlace(parsed, fp)
+
 		// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 		if strings.Contains(origReq.URL.Path, "count_tokens") {
 			delete(parsed, "metadata")
@@ -348,6 +355,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	if fpUAVersion != "" {
 		syncBillingHeaderVersion(parsed, fpUAVersion)
 	}
+
+	// Rewrite <env> block fingerprint lines. Non-CC clients usually don't
+	// emit an <env> block at all (this is a Claude CLI thing), but when
+	// injectSystemPromptInPlace prepended our canonical Claude Code prefix
+	// above, any later sub-agent system block that happens to quote an
+	// <env> envelope gets normalized too. Cheap no-op in the common case.
+	rewriteEnvBlockInPlace(parsed, fp)
 
 	// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 	if strings.Contains(origReq.URL.Path, "count_tokens") {
