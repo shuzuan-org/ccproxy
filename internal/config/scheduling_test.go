@@ -6,6 +6,7 @@ import (
 )
 
 func TestResolveScheduling(t *testing.T) {
+	t.Parallel()
 	pools := []PoolConfig{
 		{Name: "team-a", Members: []string{"alice", "bob", "charlie"}},
 		{Name: "singleton", Members: []string{"dave"}},
@@ -130,6 +131,7 @@ func TestResolveScheduling(t *testing.T) {
 }
 
 func TestResolvedScope_Contains(t *testing.T) {
+	t.Parallel()
 	t.Run("nil scope allows everything", func(t *testing.T) {
 		var s *ResolvedScope
 		if !s.Contains("alice") || !s.Contains("") {
@@ -169,6 +171,7 @@ func TestResolvedScope_Contains(t *testing.T) {
 }
 
 func TestResolvedScope_Signature(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		scope *ResolvedScope
@@ -191,6 +194,7 @@ func TestResolvedScope_Signature(t *testing.T) {
 }
 
 func TestBuildSchedulingScopes(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		APIKeys: []APIKeyConfig{
 			{Name: "alice"},
@@ -226,6 +230,7 @@ func TestBuildSchedulingScopes(t *testing.T) {
 }
 
 func TestBuildSchedulingScopes_PropagatesErrors(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		APIKeys: []APIKeyConfig{
 			{Name: "alice", Scheduling: []string{"pool:missing"}},

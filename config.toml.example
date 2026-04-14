@@ -31,13 +31,22 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 # "scheduling" on the api_key. Entries use the following syntax:
 #
 #   "self"         — accounts whose owner == this api_key name
-#   "owner:<name>" — accounts whose owner matches the given name
+#   "owner:<name>" — accounts whose owner matches the given api_key name
 #   "pool:<name>"  — expands to the members of the named [[pools]] block
 #   "*"            — all enabled accounts (default; short-circuits other entries)
 #   "unowned"      — accounts with no owner (rare; legacy/migrated only)
 #
+# Matching rules (case-sensitive): "owner:<name>" and pool.members must refer
+# to existing api_key names. When an account is created through the admin UI
+# its Owner field is populated with the api_key name of the creator, and that
+# same string is compared here. A typo — e.g. "owner:Alice" when the key is
+# named "alice" — is rejected at config load time, not at request time.
+#
 # [[pools]] is a naming convenience for reusing the same member list across
-# multiple api_keys. It is not a runtime entity.
+# multiple api_keys. A pool's `members` field is a list of api_key names
+# whose owned accounts the pool should expand to — it is NOT a list of
+# account names or account UUIDs. Pools are not runtime entities: references
+# are expanded to their member list once at config load time.
 #
 # Example: alice and bob share the "team-a" pool; charlie is isolated.
 #

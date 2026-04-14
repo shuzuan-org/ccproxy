@@ -766,6 +766,17 @@ func TestBalancer_AllowAllScope(t *testing.T) {
 }
 
 // Test: sticky session pointing at an out-of-scope account is invalidated and falls back.
+//
+// Design note: scope failure is treated as PERMANENT (session binding is
+// cleared), unlike budget-blocked which is TRANSIENT (binding is kept so
+// the account can resume serving when the budget window resets — see
+// TestBalancer_StickySessionBudgetBlocked). The rationale: a scope change
+// follows a config/ownership edit and the old binding no longer reflects
+// what the API key is allowed to see, so preserving it would let a stale
+// affinity leak across scope boundaries. Even in the edge case where an
+// admin oscillates a key's scheduling back to include the old owner, the
+// cost is a single L3 re-selection on the next request — a fair price for
+// strict isolation.
 func TestBalancer_StickySessionInvalidatedByScope(t *testing.T) {
 	accounts := []config.AccountConfig{
 		makeOwnedAccount("alice-acct", "alice"),
@@ -791,5 +802,75 @@ func TestBalancer_StickySessionInvalidatedByScope(t *testing.T) {
 	// Sticky binding should have been cleared.
 	if _, ok := b.sessions.Load("session-x"); ok {
 		t.Error("expected sticky session to be cleared after scope mismatch")
+	}
+}
+
+// Test: accounts added dynamically (simulating admin dashboard "Add Claude")
+// are correctly filtered by the existing scope without requiring a rebuild.
+//
+// This pins the design invariant that scope is independent of the live
+// account set: ResolvedScope holds only the allowed OWNER names (expanded
+// from pool/self/owner: directives at config load), and each SelectAccount
+// call re-evaluates scope.Contains(acct.Owner) against the current
+// b.accounts snapshot. Adding a new account with a known owner must
+// immediately become selectable; adding one with an unknown owner must
+// remain filtered — both without any BuildSchedulingScopes() rebuild.
+//
+// Regression guard: an earlier review proposed rebuilding scope in the
+// registry onChange callback, which would have been redundant (scope inputs
+// are config-only) and introduced a read-side race. Do NOT delete this
+// test — it is the proof that the current design is intentionally simpler.
+func TestBalancer_ScopeMatchesDynamicallyAddedAccounts(t *testing.T) {
+	// Start with only bob's account — which is NOT in scope for this key.
+	initial := []config.AccountConfig{
+		makeOwnedAccount("bob-acct", "bob"),
+	}
+	b := newTestBalancer(initial)
+
+	// Scope allows alice (and charlie) but bob is not listed.
+	scope := &config.ResolvedScope{
+		AllowedOwners: map[string]bool{"alice": true, "charlie": true},
+	}
+
+	// Pre-condition: selection must fail with ErrScopeEmpty — no in-scope
+	// accounts exist yet, and the early check fails fast before throttle.
+	if _, err := b.SelectAccount(testCtx, "", scope, map[string]bool{}, false); err != ErrScopeEmpty {
+		t.Fatalf("expected ErrScopeEmpty pre-add, got %v", err)
+	}
+
+	// Simulate admin adding alice's account at runtime — this must be
+	// immediately selectable under the EXISTING scope, without any rebuild.
+	updated := []config.AccountConfig{
+		makeOwnedAccount("bob-acct", "bob"),
+		makeOwnedAccount("alice-acct", "alice"),
+	}
+	b.UpdateAccounts(updated)
+
+	result, err := b.SelectAccount(testCtx, "", scope, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("expected dynamically added alice-acct to be selectable, got %v", err)
+	}
+	if result.Account.Owner != "alice" {
+		t.Errorf("expected alice-owned account, got owner %q", result.Account.Owner)
+	}
+	result.Release()
+
+	// Adding an account with an unknown owner ("mallory") must NOT slip
+	// through the scope filter even though it's a brand-new account the
+	// scope was built without knowing about.
+	withMallory := append(updated, makeOwnedAccount("mallory-acct", "mallory"))
+	b.UpdateAccounts(withMallory)
+
+	// Exclude alice (the only legitimate in-scope account) to force the
+	// selector to consider bob + mallory — both should be rejected by scope.
+	// L3 then has no candidates and surfaces ErrAllAccountsBusy (see
+	// balancer.go:310 — "your scope's accounts are busy" is how L3 reports
+	// "every candidate was filtered or in cooldown"). Note: the L1 early
+	// scope-empty check at balancer.go:107 still passes here because alice
+	// exists in b.accounts even though she's excluded for this call.
+	excludeAlice := map[string]bool{"alice-acct-id": true}
+	_, err = b.SelectAccount(testCtx, "", scope, excludeAlice, false)
+	if err != ErrAllAccountsBusy {
+		t.Errorf("expected ErrAllAccountsBusy when all in-scope accounts excluded and unknown-owner accounts filtered, got %v", err)
 	}
 }

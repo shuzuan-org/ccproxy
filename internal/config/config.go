@@ -227,7 +227,9 @@ func (c *Config) Validate() error {
 	}
 
 	// Scheduling: pool references must resolve and entry syntax must be valid.
-	// Owner references to non-existent api_keys are allowed but logged as a warning.
+	// Pool members and owner: directives are matched against api_key names
+	// case-sensitively — fail fast if they don't resolve to a known key so
+	// a typo doesn't turn into a silent 503 at request time.
 	knownKeys := make(map[string]bool, len(c.APIKeys))
 	for _, k := range c.APIKeys {
 		if k.Name != "" {
@@ -249,7 +251,14 @@ func (c *Config) Validate() error {
 				continue
 			}
 			if !knownKeys[m] {
-				slog.Warn("pool references unknown api_key", "pool", p.Name, "member", m)
+				// A pool member that is not a known api_key name cannot
+				// match any account.Owner (owners are always api_key names
+				// at creation time), so the pool silently filters to empty
+				// for every key that references it. Refuse to start
+				// instead of surfacing this at request time. This also
+				// catches the case-sensitivity footgun: "Alice" will not
+				// match an api_key named "alice".
+				errs = append(errs, fmt.Errorf("pool %q references unknown api_key %q (pool members must be existing api_key names; match is case-sensitive)", p.Name, m))
 			}
 		}
 	}
@@ -266,11 +275,12 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("api_key %q: scheduling scope is empty (no allowed owners)", k.Name))
 			continue
 		}
-		// Warn on owner:<name> references that do not (yet) exist as api_keys.
+		// owner:<name> references must also resolve to a known api_key, for
+		// the same case-sensitivity + typo reasons that apply to pools.
 		if scope != nil && !scope.AllowAll {
 			for owner := range scope.AllowedOwners {
 				if !knownKeys[owner] {
-					slog.Warn("scheduling references unknown owner", "api_key", k.Name, "owner", owner)
+					errs = append(errs, fmt.Errorf("api_key %q: scheduling references unknown owner %q (match is case-sensitive)", k.Name, owner))
 				}
 			}
 		}

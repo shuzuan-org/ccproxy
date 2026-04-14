@@ -34,6 +34,13 @@ import (
 // log lines per version at steady state (one "match" confirmation, one
 // "mismatch" evidence if/when something breaks) and is reset at process
 // restart so post-upgrade re-observation just works.
+// billingProbeSeenCap bounds the dedup map so an adversarial client cannot
+// grow it without limit by rotating User-Agent versions. In steady state the
+// map holds at most 3 entries per real CLI version (match / mismatch / no_suffix);
+// the cap (1000) covers several hundred versions before the probe starts
+// silently dropping — well past any realistic operational need.
+const billingProbeSeenCap = 1000
+
 type BillingAlgoProbe struct {
 	mu   sync.Mutex
 	seen map[string]struct{} // key: "<ua_version>|<state>"
@@ -110,6 +117,14 @@ func (p *BillingAlgoProbe) Observe(ctx context.Context, uaVersion, blockText, fi
 	key := uaVersion + "|" + state
 	p.mu.Lock()
 	if _, already := p.seen[key]; already {
+		p.mu.Unlock()
+		return
+	}
+	// Hard cap: drop silently once the dedup map has grown past the cap.
+	// New (uaVersion, state) tuples arriving after that point will neither
+	// be logged nor remembered, which is preferable to unbounded growth
+	// under a hostile client. Process restart clears the map.
+	if len(p.seen) >= billingProbeSeenCap {
 		p.mu.Unlock()
 		return
 	}

@@ -196,17 +196,27 @@ L3 Score — 负载感知选择 + 预算状态过滤
 | `*` | 所有启用账户（默认值，短路其他条目）|
 | `unowned` | `account.owner == ""` 的账户（历史遗留场景）|
 
-`[[pools]]` 是纯粹的配置复用机制，不是运行时实体。启动时展开为 owner 集合后不再存在。
+`[[pools]]` 是纯粹的配置复用机制，不是运行时实体。启动时展开为 owner 集合后不再存在。`pool.members` 里的字符串是 **api_key 名字**（创建账户的用户名），不是账户 UUID 或账户显示名。匹配是区分大小写的字符串相等比较。
 
 **解析与应用**：
 - `config.Load` 在启动时一次性把每个 api_key 的 `scheduling` 解析为 `ResolvedScope`（位于 `internal/config/scheduling.go`），未知前缀或未定义的 pool 引用会导致启动失败
+- `Validate()` 进一步检查：pool 成员必须是已知 api_key 名、`owner:<name>` 指令必须是已知 api_key 名、解析后的空 scope（例如 `pool:empty-pool`）、重复的 pool 名。任何一项失败都在启动时报错，避免运行时出现"静默 503"
 - `server.New` 通过 `cfg.BuildSchedulingScopes()` 构建 `username → *ResolvedScope` map，注入到 proxy handler
 - 每个请求在 `proxy/handler.go` 根据 `authInfo.APIKeyName` 查到 scope，传入 `loadbalancer.ExecuteWithRetry`
 - 负载均衡器在 L1 入队前就快速检查"scope 是否匹配任何账户"，不匹配则返回 `ErrScopeEmpty`（映射为 HTTP 503，消息"No accounts available in your scheduling scope"）
-- L2 Sticky 命中已绑定账户时会校验其 owner 是否仍在 scope 内；若 scope 被修改导致已绑定账户失效，sticky 会被解绑并降级到 L3 Score 重新选择（日志：`balancer: sticky session invalidated by scope change`）
+- L2 Sticky 命中已绑定账户时会校验其 owner 是否仍在 scope 内；若 scope 被修改导致已绑定账户失效，sticky 会被解绑并降级到 L3 Score 重新选择（日志：`balancer: sticky session invalidated by scope change`）。注意：scope 失效会**永久清除** session binding，与 budget-blocked 场景下"保留 binding 等待账户恢复"的策略不同——这是有意的对称破缺，因为 scope 变化意味着 owner 权限边界移动，延续旧 binding 会跨边界泄露亲和性
 - L3 Score 在候选过滤阶段按 `scope.Contains(account.Owner)` 剔除越界账户
 
-**不支持运行时热加载**：修改 `scheduling` 或 `[[pools]]` 需要重启 ccproxy 才能生效。
+**动态 vs 静态语义（关键设计不变量）**：
+
+Scope 的输入 **完全来自 TOML**（`APIKeyConfig.Scheduling` 和 `[[pools]]`），与运行时账户状态解耦。`ResolvedScope.AllowedOwners` 只存放允许的 owner 名字集合，不缓存账户实例。这带来两个性质：
+
+1. **通过仪表盘动态新增的账户立即遵守 scope**：balancer 的 `UpdateAccounts()` 回调刷新 `b.accounts` 列表后，每次 `SelectAccount` 都用**现有 scope** 对新账户做 `scope.Contains(acct.Owner)` 评估。新账户 owner 若已在集合里就立刻可见，不在集合里就被正确拒绝——**不需要重建 scope**。回归测试见 `TestBalancer_ScopeMatchesDynamicallyAddedAccounts`。
+2. **修改 `scheduling` 或 `[[pools]]` 需要重启**：因为这两个字段只从 TOML 读取一次。没有热加载 watcher。
+
+这两条放在一起解释了为何 scope 既能"动态响应账户增删"又"不支持配置热加载"——前者是账户维度，后者是配置维度，两套机制不冲突。
+
+**信任边界**：`config.toml` 是 ccproxy 的配置权威。任何能写 TOML 的用户都可以把自己的 `scheduling` 写成 `owner:alice` 来访问 alice 拥有的账户——**这是已知的设计选择**，不是漏洞。多租户隔离依赖 TOML 的文件系统权限（0600）和部署时的访问控制。如果需要多管理员协作但彼此不互信，需要在 ccproxy 之外通过 CI 或合并审查控制 `config.toml` 的修改权。
 
 **与 owner 字段的关系**：
 - `Account.Owner` 决定仪表盘编辑权限和 Telegram 通知归属（不受本机制影响）

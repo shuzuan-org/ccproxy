@@ -261,13 +261,21 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 		return
 	}
 
-	// Compare versions: only merge if request version is newer
+	// Compare versions: only merge if request version is strictly newer.
+	// The (UA, Stainless Package Version, Runtime Version) triple is a
+	// tightly coupled tuple — each CLI release bundles one specific
+	// combination, so it must be adopted as a unit or not at all. A real
+	// CC client can legitimately omit one of the Stainless headers, so
+	// we cannot simply overwrite each field when present; doing so would
+	// leave an impossible mix like "new UA + old runtime version". OS/Arch
+	// reflect the client machine and are adopted independently.
 	existingVer := extractVersionFromUA(fp.UserAgent)
 	requestVer := extractVersionFromUA(ua)
 
 	if isNewerVersion(requestVer, existingVer) {
 		oldUA := fp.UserAgent
-		mergeHeaders(fp, headers)
+		mergeClientTuple(fp, headers)
+		mergeClientMachine(fp, headers)
 		fp.UpdatedAt = now.UnixMilli()
 		_ = s.saveLocked()
 		slog.Debug("disguise/fingerprint: learned newer version from CC client",
@@ -276,7 +284,9 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 			"new_ua", fp.UserAgent,
 		)
 	} else {
-		// Same or older version — just refresh TTL
+		// Same or older version — still refresh OS/Arch (they're machine
+		// attributes, not release attributes) and bump the TTL.
+		mergeClientMachine(fp, headers)
 		fp.UpdatedAt = now.UnixMilli()
 		_ = s.saveLocked()
 	}
@@ -348,23 +358,37 @@ func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
 	return fp
 }
 
-// mergeHeaders updates a fingerprint with values from headers,
-// only overwriting fields that are present in the request.
-func mergeHeaders(fp *Fingerprint, headers http.Header) {
-	if ua := headers.Get("User-Agent"); ua != "" {
-		fp.UserAgent = ua
+// mergeClientTuple atomically adopts the (UA, StainlessPackageVersion,
+// StainlessRuntimeVersion) triple from the incoming request headers. Because
+// each Claude CLI release ships one specific combination, the three fields
+// must move together or not at all — a partial update (e.g. new UA but old
+// runtime) would create an impossible fingerprint that stands out upstream.
+//
+// The adoption is gated on ALL three fields being present in the request.
+// If any of them is missing, the existing tuple is preserved untouched; the
+// caller has already verified the request version is newer, so the next
+// request that carries a complete tuple will succeed.
+func mergeClientTuple(fp *Fingerprint, headers http.Header) {
+	ua := headers.Get("User-Agent")
+	pkgVer := headers.Get("X-Stainless-Package-Version")
+	runtimeVer := headers.Get("X-Stainless-Runtime-Version")
+	if ua == "" || pkgVer == "" || runtimeVer == "" {
+		return
 	}
-	if v := headers.Get("X-Stainless-Package-Version"); v != "" {
-		fp.StainlessPackageVersion = v
-	}
+	fp.UserAgent = ua
+	fp.StainlessPackageVersion = pkgVer
+	fp.StainlessRuntimeVersion = runtimeVer
+}
+
+// mergeClientMachine updates the machine-level fields (OS and Arch). These
+// reflect the client's operating system and CPU architecture, not the CLI
+// release, so they are adopted independently of the CLI version tuple.
+func mergeClientMachine(fp *Fingerprint, headers http.Header) {
 	if v := headers.Get("X-Stainless-OS"); v != "" {
 		fp.StainlessOS = v
 	}
 	if v := headers.Get("X-Stainless-Arch"); v != "" {
 		fp.StainlessArch = v
-	}
-	if v := headers.Get("X-Stainless-Runtime-Version"); v != "" {
-		fp.StainlessRuntimeVersion = v
 	}
 }
 

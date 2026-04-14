@@ -573,6 +573,66 @@ func TestValidate_SchedulingUnownedOnly(t *testing.T) {
 	}
 }
 
+// TestValidate_PoolMemberUnknownAPIKey verifies that a pool referencing an
+// unknown api_key name (typo, deleted key, or wrong case) fails validation
+// at config load time. The check exists so that a stale member name doesn't
+// silently filter to an empty set at request time, which would surface as an
+// opaque 503 with no clue as to root cause.
+func TestValidate_PoolMemberUnknownAPIKey(t *testing.T) {
+	t.Parallel()
+	cfg := baseValidConfig()
+	cfg.Pools = []PoolConfig{
+		{Name: "team", Members: []string{"test", "ghost"}},
+	}
+	cfg.APIKeys[0].Scheduling = []string{"pool:team"}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for pool referencing unknown api_key, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error %q should name the unknown member", err.Error())
+	}
+}
+
+// TestValidate_PoolMemberCaseSensitive guards against case-insensitive owner
+// matching. Account.Owner is compared verbatim, so "Test" and "test" must be
+// treated as distinct names — and a typo in case is rejected at load time.
+func TestValidate_PoolMemberCaseSensitive(t *testing.T) {
+	t.Parallel()
+	cfg := baseValidConfig()
+	// api_key is named "test" (lowercase). Pool member uses "Test" (titlecase).
+	cfg.Pools = []PoolConfig{
+		{Name: "team", Members: []string{"Test"}},
+	}
+	cfg.APIKeys[0].Scheduling = []string{"pool:team"}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for case-mismatched pool member, got nil")
+	}
+	if !strings.Contains(err.Error(), "case-sensitive") {
+		t.Errorf("error %q should mention case sensitivity", err.Error())
+	}
+}
+
+// TestValidate_OwnerDirectiveUnknownAPIKey verifies that "owner:<name>"
+// referencing a non-existent api_key is rejected. Same rationale as the
+// pool case: a silent miss becomes an opaque runtime 503 otherwise.
+func TestValidate_OwnerDirectiveUnknownAPIKey(t *testing.T) {
+	t.Parallel()
+	cfg := baseValidConfig()
+	cfg.APIKeys[0].Scheduling = []string{"owner:nobody"}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for owner: directive referencing unknown api_key, got nil")
+	}
+	if !strings.Contains(err.Error(), "nobody") {
+		t.Errorf("error %q should name the unknown owner", err.Error())
+	}
+}
+
 func TestRuntimeAccount(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{

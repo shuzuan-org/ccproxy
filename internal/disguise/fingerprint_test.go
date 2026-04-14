@@ -242,8 +242,12 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 	// First learn: use the current default UA version so the fp gets created
 	// from client headers (older-than-default UA would be clamped to default).
 	defaultUA := DefaultHeaders["User-Agent"]
+	defaultPkg := DefaultHeaders["X-Stainless-Package-Version"]
+	defaultRuntime := DefaultHeaders["X-Stainless-Runtime-Version"]
 	h1 := http.Header{}
 	h1.Set("User-Agent", defaultUA)
+	h1.Set("X-Stainless-Package-Version", defaultPkg)
+	h1.Set("X-Stainless-Runtime-Version", defaultRuntime)
 	h1.Set("X-Stainless-OS", "Linux")
 	store.LearnFromHeaders("acct-1", h1)
 
@@ -252,10 +256,14 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 		t.Fatalf("initial UA mismatch: %q", fp1.UserAgent)
 	}
 
-	// Learn with newer version → should merge. Real Stainless SDK reports
-	// darwin as "MacOS" (not "Darwin") — match the wire-format enum.
+	// Learn with newer version → should merge the complete CLI tuple atomically
+	// (UA + PackageVersion + RuntimeVersion all adopted together). OS/Arch are
+	// machine attributes and are adopted independently. Real Stainless SDK
+	// reports darwin as "MacOS" (not "Darwin") — match the wire-format enum.
 	h2 := http.Header{}
 	h2.Set("User-Agent", "claude-cli/3.0.0 (external, cli)")
+	h2.Set("X-Stainless-Package-Version", "0.99.0")
+	h2.Set("X-Stainless-Runtime-Version", "v25.0.0")
 	h2.Set("X-Stainless-OS", "MacOS")
 	store.LearnFromHeaders("acct-1", h2)
 
@@ -263,8 +271,62 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 	if fp2.UserAgent != "claude-cli/3.0.0 (external, cli)" {
 		t.Errorf("expected merged newer UA, got %q", fp2.UserAgent)
 	}
+	if fp2.StainlessPackageVersion != "0.99.0" {
+		t.Errorf("expected merged package version, got %q", fp2.StainlessPackageVersion)
+	}
+	if fp2.StainlessRuntimeVersion != "v25.0.0" {
+		t.Errorf("expected merged runtime version, got %q", fp2.StainlessRuntimeVersion)
+	}
 	if fp2.StainlessOS != "MacOS" {
 		t.Errorf("expected merged OS, got %q", fp2.StainlessOS)
+	}
+}
+
+// TestLearnFromHeaders_PartialTupleRejected verifies that a newer-version
+// request carrying only the User-Agent (without X-Stainless-Package-Version
+// and X-Stainless-Runtime-Version) does NOT partially update the fingerprint.
+// The (UA, PackageVersion, RuntimeVersion) triple is a tightly coupled tuple —
+// each Claude CLI release bundles one specific combination, so adopting a new
+// UA while keeping the old runtime version would produce an impossible
+// fingerprint that stands out upstream. See commit 3624a0c and the mergeClientTuple
+// guard in fingerprint.go for rationale.
+func TestLearnFromHeaders_PartialTupleRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewFingerprintStore(dir)
+
+	defaultUA := DefaultHeaders["User-Agent"]
+	defaultPkg := DefaultHeaders["X-Stainless-Package-Version"]
+	defaultRuntime := DefaultHeaders["X-Stainless-Runtime-Version"]
+
+	// Seed with a complete default-version fingerprint.
+	h1 := http.Header{}
+	h1.Set("User-Agent", defaultUA)
+	h1.Set("X-Stainless-Package-Version", defaultPkg)
+	h1.Set("X-Stainless-Runtime-Version", defaultRuntime)
+	h1.Set("X-Stainless-OS", "Linux")
+	store.LearnFromHeaders("acct-1", h1)
+
+	// Send a newer UA but omit the Stainless tuple headers — legal per HTTP
+	// (the client just didn't set them) but a partial update would be a bug.
+	h2 := http.Header{}
+	h2.Set("User-Agent", "claude-cli/9.9.9 (external, cli)")
+	h2.Set("X-Stainless-OS", "MacOS") // machine attribute, should still update
+	store.LearnFromHeaders("acct-1", h2)
+
+	fp := store.Get("acct-1")
+	if fp.UserAgent != defaultUA {
+		t.Errorf("UA should remain default when tuple is incomplete, got %q", fp.UserAgent)
+	}
+	if fp.StainlessPackageVersion != defaultPkg {
+		t.Errorf("PackageVersion should remain default, got %q", fp.StainlessPackageVersion)
+	}
+	if fp.StainlessRuntimeVersion != defaultRuntime {
+		t.Errorf("RuntimeVersion should remain default, got %q", fp.StainlessRuntimeVersion)
+	}
+	// OS is a machine attribute, adopted independently of the tuple.
+	if fp.StainlessOS != "MacOS" {
+		t.Errorf("OS should still update independently, got %q", fp.StainlessOS)
 	}
 }
 
@@ -277,12 +339,19 @@ func TestLearnFromHeaders_OlderVersionNoMerge(t *testing.T) {
 	// Stainless SDK wire-format enum for darwin clients.
 	h1 := http.Header{}
 	h1.Set("User-Agent", "claude-cli/3.0.0 (external, cli)")
+	h1.Set("X-Stainless-Package-Version", "0.99.0")
+	h1.Set("X-Stainless-Runtime-Version", "v25.0.0")
 	h1.Set("X-Stainless-OS", "MacOS")
 	store.LearnFromHeaders("acct-1", h1)
 
-	// Learn with older version → should NOT merge (only refresh TTL)
+	// Learn with older version → CLI tuple (UA/PackageVersion/RuntimeVersion)
+	// must stay pinned to the newer release. But OS is a machine attribute
+	// and should still track the latest-seen client machine — a user moving
+	// from macOS to Linux with an older CLI legitimately changes OS.
 	h2 := http.Header{}
 	h2.Set("User-Agent", "claude-cli/2.1.22 (external, cli)")
+	h2.Set("X-Stainless-Package-Version", "0.60.0")
+	h2.Set("X-Stainless-Runtime-Version", "v20.0.0")
 	h2.Set("X-Stainless-OS", "Linux")
 	store.LearnFromHeaders("acct-1", h2)
 
@@ -290,7 +359,15 @@ func TestLearnFromHeaders_OlderVersionNoMerge(t *testing.T) {
 	if fp.UserAgent != "claude-cli/3.0.0 (external, cli)" {
 		t.Errorf("expected UA unchanged (older version), got %q", fp.UserAgent)
 	}
-	if fp.StainlessOS != "MacOS" {
-		t.Errorf("expected OS unchanged (older version), got %q", fp.StainlessOS)
+	if fp.StainlessPackageVersion != "0.99.0" {
+		t.Errorf("expected PackageVersion unchanged (older version), got %q", fp.StainlessPackageVersion)
+	}
+	if fp.StainlessRuntimeVersion != "v25.0.0" {
+		t.Errorf("expected RuntimeVersion unchanged (older version), got %q", fp.StainlessRuntimeVersion)
+	}
+	// OS/Arch are machine attributes — they refresh on every learn regardless
+	// of CLI version, matching the mergeClientMachine semantics.
+	if fp.StainlessOS != "Linux" {
+		t.Errorf("expected OS to update to Linux (machine attribute), got %q", fp.StainlessOS)
 	}
 }

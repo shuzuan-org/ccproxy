@@ -63,8 +63,13 @@ func (s *ResolvedScope) SortedOwners() []string {
 
 // ResolveScheduling expands a scheduling directive list into a ResolvedScope.
 // Unknown entries produce an error. Unknown pool references produce an error
-// (the referenced pool must exist). References to usernames that do not yet
-// exist are allowed — they simply resolve to the literal owner name.
+// (the referenced pool must exist).
+//
+// Note on matching: resolved owner names are compared against account.Owner
+// verbatim (case-sensitive string equality). The config.Validate step catches
+// typos and case mismatches — by the time this function runs under a real
+// request, every owner name in the scope is guaranteed to match at least one
+// known api_key name.
 func ResolveScheduling(apiKeyName string, scheduling []string, pools []PoolConfig) (*ResolvedScope, error) {
 	// Empty/unset defaults to "*" (global pool, backwards compatible).
 	if len(scheduling) == 0 {

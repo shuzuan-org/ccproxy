@@ -437,6 +437,57 @@ func TestHandler_NoHealthyAccounts(t *testing.T) {
 	}
 }
 
+// TestHandler_ScopeEmpty verifies that a request whose api_key scheduling
+// scope matches no existing account produces a 503 api_error with the
+// scope-specific message. This exercises the ErrScopeEmpty mapping at
+// handler.go:281 and is the counterpart to TestHandler_NoHealthyAccounts
+// for the "balancer has accounts but none are in this key's scope" case.
+func TestHandler_ScopeEmpty(t *testing.T) {
+	// Balancer has one real account owned by alice, but the api_key under
+	// test has a scheduling scope restricted to "ghost" (no matching owner).
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream must not be called when scope is empty, got %s", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	acct := buildOAuthAccount(upstream.URL)
+	acct.Owner = "alice"
+	balancer := buildBalancer(acct)
+	oauthMgr := buildOAuthManager(t, "fake-token")
+
+	// scope allows only "ghost" — no account matches, so ErrScopeEmpty fires.
+	scopes := map[string]*config.ResolvedScope{
+		"ghost-key": {AllowedOwners: map[string]bool{"ghost": true}},
+	}
+	h := NewHandler(acct.BaseURL, acct.RequestTimeout, balancer, disguise.NewEngine(t.TempDir()), oauthMgr, scopes)
+
+	body := standardRequestBody("claude-3-5-sonnet-20241022", false)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req = setAuthInfo(req, "ghost-key")
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var errResp apierror.Response
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if errResp.Error.Type != "api_error" {
+		t.Errorf("expected api_error type, got %q", errResp.Error.Type)
+	}
+	// Distinct message (vs "No available accounts") is the whole point of
+	// the separate ErrScopeEmpty mapping — a generic "no accounts" reply
+	// would hide the scheduling-scope root cause from the caller.
+	if errResp.Error.Message != "No accounts available in your scheduling scope" {
+		t.Errorf("expected scope-specific message, got %q", errResp.Error.Message)
+	}
+}
+
 // TestHandler_SessionKeyComposed verifies that sticky session binds to correct account
 // when session ID is present in request metadata.user_id.
 func TestHandler_SessionKeyFromMetadata(t *testing.T) {
