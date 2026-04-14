@@ -43,8 +43,30 @@ func parseBody(t *testing.T, body []byte) map[string]interface{} {
 	return result
 }
 
-// metadataUserIDRegex matches the format: user_{64hex}_account__session_{uuid}
+// metadataUserIDRegex matches the legacy format: user_{64hex}_account__session_{uuid}.
+// Used alongside ParseUserID to validate both legacy and JSON (>= 2.1.78) formats.
 var metadataUserIDRegex = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account__session_[\w-]+$`)
+
+// isValidMetadataUserID accepts either the legacy string format or the JSON
+// object format (Claude CLI >= 2.1.78). Returns true on either match.
+func isValidMetadataUserID(s string) bool {
+	if metadataUserIDRegex.MatchString(s) {
+		return true
+	}
+	if p := ParseUserID(s); p != nil && p.DeviceID != "" && p.SessionID != "" {
+		return true
+	}
+	return false
+}
+
+// extractSessionFromUserID returns the session_id component from either a
+// legacy string or JSON-format metadata.user_id, or "" if neither matches.
+func extractSessionFromUserID(uid string) string {
+	if p := ParseUserID(uid); p != nil {
+		return p.SessionID
+	}
+	return ""
+}
 
 // newTestEngine creates a test Engine with a temp data directory.
 func newTestEngine(t *testing.T) *Engine {
@@ -111,8 +133,8 @@ func TestEngineApply_OAuthNonClaudeCode(t *testing.T) {
 		t.Fatal("expected metadata key in body after disguise")
 	}
 	userID, _ := meta["user_id"].(string)
-	if !metadataUserIDRegex.MatchString(userID) {
-		t.Errorf("expected user_id to match pattern, got %q", userID)
+	if !isValidMetadataUserID(userID) {
+		t.Errorf("expected user_id to match legacy or JSON format, got %q", userID)
 	}
 
 	// Layer 6: Model ID normalized
@@ -208,7 +230,7 @@ func TestEngineApply_OAuthRealClaudeCode(t *testing.T) {
 	if newUserID == validUserID {
 		t.Error("expected user_id to be rewritten, got original value")
 	}
-	if !metadataUserIDRegex.MatchString(newUserID) {
+	if !isValidMetadataUserID(newUserID) {
 		t.Errorf("rewritten user_id does not match expected format: %q", newUserID)
 	}
 
@@ -264,6 +286,96 @@ func TestEngineApply_OAuthRealClaudeCode_Deterministic(t *testing.T) {
 	uid2 := parsed2["metadata"].(map[string]interface{})["user_id"].(string)
 	if uid1 != uid2 {
 		t.Errorf("expected deterministic user_id, got %q vs %q", uid1, uid2)
+	}
+}
+
+// TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling verifies that the CC
+// lightweight path overrides the client's User-Agent with the account's
+// fingerprint UA, and that the billing header cc_version in the body is
+// synchronized to the same version. Without this, the upstream would see
+// mismatched version info between headers and body — an obvious fingerprint.
+func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
+	e := newTestEngine(t)
+
+	// Client sends an older CLI version with a billing header block in the
+	// system field (reproduces real CC 2.1.76+ traffic shape).
+	origReq := newTestRequest(t, nil)
+	origReq.Header.Set("User-Agent", "claude-cli/2.1.76 (external, cli)")
+	origReq.Header.Set("X-App", "cli")
+	origReq.Header.Set("Anthropic-Version", "2023-06-01")
+	origReq.Header.Set("Anthropic-Beta", BetaClaudeCode)
+
+	upstreamReq := newTestRequest(t, nil)
+	upstreamReq.Header.Set("User-Agent", "claude-cli/2.1.76 (external, cli)")
+	upstreamReq.Header.Set("Anthropic-Beta", BetaClaudeCode)
+
+	validUserID := "user_" + strings.Repeat("a1", 32) + "_account__session_abc-123-def"
+	body := buildEngineBody(t, map[string]interface{}{
+		"model": "claude-sonnet-4-5",
+		"system": []interface{}{
+			map[string]interface{}{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.76.df2; cc_entrypoint=cli; cch=abc12",
+			},
+			map[string]interface{}{
+				"type": "text",
+				"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+			},
+		},
+		"metadata": map[string]interface{}{"user_id": validUserID},
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+	})
+
+	outBody, applied := e.Apply(origReq, upstreamReq, body, false, "seed", "acct-1-id", "acct-1")
+	if !applied {
+		t.Fatal("expected applied=true for real CC client")
+	}
+
+	// 1. Upstream User-Agent should match fp.UserAgent (default = new DefaultHeaders UA),
+	//    NOT the client's 2.1.76.
+	fpUA := DefaultHeaders["User-Agent"]
+	gotUA := upstreamReq.Header.Get("User-Agent")
+	if gotUA != fpUA {
+		t.Errorf("expected upstream UA to be fp.UserAgent %q, got %q", fpUA, gotUA)
+	}
+	if strings.Contains(gotUA, "2.1.76") {
+		t.Errorf("upstream UA should not leak client version, got %q", gotUA)
+	}
+
+	// 2. Body billing header should be synced to fp UA version. The 3-char
+	//    fingerprint suffix is SHA256(SALT + msg[4,7,20] + version)[:3]. For
+	//    user message "hi" (all three indices out of range → chars "000") at
+	//    version 2.1.88 the suffix is "758" (pinned in billing_header_test.go).
+	//    The client's original ".df2" suffix must be replaced, not preserved.
+	fpVersion := extractUAVersion(fpUA)
+	if fpVersion == "" {
+		t.Fatalf("could not extract version from fp UA %q", fpUA)
+	}
+	parsed := parseBody(t, outBody)
+	sys, ok := parsed["system"].([]interface{})
+	if !ok {
+		t.Fatal("expected system to be an array")
+	}
+	if len(sys) == 0 {
+		t.Fatal("expected at least one system block")
+	}
+	billingBlock, ok := sys[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected system[0] to be an object")
+	}
+	billingText, _ := billingBlock["text"].(string)
+	wantSuffix := computeBillingFingerprint("hi", fpVersion)
+	wantBilling := "x-anthropic-billing-header: cc_version=" + fpVersion + "." + wantSuffix + "; cc_entrypoint=cli; cch=abc12"
+	if billingText != wantBilling {
+		t.Errorf("billing header not synced:\n  want %q\n  got  %q", wantBilling, billingText)
+	}
+
+	// 3. X-Stainless-Package-Version should also be the fp value, not the
+	//    client's (which was never set on origReq — but would be pass-through
+	//    in production before our ApplyHeaders call).
+	if got := upstreamReq.Header.Get("X-Stainless-Package-Version"); got != DefaultHeaders["X-Stainless-Package-Version"] {
+		t.Errorf("expected X-Stainless-Package-Version=%q, got %q",
+			DefaultHeaders["X-Stainless-Package-Version"], got)
 	}
 }
 
@@ -494,11 +606,7 @@ func TestEngineApply_SessionMasking(t *testing.T) {
 	getSession := func(p map[string]interface{}) string {
 		meta := p["metadata"].(map[string]interface{})
 		uid := meta["user_id"].(string)
-		parts := strings.SplitN(uid, "_account__session_", 2)
-		if len(parts) == 2 {
-			return parts[1]
-		}
-		return ""
+		return extractSessionFromUserID(uid)
 	}
 
 	s1 := getSession(parsed1)

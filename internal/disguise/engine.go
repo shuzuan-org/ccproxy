@@ -30,6 +30,7 @@ func extractUAVersion(ua string) string {
 type Engine struct {
 	fingerprints *FingerprintStore
 	sessions     *SessionMaskStore
+	billingProbe *BillingAlgoProbe
 }
 
 // NewEngine creates a new disguise engine with per-account fingerprint storage
@@ -38,6 +39,7 @@ func NewEngine(dataDir string) *Engine {
 	return &Engine{
 		fingerprints: NewFingerprintStore(dataDir),
 		sessions:     NewSessionMaskStore(),
+		billingProbe: NewBillingAlgoProbe(),
 	}
 }
 
@@ -88,25 +90,48 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 			return body, true
 		}
 
-		// 2. Supplement oauth beta header (preserve client's existing betas)
+		// 2. Unify HTTP headers to the account's fingerprint so every user of
+		//    this account looks like a single stable CLI install to Anthropic.
+		//    This overrides the client's User-Agent and X-Stainless-* values
+		//    with fp.UserAgent / fp.StainlessPackageVersion / etc. Without this,
+		//    different client machines would leak their real versions via the
+		//    pass-through headers, making cross-user correlation trivial.
+		ApplyHeaders(upstreamReq, isStream, fp)
+
+		// 3. Build canonical anthropic-beta from the 2.1.88 baseline, preserving
+		//    client extras. CC path must use the SAME canonical set as the
+		//    non-CC path because we also override UA to the fingerprint UA
+		//    (2.1.88) — if the beta set still reflected the client's old CLI
+		//    release, upstream would see (new UA + old beta) which is a
+		//    deterministic fingerprint signal.
 		clientBeta := upstreamReq.Header.Get("Anthropic-Beta")
-		newBeta := SupplementBetaHeader(clientBeta)
+		ccModel, _ := parsed["model"].(string)
+		newBeta := BuildCanonicalBetaHeader(ccModel, clientBeta, strings.Contains(origReq.URL.Path, "count_tokens"))
 		delete(upstreamReq.Header, "Anthropic-Beta")
 		upstreamReq.Header["anthropic-beta"] = []string{newBeta}
 		if clientBeta != newBeta {
-			observe.Logger(ctx).Debug("disguise: beta header supplemented",
+			observe.Logger(ctx).Debug("disguise: beta header canonicalized (CC pass-through)",
 				"account", accountName,
 				"before", clientBeta,
 				"after", newBeta,
 			)
 		}
-		// 3. Rewrite metadata.user_id with session masking to prevent cross-user correlation
+		// 4. Rewrite metadata.user_id with session masking to prevent cross-user correlation.
+		//    Use fp.UserAgent as the version source (not origReq UA) so user_id
+		//    format (legacy vs JSON) matches the UA we actually send upstream.
 		metadata, ok := parsed["metadata"].(map[string]interface{})
 		if !ok {
 			metadata = make(map[string]interface{})
 		}
 		maskedSession := e.sessions.Get(accountID)
-		uaVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
+		fpUA := ""
+		if fp != nil {
+			fpUA = fp.UserAgent
+		}
+		if fpUA == "" {
+			fpUA = DefaultHeaders["User-Agent"]
+		}
+		uaVersion := extractUAVersion(fpUA)
 		originalUserIDRaw := metadata["user_id"]
 		// user_id may be a string (old format) or map[string]interface{} (new JSON format >= 2.1.78)
 		var originalUserIDStr string
@@ -148,6 +173,21 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		}
 		// Enforce cache_control block limit (aligned with sub2api's all-requests enforcement).
 		enforceCacheControlLimit(ctx, parsed)
+
+		// Passively probe the client's billing header fingerprint algorithm
+		// BEFORE we rewrite anything. Uses the CLIENT's own UA version
+		// (not fp UA) because we want to map "what version produced this
+		// suffix" — our fp UA lies. See billing_probe.go for dedup policy.
+		clientUAVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
+		e.billingProbe.ObserveParsedBody(ctx, parsed, clientUAVersion)
+
+		// Sync billing header cc_version to match the unified UA we send upstream.
+		// Without this, the client's original cc_version (e.g. 2.1.76) would
+		// be forwarded while we inject UA=fp.UserAgent (e.g. 2.1.88), giving
+		// Anthropic a clear "headers and body disagree" fingerprint.
+		if uaVersion != "" {
+			syncBillingHeaderVersion(parsed, uaVersion)
+		}
 
 		// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 		if strings.Contains(origReq.URL.Path, "count_tokens") {
@@ -201,32 +241,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	}
 
 	// Layer 3: anthropic-beta
+	//
+	// Use the single canonical builder so both CC and non-CC paths emit the
+	// same token set (and ordering) for a given model. This ensures the
+	// context-1m-2025-08-07 token lands immediately after oauth when the
+	// client opts in, which matches real Claude CLI traffic order.
 	originalBeta := origReq.Header.Get("Anthropic-Beta")
-	var newBeta string
-	if strings.Contains(origReq.URL.Path, "count_tokens") {
-		// count_tokens endpoint needs the token-counting beta
-		newBeta = MergeAnthropicBeta(
-			[]string{BetaClaudeCode, BetaOAuth, BetaInterleavedThinking, BetaTokenCounting},
-			originalBeta,
-		)
-	} else {
-		// Merge required betas with client-provided betas, then strip claude-code
-		// for non-CC clients (we add it back via required set for disguise)
-		required := []string{BetaOAuth, BetaInterleavedThinking}
-		if !IsHaikuModel(model) {
-			required = append([]string{BetaClaudeCode}, required...)
-		}
-		if hasTools {
-			required = append(required, BetaFineGrainedToolStreaming)
-		}
-		newBeta = MergeAnthropicBeta(required, originalBeta)
-		// Strip claude-code token that might have leaked from non-CC client
-		newBeta = StripBetaTokens(newBeta, []string{BetaClaudeCode})
-		// Re-add for non-Haiku models (disguise requires it)
-		if !IsHaikuModel(model) {
-			newBeta = BetaClaudeCode + "," + newBeta
-		}
-	}
+	newBeta := BuildCanonicalBetaHeader(model, originalBeta, strings.Contains(origReq.URL.Path, "count_tokens"))
 	delete(upstreamReq.Header, "Anthropic-Beta")
 	upstreamReq.Header["anthropic-beta"] = []string{newBeta}
 	observe.Logger(ctx).Debug("disguise: [layer 3] beta header set",
@@ -320,6 +341,14 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	// Enforce cache_control limit (after all other modifications)
 	enforceCacheControlLimit(ctx, parsed)
 
+	// Sync billing header cc_version to the fingerprint UA version.
+	// Non-CC clients rarely carry a billing header block, but some
+	// Claude-compatible clients (e.g. opencode) do, and we want to
+	// keep body+headers consistent if they do.
+	if fpUAVersion != "" {
+		syncBillingHeaderVersion(parsed, fpUAVersion)
+	}
+
 	// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 	if strings.Contains(origReq.URL.Path, "count_tokens") {
 		delete(parsed, "metadata")
@@ -331,62 +360,6 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		return body, true
 	}
 	return result, true
-}
-
-// systemBlockFilterPrefixes lists text prefixes that identify system blocks which
-// should be removed before forwarding to upstream. These blocks are injected by
-// the Anthropic client SDK and expose billing/internal metadata.
-var systemBlockFilterPrefixes = []string{"x-anthropic-billing-header"}
-
-// filterSystemBlocksByPrefix removes system blocks whose text starts with any
-// of the systemBlockFilterPrefixes. Handles both string and array system fields.
-// Mutates parsed in-place.
-func filterSystemBlocksByPrefix(parsed map[string]interface{}) {
-	system, ok := parsed["system"]
-	if !ok {
-		return
-	}
-
-	switch v := system.(type) {
-	case string:
-		trimmed := strings.TrimSpace(v)
-		for _, prefix := range systemBlockFilterPrefixes {
-			if strings.HasPrefix(trimmed, prefix) {
-				delete(parsed, "system")
-				return
-			}
-		}
-	case []interface{}:
-		filtered := make([]interface{}, 0, len(v))
-		for _, item := range v {
-			m, ok := item.(map[string]interface{})
-			if !ok {
-				filtered = append(filtered, item)
-				continue
-			}
-			text, ok := m["text"].(string)
-			if !ok {
-				filtered = append(filtered, item)
-				continue
-			}
-			trimmed := strings.TrimSpace(text)
-			skip := false
-			for _, prefix := range systemBlockFilterPrefixes {
-				if strings.HasPrefix(trimmed, prefix) {
-					skip = true
-					break
-				}
-			}
-			if !skip {
-				filtered = append(filtered, item)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(parsed, "system")
-		} else {
-			parsed["system"] = filtered
-		}
-	}
 }
 
 // truncateUserID returns a shortened user_id for logging: first 12 + last 8 chars.

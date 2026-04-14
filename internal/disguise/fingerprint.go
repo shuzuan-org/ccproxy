@@ -47,6 +47,7 @@ func NewFingerprintStore(dataDir string) *FingerprintStore {
 		renewAfter:   24 * time.Hour,
 	}
 	s.load()
+	s.rebaseToDefaults()
 	return s
 }
 
@@ -166,6 +167,59 @@ func (s *FingerprintStore) load() {
 	_ = json.Unmarshal(data, &s.fingerprints)
 }
 
+// rebaseToDefaults upgrades persisted fingerprints whose UA version is older
+// than the current DefaultHeaders User-Agent. The entire CLI-bundled tuple
+// (UA, Stainless Package Version, Runtime Version) is rebased together
+// because each Claude CLI release ships one fixed combination — bumping UA
+// alone would leave historical accounts with an impossible tuple (e.g. new
+// UA + old Node version). Per-account OS/Arch differentiation is preserved;
+// those fields reflect the client machine, not the CLI release.
+//
+// This runs at startup, after load(), so the operation happens without holding
+// the public lock (the store is not yet shared).
+func (s *FingerprintStore) rebaseToDefaults() {
+	defaultUA := DefaultHeaders["User-Agent"]
+	defaultPkgVer := DefaultHeaders["X-Stainless-Package-Version"]
+	defaultRuntimeVer := DefaultHeaders["X-Stainless-Runtime-Version"]
+	if defaultUA == "" {
+		return
+	}
+	defaultVer := extractVersionFromUA(defaultUA)
+	if !defaultVer.valid {
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	changed := false
+	for name, fp := range s.fingerprints {
+		if fp == nil {
+			continue
+		}
+		currentVer := extractVersionFromUA(fp.UserAgent)
+		if !isNewerVersion(defaultVer, currentVer) {
+			continue
+		}
+		oldUA := fp.UserAgent
+		fp.UserAgent = defaultUA
+		if defaultPkgVer != "" {
+			fp.StainlessPackageVersion = defaultPkgVer
+		}
+		if defaultRuntimeVer != "" {
+			fp.StainlessRuntimeVersion = defaultRuntimeVer
+		}
+		fp.UpdatedAt = now
+		changed = true
+		slog.Debug("disguise/fingerprint: rebased to new defaults on load",
+			"account", name,
+			"old_ua", oldUA,
+			"new_ua", fp.UserAgent,
+		)
+	}
+	if changed {
+		_ = s.saveLocked()
+	}
+}
+
 func (s *FingerprintStore) saveLocked() error {
 	data, err := json.MarshalIndent(s.fingerprints, "", "  ")
 	if err != nil {
@@ -230,6 +284,17 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 
 // createFromHeaders builds a Fingerprint from observed request headers,
 // using defaults for any missing values.
+//
+// If the observed User-Agent is older than DefaultHeaders["User-Agent"], the
+// default is used instead. Otherwise a new account created by an old client
+// would be permanently pinned to that old version, even though newer clients
+// exist — sabotaging the whole point of keeping defaults current.
+//
+// The (UA, Stainless Package Version, Runtime Version) triple is a tightly
+// coupled tuple: each Claude CLI release bundles one specific combination.
+// We therefore adopt these three fields together or not at all, gated on a
+// single `adoptClientTuple` decision. OS and Arch reflect the client machine
+// rather than the CLI release, so they are adopted independently.
 func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
 	fp := &Fingerprint{
 		ClientID:  GenerateClientID(),
@@ -237,13 +302,26 @@ func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
 		UpdatedAt: now.UnixMilli(),
 	}
 
-	if ua := headers.Get("User-Agent"); ua != "" {
-		fp.UserAgent = ua
+	defaultUA := DefaultHeaders["User-Agent"]
+	defaultVer := extractVersionFromUA(defaultUA)
+
+	observedUA := headers.Get("User-Agent")
+	observedVer := extractVersionFromUA(observedUA)
+
+	// The client's CLI tuple is adopted only when its UA is a valid claude-cli
+	// string AND strictly newer than our compiled-in default. In every other
+	// case (empty/invalid UA, same version, older version) we fall back to the
+	// default tuple so the fingerprint never mixes fields from two different
+	// CLI releases.
+	adoptClientTuple := observedUA != "" && observedVer.valid && isNewerVersion(observedVer, defaultVer)
+
+	if adoptClientTuple {
+		fp.UserAgent = observedUA
 	} else {
-		fp.UserAgent = DefaultHeaders["User-Agent"]
+		fp.UserAgent = defaultUA
 	}
 
-	if v := headers.Get("X-Stainless-Package-Version"); v != "" {
+	if v := headers.Get("X-Stainless-Package-Version"); v != "" && adoptClientTuple {
 		fp.StainlessPackageVersion = v
 	} else {
 		fp.StainlessPackageVersion = DefaultHeaders["X-Stainless-Package-Version"]
@@ -261,7 +339,7 @@ func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
 		fp.StainlessArch = DefaultHeaders["X-Stainless-Arch"]
 	}
 
-	if v := headers.Get("X-Stainless-Runtime-Version"); v != "" {
+	if v := headers.Get("X-Stainless-Runtime-Version"); v != "" && adoptClientTuple {
 		fp.StainlessRuntimeVersion = v
 	} else {
 		fp.StainlessRuntimeVersion = DefaultHeaders["X-Stainless-Runtime-Version"]

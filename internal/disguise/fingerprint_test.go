@@ -211,10 +211,12 @@ func TestLearnFromHeaders_NewAccount(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
+	// Real Stainless SDK reports darwin as "MacOS" (not "Darwin") — use the
+	// wire-format enum value so the test reflects real client traffic.
 	headers := http.Header{}
 	headers.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
 	headers.Set("X-Stainless-Package-Version", "0.72.0")
-	headers.Set("X-Stainless-OS", "Darwin")
+	headers.Set("X-Stainless-OS", "MacOS")
 	headers.Set("X-Stainless-Arch", "arm64")
 	headers.Set("X-Stainless-Runtime-Version", "v24.14.0")
 
@@ -227,7 +229,7 @@ func TestLearnFromHeaders_NewAccount(t *testing.T) {
 	if fp.StainlessPackageVersion != "0.72.0" {
 		t.Errorf("expected learned package version, got %q", fp.StainlessPackageVersion)
 	}
-	if fp.StainlessOS != "Darwin" {
+	if fp.StainlessOS != "MacOS" {
 		t.Errorf("expected learned OS, got %q", fp.StainlessOS)
 	}
 }
@@ -237,28 +239,31 @@ func TestLearnFromHeaders_NewerVersionMerge(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	// First learn with older version
+	// First learn: use the current default UA version so the fp gets created
+	// from client headers (older-than-default UA would be clamped to default).
+	defaultUA := DefaultHeaders["User-Agent"]
 	h1 := http.Header{}
-	h1.Set("User-Agent", "claude-cli/2.1.22 (external, cli)")
+	h1.Set("User-Agent", defaultUA)
 	h1.Set("X-Stainless-OS", "Linux")
 	store.LearnFromHeaders("acct-1", h1)
 
 	fp1 := store.Get("acct-1")
-	if fp1.UserAgent != "claude-cli/2.1.22 (external, cli)" {
+	if fp1.UserAgent != defaultUA {
 		t.Fatalf("initial UA mismatch: %q", fp1.UserAgent)
 	}
 
-	// Learn with newer version → should merge
+	// Learn with newer version → should merge. Real Stainless SDK reports
+	// darwin as "MacOS" (not "Darwin") — match the wire-format enum.
 	h2 := http.Header{}
-	h2.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
-	h2.Set("X-Stainless-OS", "Darwin")
+	h2.Set("User-Agent", "claude-cli/3.0.0 (external, cli)")
+	h2.Set("X-Stainless-OS", "MacOS")
 	store.LearnFromHeaders("acct-1", h2)
 
 	fp2 := store.Get("acct-1")
-	if fp2.UserAgent != "claude-cli/2.2.0 (external, cli)" {
+	if fp2.UserAgent != "claude-cli/3.0.0 (external, cli)" {
 		t.Errorf("expected merged newer UA, got %q", fp2.UserAgent)
 	}
-	if fp2.StainlessOS != "Darwin" {
+	if fp2.StainlessOS != "MacOS" {
 		t.Errorf("expected merged OS, got %q", fp2.StainlessOS)
 	}
 }
@@ -268,10 +273,11 @@ func TestLearnFromHeaders_OlderVersionNoMerge(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFingerprintStore(dir)
 
-	// First learn with newer version
+	// First learn with newer version (above default). "MacOS" matches the
+	// Stainless SDK wire-format enum for darwin clients.
 	h1 := http.Header{}
-	h1.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
-	h1.Set("X-Stainless-OS", "Darwin")
+	h1.Set("User-Agent", "claude-cli/3.0.0 (external, cli)")
+	h1.Set("X-Stainless-OS", "MacOS")
 	store.LearnFromHeaders("acct-1", h1)
 
 	// Learn with older version → should NOT merge (only refresh TTL)
@@ -281,10 +287,10 @@ func TestLearnFromHeaders_OlderVersionNoMerge(t *testing.T) {
 	store.LearnFromHeaders("acct-1", h2)
 
 	fp := store.Get("acct-1")
-	if fp.UserAgent != "claude-cli/2.2.0 (external, cli)" {
+	if fp.UserAgent != "claude-cli/3.0.0 (external, cli)" {
 		t.Errorf("expected UA unchanged (older version), got %q", fp.UserAgent)
 	}
-	if fp.StainlessOS != "Darwin" {
+	if fp.StainlessOS != "MacOS" {
 		t.Errorf("expected OS unchanged (older version), got %q", fp.StainlessOS)
 	}
 }

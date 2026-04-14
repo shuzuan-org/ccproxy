@@ -4,13 +4,29 @@ import "net/http"
 
 // DefaultHeaders are the HTTP headers that mimic Claude CLI.
 // Used as fallback when no per-account fingerprint is available.
-// Keep these in sync with sub2api/internal/pkg/claude/constants.go.
+//
+// Version aligned with Claude CLI 2.1.88 observed traffic (cross-checked
+// against ../auth2api/src/proxy/claude-api.ts which tracks upstream closely).
+//
+// IMPORTANT: the four fields below are a tightly-coupled tuple — each
+// published Claude CLI release bundles one specific combination of (UA,
+// Stainless SDK version, Node runtime version). Never bump one without
+// verifying the others against a known-good reference. A mismatched tuple
+// is a deterministic fingerprint signal (e.g. UA=2.1.88 + Node=24.x does
+// not exist in any real CLI release):
+//
+//   - User-Agent                  (CLI version)
+//   - X-Stainless-Package-Version (SDK version bundled with that CLI)
+//   - X-Stainless-Runtime-Version (Node version bundled with that CLI)
+//   - anthropic-beta set          (see baseBetasNonHaiku / baseBetasHaiku in beta.go)
+//
+// The 2.1.88 tuple is: UA 2.1.88 + SDK 0.74.0 + Node v22.13.0.
 var DefaultHeaders = map[string]string{
-	"User-Agent":                    "claude-cli/2.1.22 (external, cli)",
-	"X-Stainless-Package-Version":  "0.70.0",
-	"X-Stainless-OS":               "Linux",
-	"X-Stainless-Arch":             "arm64",
-	"X-Stainless-Runtime-Version":  "v24.13.0",
+	"User-Agent":                  "claude-cli/2.1.88 (external, cli)",
+	"X-Stainless-Package-Version": "0.74.0",
+	"X-Stainless-OS":              "Linux",
+	"X-Stainless-Arch":            "arm64",
+	"X-Stainless-Runtime-Version": "v22.13.0",
 }
 
 // ApplyHeaders sets all Claude CLI impersonation headers on the request.
