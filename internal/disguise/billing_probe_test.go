@@ -51,7 +51,7 @@ func TestBillingProbe_MatchLogsOnceAsInfo(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	// Known vector: msg "hi" at 2.1.88 → suffix "758".
 	parsed := makeBillingBlock(
 		"x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=cli;",
@@ -91,7 +91,7 @@ func TestBillingProbe_MismatchLogsOnceAsWarnWithRawBlock(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	// Client-sent suffix "xxx" deliberately wrong for msg=""/ver=2.1.88
 	// (correct suffix is "758"). Simulates a future Claude CLI that changed
 	// its fingerprint algorithm.
@@ -139,7 +139,7 @@ func TestBillingProbe_NoSuffixLogsAsWarnWithRawBlock(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	// Client sent cc_version without a suffix — unusual enough that we
 	// treat it as a distinct state and want the full block for context.
 	parsed := makeBillingBlock(
@@ -166,7 +166,7 @@ func TestBillingProbe_DifferentVersionsBothLogged(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	probe.ObserveParsedBody(
 		context.Background(),
 		makeBillingBlock("x-anthropic-billing-header: cc_version=2.1.88.758; cli", "hi"),
@@ -192,7 +192,7 @@ func TestBillingProbe_DifferentStatesSameVersionBothLogged(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	// State 1: mismatch (wrong suffix for user_msg="" at 2.1.88)
 	probe.ObserveParsedBody(
 		context.Background(),
@@ -221,7 +221,7 @@ func TestBillingProbe_IgnoresEmptyUAVersion(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	parsed := makeBillingBlock("x-anthropic-billing-header: cc_version=2.1.88.758;", "hi")
 	probe.ObserveParsedBody(context.Background(), parsed, "")
 
@@ -235,7 +235,7 @@ func TestBillingProbe_IgnoresNonBillingSystemBlocks(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	parsed := map[string]interface{}{
 		"system": []interface{}{
 			map[string]interface{}{
@@ -263,12 +263,12 @@ func TestBillingProbe_IgnoresNonBillingSystemBlocks(t *testing.T) {
 
 func TestBillingProbe_NilSafety(t *testing.T) {
 	// serial: slog.Default is global — see package note
-	var nilProbe *BillingAlgoProbe
+	var nilProbe *BillingHeaderObserver
 	// Must not panic on nil receiver.
 	nilProbe.ObserveParsedBody(context.Background(), nil, "2.1.88")
 	nilProbe.Observe(context.Background(), "2.1.88", "", "")
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	probe.ObserveParsedBody(context.Background(), nil, "2.1.88")
 	probe.Observe(context.Background(), "2.1.88", "", "")
 }
@@ -316,7 +316,7 @@ func TestBillingProbe_StringSystemBilling(t *testing.T) {
 	buf, restore := captureLogger(t)
 	defer restore()
 
-	probe := NewBillingAlgoProbe()
+	probe := NewBillingHeaderObserver()
 	// system is a bare string (older API shape) rather than an array.
 	parsed := map[string]interface{}{
 		"system": "x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=cli;",

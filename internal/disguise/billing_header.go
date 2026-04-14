@@ -31,7 +31,7 @@ const billingHeaderPrefix = "x-anthropic-billing-header"
 // The suffix is produced by a SHA256-based algorithm on the client side
 // whose exact form (salt and character indices) we cannot reliably
 // replicate. We previously shipped an implementation derived from
-// auth2api's reference, but the BillingAlgoProbe observed deterministic
+// auth2api's reference, but the BillingHeaderObserver observed deterministic
 // mismatches starting with Claude CLI 2.1.105 — meaning the algorithm has
 // changed at least once since the reference was written. Emitting a wrong
 // suffix is strictly worse than emitting a slightly outdated one: a fake

@@ -12,9 +12,9 @@ import (
 //	SHA256("59cf53e54c78" + msg[4] + msg[7] + msg[20] + version)[:3]
 //
 // with out-of-range indices substituted with '0'. The replica is now used
-// only by BillingAlgoProbe — it has no production effect on outbound traffic.
+// only by BillingHeaderObserver — it has no production effect on outbound traffic.
 // These tests pin its behaviour so that observed "match" log entries from
-// the probe remain comparable across builds.
+// the observer remain comparable across builds.
 func TestComputeBillingFingerprintReplica_KnownVectors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

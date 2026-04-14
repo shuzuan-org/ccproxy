@@ -258,9 +258,9 @@ Scope 的输入 **完全来自 TOML**（`APIKeyConfig.Scheduling` 和 `[[pools]]
 
 **CC 客户端轻量处理：** 学习客户端指纹（`LearnFromHeaders`）+ 补充 beta header + 重写 `metadata.user_id`（会话掩码）
 
-**Billing header 同步 (`syncBillingHeaderVersion`)：** CC 路径和非 CC 路径均会扫描 system 块中的 `x-anthropic-billing-header` 文本，将其中的 `cc_version=X.Y.Z` 三元组替换为 fp.UserAgent 对应的版本。3 字符消息派生后缀 `.abc` **原样保留**客户端的真值（不重算）。这一策略与 sub2api 的 `gateway_billing_header.go` 一致 —— 我们曾经实现 SHA256 复刻算法（盐 `59cf53e54c78`，索引 `[4,7,20]`），但 BillingAlgoProbe 在 Claude CLI 2.1.105+ 上观测到该算法已经漂移；自 v0.1.12 起改为只重写三元组、保留客户端真后缀。代价是当 fp UA 与客户端 CLI 版本不一致时 body 中三元组与后缀对应不同版本（统计性头体偏移），收益是不会再产生确定性可检测的"伪后缀"。`cch` 字段同样不动，由客户端原值透传。
+**Billing header 同步 (`syncBillingHeaderVersion`)：** CC 路径和非 CC 路径均会扫描 system 块中的 `x-anthropic-billing-header` 文本，将其中的 `cc_version=X.Y.Z` 三元组替换为 fp.UserAgent 对应的版本。3 字符消息派生后缀 `.abc` **原样保留**客户端的真值（不重算）。这一策略与 sub2api 的 `gateway_billing_header.go` 一致 —— 我们曾经实现 SHA256 复刻算法（盐 `59cf53e54c78`，索引 `[4,7,20]`）并交叉校验过 auth2api 的参考，但后来在 `instructkr/claude-code` 反编译源 `constants/system.ts:73-94` 中确认该算法**根本不是真实算法**：真正的 `cch` 由 Bun 原生 HTTP 栈（`bun-anthropic/src/http/Attestation.zig`）在请求体序列化后原地覆写 `cch=00000` 占位符生成，由 `NATIVE_CLIENT_ATTESTATION` feature flag 控制。JS/Go 任何复刻都无法匹配真值。自 v0.1.12 起改为只重写三元组、保留客户端真后缀。代价是当 fp UA 与客户端 CLI 版本不一致时 body 中三元组与后缀对应不同版本（统计性头体偏移），收益是不会再产生确定性可检测的"伪后缀"。`cch` 字段同样不动，由客户端原值透传。
 
-**Billing 算法漂移探针 (`BillingAlgoProbe`)：** 被动观察工具，对每个客户端 billing 块按 `(ua_version, state)` 去重计算历史 SHA256 复刻值与客户端真值的对比，记录 INFO 级日志（match / mismatch / no_suffix）。**不影响生产路径**，只用于离线 reverse engineer 算法演进。dedup map 上限 1000，进程重启清空。
+**Billing header 被动观察器 (`BillingHeaderObserver`)：** 观察型工具，对每个客户端 billing 块按 `(ua_version, state)` 去重计算历史 SHA256 复刻值与客户端真值的对比，记录 INFO 级日志（match / mismatch / no_suffix）。**不影响生产路径**。历史上 v0.1.11 把它当作"算法漂移检测器"，期望用它发现需要追踪的新算法；自 v0.1.12 起重新定位：我们已经知道 JS 层的 SHA256 复刻永远无法匹配真实 cch，mismatch 是**期望的常态**而非告警信号。观察器当前的价值是：(1) 采样真实客户端的 cch 值和 byte 结构以备未来离线分析；(2) 作为 canary 检测某天 ccproxy 意外把业务逻辑耦合到复刻算法上（"我们自己的请求显示 match 而客户端请求显示 mismatch"这种异常只有这个观察器能捕到）；(3) 提供 "这个 CLI 版本是否还在发 cch" 的廉价判断。dedup map 上限 1000，进程重启清空。
 
 #### 真实 Claude CLI 的遥测旁路（`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 依赖）
 
@@ -281,7 +281,7 @@ ccproxy 的 8 层伪装只覆盖经过 `/v1/messages` 的请求。真实 Claude 
 
 **`/api/oauth/usage`** 是 essential traffic（用户需要它查询 5h/7d 额度 UI），硬编码走 oauth BASE_API_URL，`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 对它无效。但响应内容只是额度百分比，**不含指纹**，风险可忽略。
 
-**`cch` 字段的真相：** 我们曾复刻的 SHA256 算法（盐 `59cf53e54c78`，索引 `[4,7,20]`）**不是** Claude CLI 真正用的算法。`constants/system.ts:82` 注释明确说明 `cch=00000` 是占位符，由 Bun/Zig 原生 HTTP 栈（`bun-anthropic/src/http/Attestation.zig`）在请求体序列化后原地覆写，由 `NATIVE_CLIENT_ATTESTATION` feature flag 控制。我们从 auth2api 抓到的 SHA256 常量很可能是旧版本 fallback 或抓包时的观察幻觉。BillingAlgoProbe 观测到的漂移（见上）不是算法升级，而是 JS 层根本就不能产生正确的 cch。v0.1.12 的"保留客户端真后缀"决策因此比 review 时认为的还要正确。
+**`cch` 字段的真相：** 我们曾复刻的 SHA256 算法（盐 `59cf53e54c78`，索引 `[4,7,20]`）**不是** Claude CLI 真正用的算法。`constants/system.ts:82` 注释明确说明 `cch=00000` 是占位符，由 Bun/Zig 原生 HTTP 栈（`bun-anthropic/src/http/Attestation.zig`）在请求体序列化后原地覆写，由 `NATIVE_CLIENT_ATTESTATION` feature flag 控制。我们从 auth2api 抓到的 SHA256 常量很可能是旧版本 fallback 或抓包时的观察幻觉。BillingHeaderObserver 观测到的"mismatch"不是算法漂移，而是 JS 层根本就不能产生正确的 cch —— mismatch 是稳态期望值。v0.1.12 的"保留客户端真后缀"决策因此是**唯一正确**的策略。
 
 **会话掩码 (`SessionMaskStore`)：** 每账号生成一个 UUID 掩码 session（15 分钟滑动 TTL），替换 `user_id` 中的 session 部分，防止跨用户关联。定时清理过期掩码。
 

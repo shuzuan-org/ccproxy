@@ -30,7 +30,7 @@ func extractUAVersion(ua string) string {
 type Engine struct {
 	fingerprints *FingerprintStore
 	sessions     *SessionMaskStore
-	billingProbe *BillingAlgoProbe
+	billingProbe *BillingHeaderObserver
 }
 
 // NewEngine creates a new disguise engine with per-account fingerprint storage
@@ -39,7 +39,7 @@ func NewEngine(dataDir string) *Engine {
 	return &Engine{
 		fingerprints: NewFingerprintStore(dataDir),
 		sessions:     NewSessionMaskStore(),
-		billingProbe: NewBillingAlgoProbe(),
+		billingProbe: NewBillingHeaderObserver(),
 	}
 }
 

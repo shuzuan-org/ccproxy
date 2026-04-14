@@ -12,37 +12,62 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 )
 
-// BillingAlgoProbe passively observes Claude CLI's billing header
-// fingerprint algorithm against real client traffic to support offline
-// reverse engineering of the suffix algorithm as it evolves.
+// BillingHeaderObserver passively records the distribution of Claude CLI's
+// billing-header `cch` suffix values across real client traffic, by
+// comparing each observed suffix against a historical SHA256-based replica
+// that we know is NOT the true algorithm.
 //
-// Background: ccproxy used to ship a replicated SHA256-based suffix
-// generator (salt "59cf53e54c78", indices [4,7,20]) which was
-// cross-checked against auth2api's reference. The probe revealed that
-// algorithm stops matching real clients at Claude CLI 2.1.105+, so the
-// generator was removed in v0.1.12 — see billing_header.go for the new
-// "preserve client suffix verbatim" approach.
+// The true algorithm, per claude-code:src/constants/system.ts:73-94, is
+// implemented in Bun's native Zig HTTP stack (bun-anthropic Attestation.zig)
+// under the NATIVE_CLIENT_ATTESTATION feature flag. The stack writes a
+// `cch=00000` placeholder into the serialized request body and overwrites
+// the zeros in place after serialization. This means:
 //
-// The probe itself is retained because it's the cheapest way to detect
-// further drift: every observed billing header is compared against the
-// historical replica, and (state, ua_version) tuples are logged once
-// each. A future "match" on a new CLI version would tell us the algorithm
-// has stabilized again; a permanent "mismatch" landscape across all
-// versions tells us the algorithm has changed and needs new reverse
-// engineering. Either way the raw client_block in mismatch logs is the
-// single most useful piece of evidence for that work.
+//   1. The algorithm is not reachable from JS/Go — any JS-layer replica is
+//      guaranteed to diverge from real client values on at least some
+//      inputs. The observation "mismatch" state is EXPECTED, not a sign
+//      that the algorithm has "drifted" or "upgraded".
 //
-// The replica is now ONLY used by the probe — it has no production
-// effect on outbound requests.
+//   2. ccproxy's v0.1.11 SHA256 replica (salt "59cf53e54c78", indices
+//      [4,7,20]) was cross-referenced against auth2api's implementation,
+//      which itself was derived from mitmproxy captures. The captures
+//      happened to line up with SHA256 for a narrow window of messages,
+//      producing the illusion of a pure JS-computable algorithm. v0.1.12
+//      removed the replica from the production path after this observer
+//      began recording mismatches on Claude CLI 2.1.105+.
 //
-// Sampling: one entry per (UA_version, match_state) tuple. This gives two
-// log lines per version at steady state (one "match" confirmation, one
-// "mismatch" evidence if/when something breaks) and is reset at process
-// restart so post-upgrade re-observation just works.
+// Purpose (unchanged since v0.1.12): this observer is OBSERVATION-ONLY.
+// It logs at INFO level and never mutates outbound requests. Its value is:
+//
+//   - Surface real cch values from production traffic so we can, if we
+//     ever need to, analyze their distribution offline and look for
+//     structural patterns (byte layout, length variations, version
+//     coupling, etc.).
+//   - Detect regressions where a future ccproxy change accidentally
+//     couples business logic to the replica. A production effect would
+//     show up as "our own requests show match while client requests show
+//     mismatch" — a canary only this observer can provide.
+//   - Provide cheap ground truth for "is this CLI version still emitting
+//     cch at all?" without pulling in a real Claude CLI client.
+//
+// It is NOT:
+//
+//   - A drift detector. We already know the JS replica does not match
+//     the true algorithm; logging mismatch is confirming the baseline,
+//     not discovering new information.
+//   - A trigger for re-reverse-engineering the algorithm. See the
+//     project_billing_cch_truth memory for why "one more capture round"
+//     will not produce a correct replica.
+//
+// Sampling: one entry per (UA_version, match_state) tuple. This gives a
+// small stable set of log lines per real CLI version (match / mismatch /
+// no_suffix) and is reset at process restart so post-upgrade re-observation
+// just works.
+//
 // billingProbeSeenCap bounds the dedup map so an adversarial client cannot
 // grow it without limit by rotating User-Agent versions. In steady state the
 // map holds at most 3 entries per real CLI version (match / mismatch / no_suffix);
-// the cap (1000) covers several hundred versions before the probe starts
+// the cap (1000) covers several hundred versions before the observer starts
 // silently dropping — well past any realistic operational need.
 const billingProbeSeenCap = 1000
 
@@ -125,14 +150,14 @@ func extractFirstUserMessageText(parsed map[string]interface{}) string {
 	return ""
 }
 
-type BillingAlgoProbe struct {
+type BillingHeaderObserver struct {
 	mu   sync.Mutex
 	seen map[string]struct{} // key: "<ua_version>|<state>"
 }
 
-// NewBillingAlgoProbe returns a probe with fresh in-memory state.
-func NewBillingAlgoProbe() *BillingAlgoProbe {
-	return &BillingAlgoProbe{
+// NewBillingHeaderObserver returns an observer with fresh in-memory state.
+func NewBillingHeaderObserver() *BillingHeaderObserver {
+	return &BillingHeaderObserver{
 		seen: make(map[string]struct{}),
 	}
 }
@@ -162,7 +187,7 @@ var probeClientBillingRe = regexp.MustCompile(`cc_version=(\d+\.\d+\.\d+)(?:\.([
 //
 // The probe is a no-op when uaVersion is empty or blockText does not parse.
 // Thread-safe.
-func (p *BillingAlgoProbe) Observe(ctx context.Context, uaVersion, blockText, firstUserMessageText string) {
+func (p *BillingHeaderObserver) Observe(ctx context.Context, uaVersion, blockText, firstUserMessageText string) {
 	if p == nil || uaVersion == "" || blockText == "" {
 		return
 	}
@@ -264,9 +289,9 @@ func (p *BillingAlgoProbe) Observe(ctx context.Context, uaVersion, blockText, fi
 // hexChars encodes the bytes at the given indices of s into a hex string,
 // using "00" for any index that's out of range. The output length is
 // 2*len(indices). Matches the byte-level indexing used by
-// computeBillingFingerprint — if the real algorithm is rune-based or UTF-16
-// based (say, the client is JavaScript string-indexed), this function will
-// record raw bytes for a human to compare.
+// computeBillingFingerprintReplica — if the real algorithm is rune-based
+// or UTF-16 based (say, the client is JavaScript string-indexed), this
+// function will record raw bytes for a human to compare.
 func hexChars(s string, indices []int) string {
 	buf := make([]byte, 0, 2*len(indices))
 	for _, idx := range indices {
@@ -274,8 +299,8 @@ func hexChars(s string, indices []int) string {
 		if idx < len(s) {
 			b = s[idx]
 		}
-		// 0x00 when out of range; note that computeBillingFingerprint uses
-		// '0' (0x30) for out-of-range, not 0x00. We intentionally record
+		// 0x00 when out of range; note that computeBillingFingerprintReplica
+		// uses '0' (0x30) for out-of-range, not 0x00. We intentionally record
 		// 0x00 here so a reader can tell "OOR" apart from a literal '0' in
 		// the real message.
 		buf = append(buf, hexDigit(b>>4), hexDigit(b&0xf))
@@ -306,7 +331,7 @@ func shortDigest(s string) string {
 //
 // uaVersion is the CLIENT's self-reported UA version, not our fingerprint
 // UA. Pass extractUAVersion(origReq.Header.Get("User-Agent")).
-func (p *BillingAlgoProbe) ObserveParsedBody(ctx context.Context, parsed map[string]interface{}, uaVersion string) {
+func (p *BillingHeaderObserver) ObserveParsedBody(ctx context.Context, parsed map[string]interface{}, uaVersion string) {
 	if p == nil || uaVersion == "" || parsed == nil {
 		return
 	}
