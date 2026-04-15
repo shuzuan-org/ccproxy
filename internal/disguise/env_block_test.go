@@ -321,6 +321,38 @@ func TestRewriteEnvBlockInPlace_MultipleClaudeCodeBlocks(t *testing.T) {
 	}
 }
 
+// TestRewriteEnvBlockInPlace_EmptyValueDoesNotEatNextLine pins the
+// defensive regex tightening: if a malformed/hypothetical client emits
+// an env label with an empty value followed by a newline, the rewriter
+// must NOT consume the next line as the "value" and overwrite it. The
+// original regex used \s* (which matches \n), causing the line after
+// "Working directory:\n" to be replaced.
+//
+// We assert that Platform remains untouched even when the Working
+// directory label has no value on its own line. Real Claude CLI never
+// emits this shape, but the regex should be robust anyway.
+func TestRewriteEnvBlockInPlace_EmptyValueDoesNotEatNextLine(t *testing.T) {
+	t.Parallel()
+	// Deliberately malformed: Working directory label with no value, then
+	// a Platform line on the next line. Pre-fix, the \s* in the regex
+	// would bridge the newline and Platform would become the "value".
+	system := "You are Claude Code, Anthropic's official CLI for Claude.\n" +
+		"<env>\nWorking directory:\nPlatform: darwin\nShell: /bin/zsh\n</env>"
+	parsed := map[string]interface{}{"system": system}
+
+	rewriteEnvBlockInPlace(parsed, mkFP("Linux"))
+
+	got := parsed["system"].(string)
+	// Platform line must still exist and be rewritten to linux — not
+	// swallowed as the value of the preceding empty Working directory.
+	if !strings.Contains(got, "Platform: linux") {
+		t.Errorf("Platform line eaten by empty Working directory value:\n%s", got)
+	}
+	if !strings.Contains(got, "Shell: /bin/bash") {
+		t.Errorf("Shell line missing after rewrite:\n%s", got)
+	}
+}
+
 func mustJSON(t *testing.T, v interface{}) string {
 	t.Helper()
 	b, err := json.Marshal(v)

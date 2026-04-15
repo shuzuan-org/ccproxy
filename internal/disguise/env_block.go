@@ -127,15 +127,24 @@ func clientIDSlug(clientID string) string {
 // value we want to replace. The line terminator is not captured so the
 // replacement preserves CRLF / LF as-is.
 //
+// The inter-label horizontal whitespace is matched with [ \t]* rather than
+// \s*, because \s includes \n. If a hypothetical client emitted a label
+// with an empty value ("Working directory:\n<next line>"), \s* would
+// greedy-match across the newline and the following line would be captured
+// as the "value" and overwritten. Real Claude CLI prompts always put a
+// non-empty value on the same line as the label, so this is defensive
+// hardening for future/malformed inputs rather than a fix for an observed
+// production bug.
+//
 // The labels match both computeEnvInfo (Claude Code's interactive
 // prompt) and computeSimpleEnvInfo (the non-interactive variant — note
 // the "Primary working directory:" variant). See
 // claude-code:src/constants/prompts.ts:640 and :677.
 var (
-	envPlatformRe       = regexp.MustCompile(`(Platform:\s*)([^\r\n]+)`)
-	envShellRe          = regexp.MustCompile(`(Shell:\s*)([^\r\n]+)`)
-	envOSVersionRe      = regexp.MustCompile(`(OS Version:\s*)([^\r\n]+)`)
-	envWorkingDirRe     = regexp.MustCompile(`((?:Primary )?[Ww]orking directory:\s*)([^\r\n]+)`)
+	envPlatformRe       = regexp.MustCompile(`(Platform:[ \t]*)([^\r\n]+)`)
+	envShellRe          = regexp.MustCompile(`(Shell:[ \t]*)([^\r\n]+)`)
+	envOSVersionRe      = regexp.MustCompile(`(OS Version:[ \t]*)([^\r\n]+)`)
+	envWorkingDirRe     = regexp.MustCompile(`((?:Primary )?Working directory:[ \t]*)([^\r\n]+)`)
 	envHomePathRe       = regexp.MustCompile(`/(?:Users|home)/[^/\s"'\x60]+/`)
 	envWorkingDirBlockRe = regexp.MustCompile(`(?s)<env>.*?</env>`)
 	envSystemReminderRe  = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
