@@ -151,14 +151,16 @@ func extractFirstUserMessageText(parsed map[string]interface{}) string {
 }
 
 type BillingHeaderObserver struct {
-	mu   sync.Mutex
-	seen map[string]struct{} // key: "<ua_version>|<state>"
+	mu              sync.Mutex
+	seen            map[string]struct{} // key: "<ua_version>|<state>"
+	entrypointSeen  map[string]int      // key: "<ua_version>|<entrypoint>", value: cumulative hits
 }
 
 // NewBillingHeaderObserver returns an observer with fresh in-memory state.
 func NewBillingHeaderObserver() *BillingHeaderObserver {
 	return &BillingHeaderObserver{
-		seen: make(map[string]struct{}),
+		seen:           make(map[string]struct{}),
+		entrypointSeen: make(map[string]int),
 	}
 }
 
@@ -166,6 +168,24 @@ func NewBillingHeaderObserver() *BillingHeaderObserver {
 // from a client-sent billing block. Only the first match is used; additional
 // occurrences in the same block are ignored (real blocks carry one version).
 var probeClientBillingRe = regexp.MustCompile(`cc_version=(\d+\.\d+\.\d+)(?:\.([A-Za-z0-9]{3}))?`)
+
+// probeClientEntrypointRe captures the cc_entrypoint field from a client-sent
+// billing block. Separate from the cc_version regex so the two extractions
+// are independent — the source order is `cc_version=...; cc_entrypoint=...;`
+// per claude-code:src/constants/system.ts:91, but we do not rely on it.
+//
+// Entrypoint values are allowed to contain alphanumerics and `-` (e.g.
+// `sdk-cli`, `claude-code-github-action`, `claude-vscode`). See
+// main.tsx:517-540 and main.tsx:818-833 in the reference claude-code source
+// for the full enumeration of legal values.
+var probeClientEntrypointRe = regexp.MustCompile(`cc_entrypoint=([A-Za-z0-9-]+)`)
+
+// missingEntrypointSentinel is the bucket used when a billing block carries no
+// cc_entrypoint field at all. Kept as a distinct key so analysts can tell
+// "unobserved field" apart from a real legal value like "unknown" (which the
+// upstream code emits when process.env.CLAUDE_CODE_ENTRYPOINT is unset —
+// see claude-code:src/constants/system.ts:79).
+const missingEntrypointSentinel = "<missing>"
 
 // Observe inspects a single billing header block sent by a client and logs
 // (at most once per UA_version/match pair) whether our algorithm replica
@@ -220,6 +240,24 @@ func (p *BillingHeaderObserver) Observe(ctx context.Context, uaVersion, blockTex
 		state = "mismatch"
 	}
 
+	logger := slog.Default()
+	if ctx != nil {
+		logger = observe.Logger(ctx)
+	}
+
+	// Independent second-dimension observation: record the cc_entrypoint
+	// value that accompanied this block. This MUST run before the state
+	// dedup early-return below — a single real CLI version may legitimately
+	// appear with multiple entrypoints (interactive cli, sdk-cli, mcp, …)
+	// over its lifetime, but the state dedup suppresses the whole log line
+	// after the first hit. Keeping entrypoint recording independent lets
+	// us observe the second dimension for already-seen states.
+	//
+	// See project_billing_cch_truth memory (2026-04-15 增补 §5) for the
+	// full enumeration of legal cc_entrypoint values and why this field
+	// is safe to observe structurally.
+	p.recordEntrypoint(logger, uaVersion, clientVerTriple, blockText)
+
 	// Dedup by (uaVersion, state). Once we've seen "2.1.88|match" we don't
 	// need another; once we've seen "2.1.104|mismatch" the evidence is
 	// already in the log and re-logging per request is noise.
@@ -247,11 +285,6 @@ func (p *BillingHeaderObserver) Observe(ctx context.Context, uaVersion, blockTex
 	// cannot reconstruct the text).
 	charsHex := hexChars(firstUserMessageText, billingFingerprintCharIndices[:])
 	msgDigest := shortDigest(firstUserMessageText)
-
-	logger := slog.Default()
-	if ctx != nil {
-		logger = observe.Logger(ctx)
-	}
 
 	attrs := []any{
 		"ua_version", uaVersion,
@@ -284,6 +317,51 @@ func (p *BillingHeaderObserver) Observe(ctx context.Context, uaVersion, blockTex
 	} else {
 		logger.Info("disguise: billing algo probe — client suffix matches replica", attrs...)
 	}
+}
+
+// recordEntrypoint extracts cc_entrypoint from blockText and maintains a
+// running counter of (uaVersion, entrypoint) combinations observed. First
+// sighting of a new combination logs at INFO; subsequent sightings only
+// increment the counter silently.
+//
+// A block with no cc_entrypoint field is bucketed under missingEntrypointSentinel
+// so "field absent" stays distinct from the legal string value "unknown".
+//
+// Thread-safety: callers must NOT already hold p.mu — this method acquires
+// it internally.
+func (p *BillingHeaderObserver) recordEntrypoint(logger *slog.Logger, uaVersion, clientVerTriple, blockText string) {
+	entrypoint := missingEntrypointSentinel
+	if sub := probeClientEntrypointRe.FindStringSubmatch(blockText); sub != nil {
+		entrypoint = sub[1]
+	}
+
+	key := uaVersion + "|" + entrypoint
+	p.mu.Lock()
+	hits, already := p.entrypointSeen[key]
+	if already {
+		p.entrypointSeen[key] = hits + 1
+		p.mu.Unlock()
+		return
+	}
+	// Apply the same cap as the state dedup map. Under normal operation
+	// each real CLI version contributes at most ~5 distinct entrypoints
+	// (cli/sdk-cli/mcp/local-agent/claude-vscode are the common ones), so
+	// the cap comfortably covers hundreds of versions before rejecting.
+	if len(p.entrypointSeen) >= billingProbeSeenCap {
+		p.mu.Unlock()
+		return
+	}
+	p.entrypointSeen[key] = 1
+	// Snapshot so we log outside the lock (logger.Info may block on I/O).
+	snapshot := len(p.entrypointSeen)
+	p.mu.Unlock()
+
+	logger.Info("disguise: billing entrypoint observation — new (cli_version, entrypoint) combination",
+		"ua_version", uaVersion,
+		"client_cc_version", clientVerTriple,
+		"cc_entrypoint", entrypoint,
+		"distinct_combinations_seen", snapshot,
+	)
 }
 
 // hexChars encodes the bytes at the given indices of s into a hex string,

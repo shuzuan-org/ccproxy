@@ -110,9 +110,11 @@ func TestBillingProbe_MismatchLogsOnceAsWarnWithRawBlock(t *testing.T) {
 		t.Errorf("expected INFO level for mismatch (probe is observation-only as of v0.1.12), got: %s", out)
 	}
 	// Mismatch logs MUST include the raw block — that's the evidence needed
-	// to reverse-engineer the new algorithm offline.
-	if !strings.Contains(out, "cc_entrypoint=cli") {
-		t.Errorf("mismatch log must include raw block text, got: %s", out)
+	// to reverse-engineer the new algorithm offline. We assert on a marker
+	// that only appears in the raw block (not in the separate entrypoint
+	// observation line that recordEntrypoint also emits).
+	if !strings.Contains(out, "cc_version=2.1.104.xxx") {
+		t.Errorf("mismatch log must include raw block text (cc_version=2.1.104.xxx missing), got: %s", out)
 	}
 	if !strings.Contains(out, "cch=sec12") {
 		t.Errorf("mismatch log must preserve full block (cch field missing), got: %s", out)
@@ -156,8 +158,10 @@ func TestBillingProbe_NoSuffixLogsAsWarnWithRawBlock(t *testing.T) {
 	if !strings.Contains(out, "level=INFO") {
 		t.Errorf("expected INFO level for no_suffix (probe is observation-only as of v0.1.12), got: %s", out)
 	}
-	if !strings.Contains(out, "cc_entrypoint=cli") {
-		t.Errorf("no_suffix log must include raw block, got: %s", out)
+	// Assert on a raw-block marker that only appears inside the state log
+	// line's client_block=... attr (not in the separate entrypoint line).
+	if !strings.Contains(out, "client_block=") {
+		t.Errorf("no_suffix log must include client_block attr, got: %s", out)
 	}
 }
 
@@ -328,5 +332,149 @@ func TestBillingProbe_StringSystemBilling(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "state=match") {
 		t.Errorf("expected match log for string system, got: %s", buf.String())
+	}
+}
+
+// TestBillingProbe_EntrypointObservation_NewCombinationLogged verifies that
+// the first time a (ua_version, cc_entrypoint) pair is observed, recordEntrypoint
+// emits a dedicated INFO log line with the expected fields.
+func TestBillingProbe_EntrypointObservation_NewCombinationLogged(t *testing.T) {
+	// serial: slog.Default is global — see package note
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	probe := NewBillingHeaderObserver()
+	parsed := makeBillingBlock(
+		"x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=cli;",
+		"hi",
+	)
+	probe.ObserveParsedBody(context.Background(), parsed, "2.1.88")
+
+	out := buf.String()
+	if !strings.Contains(out, "billing entrypoint observation") {
+		t.Errorf("expected entrypoint observation log line, got: %s", out)
+	}
+	// The entrypoint line carries a cc_entrypoint= attr set to the observed
+	// value. The state line's raw client_block (when present) also contains
+	// that substring, so we additionally assert on the structured-log attr
+	// key `distinct_combinations_seen=1` which only appears in the
+	// entrypoint line.
+	if !strings.Contains(out, "distinct_combinations_seen=1") {
+		t.Errorf("expected distinct_combinations_seen=1 in entrypoint log, got: %s", out)
+	}
+	if !strings.Contains(out, "ua_version=2.1.88") {
+		t.Errorf("expected ua_version=2.1.88 in entrypoint log, got: %s", out)
+	}
+}
+
+// TestBillingProbe_EntrypointObservation_RepeatedCombinationSilent verifies
+// that a second observation of the same (ua_version, cc_entrypoint) pair
+// does NOT produce a new log line — only the cumulative counter advances.
+func TestBillingProbe_EntrypointObservation_RepeatedCombinationSilent(t *testing.T) {
+	// serial: slog.Default is global — see package note
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	probe := NewBillingHeaderObserver()
+	parsed := makeBillingBlock(
+		"x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=cli;",
+		"hi",
+	)
+	probe.ObserveParsedBody(context.Background(), parsed, "2.1.88")
+	probe.ObserveParsedBody(context.Background(), parsed, "2.1.88")
+
+	out := buf.String()
+	// Expect exactly one entrypoint observation line. The state dedup path
+	// also suppresses the state log on the second call, so "billing
+	// entrypoint observation" should appear exactly once across both calls.
+	n := strings.Count(out, "billing entrypoint observation")
+	if n != 1 {
+		t.Errorf("expected exactly 1 entrypoint observation log, got %d in:\n%s", n, out)
+	}
+}
+
+// TestBillingProbe_EntrypointObservation_IndependentOfStateDedup asserts the
+// core invariant of the entrypoint observation channel: after the state
+// dedup key (ua_version, state) has been seen, a NEW (ua_version, entrypoint)
+// combination on the same ua_version must still produce an entrypoint log.
+//
+// This guards against regressing into "state dedup suppresses everything"
+// — the bug that would make the entrypoint dimension invisible for any
+// ua_version that had already been scored.
+func TestBillingProbe_EntrypointObservation_IndependentOfStateDedup(t *testing.T) {
+	// serial: slog.Default is global — see package note
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	probe := NewBillingHeaderObserver()
+
+	// First: normal match observation at 2.1.88 with entrypoint=cli. This
+	// populates BOTH the state dedup map (2.1.88|match) AND the entrypoint
+	// map (2.1.88|cli).
+	probe.ObserveParsedBody(
+		context.Background(),
+		makeBillingBlock(
+			"x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=cli;",
+			"hi",
+		),
+		"2.1.88",
+	)
+
+	// Second: same version, same (state=match) since msg "hi" at 2.1.88
+	// replicates to "758", but DIFFERENT entrypoint=sdk-cli. State dedup
+	// will suppress the state line, but entrypoint observation MUST fire
+	// because (2.1.88, sdk-cli) is a new combination.
+	buf.Reset()
+	probe.ObserveParsedBody(
+		context.Background(),
+		makeBillingBlock(
+			"x-anthropic-billing-header: cc_version=2.1.88.758; cc_entrypoint=sdk-cli;",
+			"hi",
+		),
+		"2.1.88",
+	)
+
+	out := buf.String()
+	if !strings.Contains(out, "billing entrypoint observation") {
+		t.Errorf("expected entrypoint observation to fire even after state dedup, got: %s", out)
+	}
+	if !strings.Contains(out, "cc_entrypoint=sdk-cli") {
+		t.Errorf("expected cc_entrypoint=sdk-cli in entrypoint log, got: %s", out)
+	}
+	// State line must NOT appear on this second call — state dedup already
+	// suppressed it.
+	if strings.Contains(out, "billing algo probe") {
+		t.Errorf("state line must be suppressed by dedup on second call, got: %s", out)
+	}
+	// distinct_combinations_seen should be 2 (cli + sdk-cli observed so far).
+	if !strings.Contains(out, "distinct_combinations_seen=2") {
+		t.Errorf("expected distinct_combinations_seen=2 after second distinct entrypoint, got: %s", out)
+	}
+}
+
+// TestBillingProbe_EntrypointObservation_MissingFieldBucket verifies that a
+// billing block without any cc_entrypoint field is recorded under the
+// missingEntrypointSentinel bucket, distinct from the legal string value
+// "unknown" (which claude-code:src/constants/system.ts:79 emits when
+// process.env.CLAUDE_CODE_ENTRYPOINT is unset).
+func TestBillingProbe_EntrypointObservation_MissingFieldBucket(t *testing.T) {
+	// serial: slog.Default is global — see package note
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	probe := NewBillingHeaderObserver()
+	// Block has cc_version but NO cc_entrypoint field at all.
+	parsed := makeBillingBlock(
+		"x-anthropic-billing-header: cc_version=2.1.88.758;",
+		"hi",
+	)
+	probe.ObserveParsedBody(context.Background(), parsed, "2.1.88")
+
+	out := buf.String()
+	if !strings.Contains(out, "billing entrypoint observation") {
+		t.Errorf("expected entrypoint observation log, got: %s", out)
+	}
+	if !strings.Contains(out, "cc_entrypoint=<missing>") {
+		t.Errorf("expected cc_entrypoint=<missing> sentinel, got: %s", out)
 	}
 }
