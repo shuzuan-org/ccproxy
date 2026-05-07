@@ -96,6 +96,7 @@ var isMetaTextPrefixes = []string{
 	// envelope around them.
 	"<local-command-caveat>",
 	"<command-name>",
+	"<local-command-stdout>",
 
 	// Tool-result text wrappers (when claude-code converts a structured
 	// tool_result into a user-text block for compaction).

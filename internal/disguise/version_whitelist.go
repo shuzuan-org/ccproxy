@@ -61,6 +61,18 @@ var validatedTuples = []validatedTuple{
 		StainlessPackageVersion: "0.81.0",
 		StainlessRuntimeVersion: "v24.3.0",
 	},
+	{
+		// Verified 2026-05-07 against 58 captured cccc-mitm samples.
+		// ATTEST_KEYS unchanged from 2.1.114/2.1.126 (proves the keys
+		// continue to span at least 2.1.114 → 2.1.132). The binary
+		// added one new isMeta wrapper prefix: "<local-command-stdout>"
+		// (slash-command output appears as a meta user message); see
+		// three_hex.go isMetaTextPrefixes.
+		// SDK + Runtime versions unchanged from 2.1.126.
+		UserAgent:               "claude-cli/2.1.132 (external, cli)",
+		StainlessPackageVersion: "0.81.0",
+		StainlessRuntimeVersion: "v24.3.0",
+	},
 }
 
 // latestValidatedTuple returns the most recently verified CC tuple. This

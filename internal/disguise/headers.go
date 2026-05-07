@@ -8,15 +8,15 @@ import "net/http"
 // tuple from the first CC request, so DefaultHeaders only matters for
 // cold-start (an account that has never seen a real CC client).
 //
-// Version aligned with Claude CLI 2.1.126 observed traffic (mitmdump
-// capture 2026-05-06 + binary inspection at
-// /Users/binn/.local/share/claude/versions/2.1.126).
+// Version aligned with Claude CLI 2.1.132 observed traffic (mitmdump
+// capture 2026-05-07: 58/58 cccc-mitm samples passed cch + 3hex
+// validation with current ATTEST_KEYS).
 //
 // IMPORTANT: the four fields below are a tightly-coupled tuple — each
 // published Claude CLI release bundles one specific combination of (UA,
 // Stainless SDK version, Node runtime version). Never bump one without
 // verifying the others against a known-good reference. A mismatched tuple
-// is a deterministic fingerprint signal (e.g. UA=2.1.126 + SDK 0.74.0
+// is a deterministic fingerprint signal (e.g. UA=2.1.132 + SDK 0.74.0
 // does not exist in any real CLI release):
 //
 //   - User-Agent                  (CLI version)
@@ -24,17 +24,19 @@ import "net/http"
 //   - X-Stainless-Runtime-Version (Node version bundled with that CLI)
 //   - anthropic-beta set          (see baseBetasNonHaiku / baseBetasHaiku in beta.go)
 //
-// The 2.1.126 tuple is: UA 2.1.126 + SDK 0.81.0 + Node v24.3.0.
+// The 2.1.132 tuple is: UA 2.1.132 + SDK 0.81.0 + Node v24.3.0.
+// (SDK + Runtime unchanged from 2.1.126.)
 //
 // Why we keep it aligned with our cch ATTEST_KEYS era: cch.go's keys are
-// extracted from the 2.1.114-2.1.126 binary range. If DefaultHeaders'
-// User-Agent advertised a different era (e.g. 2.1.88), the body's
-// cc_version field would carry "2.1.88" while we computed cch with 126-era
-// keys — if Anthropic ever cross-checks the cc_version against a
-// keys-era table, this would fail. Keeping them aligned eliminates one
-// silent fingerprint vector during cold-start traffic.
+// extracted from the 2.1.114-2.1.126 binary range and verified to still
+// work on 2.1.132. If DefaultHeaders' User-Agent advertised a different
+// era (e.g. 2.1.88), the body's cc_version field would carry "2.1.88"
+// while we computed cch with 132-era keys — if Anthropic ever
+// cross-checks the cc_version against a keys-era table, this would fail.
+// Keeping them aligned eliminates one silent fingerprint vector during
+// cold-start traffic.
 var DefaultHeaders = map[string]string{
-	"User-Agent":                  "claude-cli/2.1.126 (external, cli)",
+	"User-Agent":                  "claude-cli/2.1.132 (external, cli)",
 	"X-Stainless-Package-Version": "0.81.0",
 	"X-Stainless-OS":              "MacOS",
 	"X-Stainless-Arch":            "arm64",
