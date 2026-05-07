@@ -194,10 +194,13 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		clientUAVersion := extractUAVersion(origReq.Header.Get("User-Agent"))
 		e.billingProbe.ObserveParsedBody(ctx, parsed, clientUAVersion)
 
-		// Sync billing header cc_version to match the unified UA we send upstream.
-		// Without this, the client's original cc_version (e.g. 2.1.76) would
-		// be forwarded while we inject UA=fp.UserAgent (e.g. 2.1.88), giving
-		// Anthropic a clear "headers and body disagree" fingerprint.
+		// Canonicalize the billing header to the whitelist-pinned identity:
+		// rewrites cc_version (triple + freshly-computed 3hex) and resets
+		// cch to the "00000" placeholder. The placeholder is filled in
+		// after json.Marshal by rewriteCCHInBody — see cch.go for why
+		// the hash must be computed over the marshaled wire bytes.
+		// See syncBillingHeaderVersion for the full rationale of why we
+		// own all three fields rather than passing client values through.
 		if uaVersion != "" {
 			syncBillingHeaderVersion(parsed, uaVersion)
 		}
@@ -216,6 +219,17 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 
 		if result, err := json.Marshal(parsed); err == nil {
 			body = result
+		}
+
+		// Final step on the wire body: rewrite the cch=00000 placeholder
+		// with the keyed-xxhash64 of the body. MUST be the very last
+		// transform — any byte change after this invalidates the hash.
+		// See cch.go for the algorithm and rewriteCCHInBody for the
+		// exact contract.
+		if rewriteCCHInBody(body) {
+			observe.Logger(ctx).Debug("disguise: cch attestation written (CC pass-through)",
+				"account", accountName,
+			)
 		}
 
 		return body, true // true → handler appends ?beta=true
@@ -371,10 +385,11 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	// Enforce cache_control limit (after all other modifications)
 	enforceCacheControlLimit(ctx, parsed)
 
-	// Sync billing header cc_version to the fingerprint UA version.
-	// Non-CC clients rarely carry a billing header block, but some
-	// Claude-compatible clients (e.g. opencode) do, and we want to
-	// keep body+headers consistent if they do.
+	// Canonicalize the billing header — same logic as the CC pass-through
+	// path. Non-CC clients rarely carry a billing block, but some Claude-
+	// compatible clients (e.g. opencode) do; when present, we own it the
+	// same way (whitelist version + recomputed 3hex + cch placeholder
+	// for the post-marshal rewriter).
 	if fpUAVersion != "" {
 		syncBillingHeaderVersion(parsed, fpUAVersion)
 	}
@@ -396,6 +411,16 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	if err != nil {
 		return body, true
 	}
+
+	// Final step on the wire body: rewrite the cch=00000 placeholder
+	// with the keyed-xxhash64 of the body. MUST be the very last
+	// transform — any byte change after this invalidates the hash.
+	if rewriteCCHInBody(result) {
+		observe.Logger(ctx).Debug("disguise: cch attestation written (full disguise)",
+			"account", accountName,
+		)
+	}
+
 	return result, true
 }
 

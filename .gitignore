@@ -7,4 +7,12 @@ config.toml
 logs/
 *.log
 *.skill
-mitm-analysis/
+# mitm-analysis holds large captured wire dumps + flow files (multi-GB
+# possible). Ignore by default but allow the cch-probe maintenance
+# scripts in — they are tools referenced by CLAUDE.md "Maintaining the
+# cch / 3hex version whitelist" and need to be in version control.
+mitm-analysis/*
+!mitm-analysis/cch-probe/
+mitm-analysis/cch-probe/*
+!mitm-analysis/cch-probe/*.py
+!mitm-analysis/cch-probe/README*

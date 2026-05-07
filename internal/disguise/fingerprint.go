@@ -167,49 +167,38 @@ func (s *FingerprintStore) load() {
 	_ = json.Unmarshal(data, &s.fingerprints)
 }
 
-// rebaseToDefaults upgrades persisted fingerprints whose UA version is older
-// than the current DefaultHeaders User-Agent. The entire CLI-bundled tuple
-// (UA, Stainless Package Version, Runtime Version) is rebased together
-// because each Claude CLI release ships one fixed combination — bumping UA
-// alone would leave historical accounts with an impossible tuple (e.g. new
-// UA + old Node version). Per-account OS/Arch differentiation is preserved;
-// those fields reflect the client machine, not the CLI release.
+// rebaseToWhitelist forces every persisted fingerprint's CLI tuple
+// (UA, StainlessPackageVersion, StainlessRuntimeVersion) onto the
+// current whitelist head. Historical fingerprints captured before the
+// cch-attestation rollout may carry arbitrary client-reported values;
+// after this rollout we own that tuple unconditionally so cch + 3hex
+// stay verifiable against ATTEST_KEYS.
 //
-// This runs at startup, after load(), so the operation happens without holding
-// the public lock (the store is not yet shared).
+// Per-account OS/Arch are preserved — those reflect the client machine,
+// not the CLI release, and have no interaction with cch.
+//
+// Runs at startup, after load(), without holding the public lock (the
+// store is not yet shared).
 func (s *FingerprintStore) rebaseToDefaults() {
-	defaultUA := DefaultHeaders["User-Agent"]
-	defaultPkgVer := DefaultHeaders["X-Stainless-Package-Version"]
-	defaultRuntimeVer := DefaultHeaders["X-Stainless-Runtime-Version"]
-	if defaultUA == "" {
-		return
-	}
-	defaultVer := extractVersionFromUA(defaultUA)
-	if !defaultVer.valid {
-		return
-	}
-
+	tuple := latestValidatedTuple()
 	now := time.Now().UnixMilli()
 	changed := false
 	for name, fp := range s.fingerprints {
 		if fp == nil {
 			continue
 		}
-		currentVer := extractVersionFromUA(fp.UserAgent)
-		if !isNewerVersion(defaultVer, currentVer) {
+		if fp.UserAgent == tuple.UserAgent &&
+			fp.StainlessPackageVersion == tuple.StainlessPackageVersion &&
+			fp.StainlessRuntimeVersion == tuple.StainlessRuntimeVersion {
 			continue
 		}
 		oldUA := fp.UserAgent
-		fp.UserAgent = defaultUA
-		if defaultPkgVer != "" {
-			fp.StainlessPackageVersion = defaultPkgVer
-		}
-		if defaultRuntimeVer != "" {
-			fp.StainlessRuntimeVersion = defaultRuntimeVer
-		}
+		fp.UserAgent = tuple.UserAgent
+		fp.StainlessPackageVersion = tuple.StainlessPackageVersion
+		fp.StainlessRuntimeVersion = tuple.StainlessRuntimeVersion
 		fp.UpdatedAt = now
 		changed = true
-		slog.Debug("disguise/fingerprint: rebased to new defaults on load",
+		slog.Debug("disguise/fingerprint: rebased to whitelist head on load",
 			"account", name,
 			"old_ua", oldUA,
 			"new_ua", fp.UserAgent,
@@ -233,11 +222,15 @@ func (s *FingerprintStore) saveLocked() error {
 }
 
 // LearnFromHeaders updates the fingerprint for an account based on headers
-// observed from a real Claude Code client. If the request carries a newer CLI
-// version, the fingerprint is merged/updated; otherwise only the TTL is refreshed.
+// observed from a real Claude Code client.
+//
+// As of cch-attestation rollout (2026-05) the CLI tuple (UA, SDK, Runtime)
+// is NOT learned from the client — it is locked to the latest entry in
+// version_whitelist.go. We only adopt machine-level attributes (OS, Arch)
+// from the client headers, since those are independent of the CLI release
+// and have no interaction with cch verification.
 func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Header) {
-	ua := headers.Get("User-Agent")
-	if ua == "" {
+	if headers.Get("User-Agent") == "" {
 		return
 	}
 
@@ -248,7 +241,8 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 
 	fp, exists := s.fingerprints[accountName]
 	if !exists {
-		// No fingerprint yet -- create from observed headers
+		// No fingerprint yet — create with whitelist tuple + observed
+		// machine attributes.
 		fp = createFromHeaders(headers, now)
 		s.fingerprints[accountName] = fp
 		_ = s.saveLocked()
@@ -261,34 +255,22 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 		return
 	}
 
-	// Compare versions: only merge if request version is strictly newer.
-	// The (UA, Stainless Package Version, Runtime Version) triple is a
-	// tightly coupled tuple — each CLI release bundles one specific
-	// combination, so it must be adopted as a unit or not at all. A real
-	// CC client can legitimately omit one of the Stainless headers, so
-	// we cannot simply overwrite each field when present; doing so would
-	// leave an impossible mix like "new UA + old runtime version". OS/Arch
-	// reflect the client machine and are adopted independently.
-	existingVer := extractVersionFromUA(fp.UserAgent)
-	requestVer := extractVersionFromUA(ua)
+	// Re-pin the CLI tuple to the current whitelist head — this lets
+	// long-lived accounts pick up whitelist bumps after a ccproxy upgrade
+	// without manual reset. Cheap idempotent assignment when nothing
+	// changed.
+	oldUA := fp.UserAgent
+	mergeClientTuple(fp, headers)
+	mergeClientMachine(fp, headers)
+	fp.UpdatedAt = now.UnixMilli()
+	_ = s.saveLocked()
 
-	if isNewerVersion(requestVer, existingVer) {
-		oldUA := fp.UserAgent
-		mergeClientTuple(fp, headers)
-		mergeClientMachine(fp, headers)
-		fp.UpdatedAt = now.UnixMilli()
-		_ = s.saveLocked()
-		slog.Debug("disguise/fingerprint: learned newer version from CC client",
+	if oldUA != fp.UserAgent {
+		slog.Debug("disguise/fingerprint: tuple bumped to current whitelist",
 			"account", accountName,
 			"old_ua", oldUA,
 			"new_ua", fp.UserAgent,
 		)
-	} else {
-		// Same or older version — still refresh OS/Arch (they're machine
-		// attributes, not release attributes) and bump the TTL.
-		mergeClientMachine(fp, headers)
-		fp.UpdatedAt = now.UnixMilli()
-		_ = s.saveLocked()
 	}
 }
 
@@ -302,39 +284,24 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 //
 // The (UA, Stainless Package Version, Runtime Version) triple is a tightly
 // coupled tuple: each Claude CLI release bundles one specific combination.
-// We therefore adopt these three fields together or not at all, gated on a
-// single `adoptClientTuple` decision. OS and Arch reflect the client machine
-// rather than the CLI release, so they are adopted independently.
+// As of cch-attestation rollout (2026-05) we keep this triple under our own
+// control rather than mirroring the client — it must stay in lockstep with
+// the ATTEST_KEYS in cch.go (which only verify against a known-good range
+// of CLI binaries). See version_whitelist.go for the source of truth.
+//
+// Adopting client-side values for UA/SDK/Runtime would risk forwarding a
+// version whose cch keys we have not extracted, producing wire bytes that
+// the server cannot verify. OS and Arch describe the client machine and
+// have no interaction with cch — those we still adopt freely.
 func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
+	tuple := latestValidatedTuple()
 	fp := &Fingerprint{
-		ClientID:  GenerateClientID(),
-		CreatedAt: now.UnixMilli(),
-		UpdatedAt: now.UnixMilli(),
-	}
-
-	defaultUA := DefaultHeaders["User-Agent"]
-	defaultVer := extractVersionFromUA(defaultUA)
-
-	observedUA := headers.Get("User-Agent")
-	observedVer := extractVersionFromUA(observedUA)
-
-	// The client's CLI tuple is adopted only when its UA is a valid claude-cli
-	// string AND strictly newer than our compiled-in default. In every other
-	// case (empty/invalid UA, same version, older version) we fall back to the
-	// default tuple so the fingerprint never mixes fields from two different
-	// CLI releases.
-	adoptClientTuple := observedUA != "" && observedVer.valid && isNewerVersion(observedVer, defaultVer)
-
-	if adoptClientTuple {
-		fp.UserAgent = observedUA
-	} else {
-		fp.UserAgent = defaultUA
-	}
-
-	if v := headers.Get("X-Stainless-Package-Version"); v != "" && adoptClientTuple {
-		fp.StainlessPackageVersion = v
-	} else {
-		fp.StainlessPackageVersion = DefaultHeaders["X-Stainless-Package-Version"]
+		ClientID:                GenerateClientID(),
+		UserAgent:               tuple.UserAgent,
+		StainlessPackageVersion: tuple.StainlessPackageVersion,
+		StainlessRuntimeVersion: tuple.StainlessRuntimeVersion,
+		CreatedAt:               now.UnixMilli(),
+		UpdatedAt:               now.UnixMilli(),
 	}
 
 	if v := headers.Get("X-Stainless-OS"); v != "" {
@@ -349,35 +316,20 @@ func createFromHeaders(headers http.Header, now time.Time) *Fingerprint {
 		fp.StainlessArch = DefaultHeaders["X-Stainless-Arch"]
 	}
 
-	if v := headers.Get("X-Stainless-Runtime-Version"); v != "" && adoptClientTuple {
-		fp.StainlessRuntimeVersion = v
-	} else {
-		fp.StainlessRuntimeVersion = DefaultHeaders["X-Stainless-Runtime-Version"]
-	}
-
 	return fp
 }
 
-// mergeClientTuple atomically adopts the (UA, StainlessPackageVersion,
-// StainlessRuntimeVersion) triple from the incoming request headers. Because
-// each Claude CLI release ships one specific combination, the three fields
-// must move together or not at all — a partial update (e.g. new UA but old
-// runtime) would create an impossible fingerprint that stands out upstream.
-//
-// The adoption is gated on ALL three fields being present in the request.
-// If any of them is missing, the existing tuple is preserved untouched; the
-// caller has already verified the request version is newer, so the next
-// request that carries a complete tuple will succeed.
-func mergeClientTuple(fp *Fingerprint, headers http.Header) {
-	ua := headers.Get("User-Agent")
-	pkgVer := headers.Get("X-Stainless-Package-Version")
-	runtimeVer := headers.Get("X-Stainless-Runtime-Version")
-	if ua == "" || pkgVer == "" || runtimeVer == "" {
-		return
-	}
-	fp.UserAgent = ua
-	fp.StainlessPackageVersion = pkgVer
-	fp.StainlessRuntimeVersion = runtimeVer
+// mergeClientTuple is a no-op for the CLI release triple — see the
+// rationale on createFromHeaders. We only refresh UA/SDK/Runtime when the
+// validated whitelist itself rolls forward (a code change), never from
+// observed client traffic. This function exists solely to update the
+// fingerprint to whatever the current whitelist head is, which lets a
+// long-lived account pick up whitelist bumps without manual reset.
+func mergeClientTuple(fp *Fingerprint, _ http.Header) {
+	tuple := latestValidatedTuple()
+	fp.UserAgent = tuple.UserAgent
+	fp.StainlessPackageVersion = tuple.StainlessPackageVersion
+	fp.StainlessRuntimeVersion = tuple.StainlessRuntimeVersion
 }
 
 // mergeClientMachine updates the machine-level fields (OS and Arch). These

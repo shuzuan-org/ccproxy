@@ -12,52 +12,65 @@ import (
 	"github.com/binn/ccproxy/internal/observe"
 )
 
-// BillingHeaderObserver passively records the distribution of Claude CLI's
-// billing-header `cch` suffix values across real client traffic, by
-// comparing each observed suffix against a historical SHA256-based replica
-// that we know is NOT the true algorithm.
+// BillingHeaderObserver passively records distribution data on Claude CLI's
+// billing-header `cch` and `cc_version` 3hex suffixes from real client
+// traffic. It is purely observational; the production path computes both
+// values itself in cch.go (cch keyed-xxhash64) and three_hex.go (3hex
+// vM3-style SHA256) and rewrites them on outbound requests.
 //
-// The true algorithm, per claude-code:src/constants/system.ts:73-94, is
-// implemented in Bun's native Zig HTTP stack (bun-anthropic Attestation.zig)
-// under the NATIVE_CLIENT_ATTESTATION feature flag. The stack writes a
-// `cch=00000` placeholder into the serialized request body and overwrites
-// the zeros in place after serialization. This means:
+// History — the prior cognitive model has been REVERSED.
 //
-//   1. The algorithm is not reachable from JS/Go — any JS-layer replica is
-//      guaranteed to diverge from real client values on at least some
-//      inputs. The observation "mismatch" state is EXPECTED, not a sign
-//      that the algorithm has "drifted" or "upgraded".
+// Until 2026-05 ccproxy operated under "the cch algorithm is unreachable
+// from JS/Go" (Bun-native Zig stack, opaque from outside). The 3hex
+// algorithm was likewise written off as "drifted" after CLI 2.1.105, with
+// the observer's role limited to recording per-version mismatch counts so
+// we wouldn't be tempted to re-engineer it.
 //
-//   2. ccproxy's v0.1.11 SHA256 replica (salt "59cf53e54c78", indices
-//      [4,7,20]) was cross-referenced against auth2api's implementation,
-//      which itself was derived from mitmproxy captures. The captures
-//      happened to line up with SHA256 for a narrow window of messages,
-//      producing the illusion of a pure JS-computable algorithm. v0.1.12
-//      removed the replica from the production path after this observer
-//      began recording mismatches on Claude CLI 2.1.105+.
+// Reverse-engineering the 2.1.126 binary on 2026-05-06 invalidated both
+// claims:
 //
-// Purpose (unchanged since v0.1.12): this observer is OBSERVATION-ONLY.
-// It logs at INFO level and never mutates outbound requests. Its value is:
+//   1. cch is keyed xxhash64 over the entire request body, with four
+//      hardcoded 64-bit lane initial values (ATTEST_KEYS) extracted from
+//      .rodata. ccproxy's Go implementation (see cch.go) reproduces the
+//      algorithm byte-exact on captured traffic and is now the production
+//      path's cch source.
 //
-//   - Surface real cch values from production traffic so we can, if we
-//     ever need to, analyze their distribution offline and look for
-//     structural patterns (byte layout, length variations, version
-//     coupling, etc.).
-//   - Detect regressions where a future ccproxy change accidentally
-//     couples business logic to the replica. A production effect would
-//     show up as "our own requests show match while client requests show
-//     mismatch" — a canary only this observer can provide.
-//   - Provide cheap ground truth for "is this CLI version still emitting
-//     cch at all?" without pulling in a real Claude CLI client.
+//   2. The 3hex suffix is SHA256(salt + chars + version_triple)[:3] where
+//      `chars` are bytes [4,7,20] of the first user message AFTER skipping
+//      isMeta-flagged system injections. The "drift at 2.1.105" we observed
+//      was the introduction of that isMeta filter; it can be reproduced
+//      from wire-visible prefixes (see three_hex.go isMetaTextPrefixes).
+//      ccproxy's 3hex is also now produced locally.
 //
-// It is NOT:
+// Purpose under the new model:
 //
-//   - A drift detector. We already know the JS replica does not match
-//     the true algorithm; logging mismatch is confirming the baseline,
-//     not discovering new information.
-//   - A trigger for re-reverse-engineering the algorithm. See the
-//     project_billing_cch_truth memory for why "one more capture round"
-//     will not produce a correct replica.
+//   The observer's job is no longer to "compare a known-wrong replica
+//   against truth and log mismatches as the baseline". With cch.go and
+//   three_hex.go in the production path, we DO have the truth — what the
+//   observer surfaces is whether OUR algorithms still match the client's
+//   on shared inputs. A persistent observed mismatch means one of:
+//
+//     - ATTEST_KEYS rotated → cch.go can no longer verify; bump
+//       version_whitelist.go after extracting new keys
+//     - isMetaTextPrefixes is missing a new injection prefix → 3hex
+//       diverges; add the new prefix
+//     - Whitelist drifted past where we have ground truth → time to
+//       capture new wire samples and validate
+//
+// In other words the observer is now a passive canary for the
+// version-whitelist maintenance loop documented in CLAUDE.md.
+//
+// What the observer is NOT:
+//
+//   - A trigger to bypass the whitelist. We never adopt observed
+//     client values into outbound traffic; the response to "drift
+//     detected" is a code change (whitelist update, key rotation,
+//     prefix added), not a runtime adaptation.
+//
+//   - The cch/3hex calculator. That's cch.go and three_hex.go. The
+//     observer keeps its own historical SHA256-replica function
+//     (computeBillingFingerprintReplica below) only for the
+//     comparison; do not import it into production code paths.
 //
 // Sampling: one entry per (UA_version, match_state) tuple. This gives a
 // small stable set of log lines per real CLI version (match / mismatch /
@@ -71,26 +84,28 @@ import (
 // silently dropping — well past any realistic operational need.
 const billingProbeSeenCap = 1000
 
-// Historical replica constants. These reflect the algorithm Claude CLI used
-// circa 2.1.88. Used by the probe to detect drift and by nothing else.
+// billingFingerprintSalt is the kM3 constant in the Claude CLI binary,
+// used by both the historical observer-replica below AND the production
+// 3hex computation in three_hex.go. Verified stable from 2.1.114 through
+// 2.1.126; if Anthropic ever rotates it, both this observer and three_hex
+// need updating in lockstep.
 const (
 	billingFingerprintSalt = "59cf53e54c78"
 )
 
+// billingFingerprintCharIndices are the byte positions of the first
+// user message text used as input to the SHA256 hash. Stable across
+// the entire whitelisted version range. Same caveat as the salt: if
+// these ever change they must change in lockstep with three_hex.go.
 var billingFingerprintCharIndices = [...]int{4, 7, 20}
 
-// computeBillingFingerprintReplica reproduces the historical Claude CLI
-// fingerprint algorithm circa 2.1.88:
+// computeBillingFingerprintReplica reproduces the OLD pre-2.1.105 fingerprint
+// algorithm — i.e. without the isMeta filter that three_hex.go now applies.
+// Kept ONLY to feed the BillingHeaderObserver so it can flag per-version
+// match/mismatch on legacy clients without dragging in the full vM3 logic.
 //
-//	SHA256(SALT + msg[4] + msg[7] + msg[20] + version).hex()[:3]
-//
-// where msg is the first user message's text (or "0" for any out-of-range
-// index, byte-indexed). Returns lowercase 3-hex-char output.
-//
-// This is no longer used to mutate outbound traffic — it lives here purely
-// so the probe can compare it against client-sent suffixes and surface
-// drift. If the real algorithm changes, the only consequence is more
-// "mismatch" log lines until the probe is updated to a new replica.
+// Production code MUST NOT call this. The current correct implementation
+// is Compute3HexSuffix in three_hex.go.
 func computeBillingFingerprintReplica(messageText, version string) string {
 	var chars [len(billingFingerprintCharIndices)]byte
 	for i, idx := range billingFingerprintCharIndices {
@@ -298,19 +313,22 @@ func (p *BillingHeaderObserver) Observe(ctx context.Context, uaVersion, blockTex
 	}
 
 	// For mismatch / no_suffix we also log the raw block text — these are
-	// the states where someone will have to reverse engineer the real
-	// algorithm, and the raw block is the single most useful input. Match
-	// logs omit it to keep the noise low (match is confirmation, not
-	// evidence).
+	// the states where someone will have to investigate, and the raw block
+	// is the single most useful input. Match logs omit it to keep the noise
+	// low (match is confirmation, not evidence).
 	//
-	// Severity note: as of v0.1.12 the production path no longer uses this
-	// replica to mutate outbound traffic — the probe is purely an
-	// observation tool. A "mismatch" therefore does not imply anything is
-	// wrong with the request being processed; it only records that the
-	// historical replica algorithm has drifted from what this CLI version
-	// produces. We keep INFO level for "mismatch" because operators do not
-	// need to be paged for it; the entry is just data for offline reverse
-	// engineering of the new algorithm.
+	// Severity note: as of cch-attestation rollout (2026-05) the production
+	// path computes its own cch (cch.go) and 3hex (three_hex.go) and rewrites
+	// them on outbound requests, so the probe is OBSERVATION ONLY. A
+	// "mismatch" reported here does NOT mean the request being processed
+	// is broken — Compute3HexSuffix runs the correct vM3-aware algorithm
+	// and is unaffected by what this replica produces. The replica
+	// intentionally lacks the isMeta filter so it can flag legacy clients
+	// vs current clients on a single timeline. A persistent mismatch
+	// pattern, paired with rising "no_suffix" counts on a particular UA
+	// version, is the canary for "Anthropic shipped a new CLI we have
+	// not whitelisted yet" — see CLAUDE.md "Maintaining the cch / 3hex
+	// version whitelist" for the response procedure.
 	if state == "mismatch" || state == "no_suffix" {
 		attrs = append(attrs, "client_block", blockText)
 		logger.Info("disguise: billing algo probe — client suffix differs from historical replica (observation only)", attrs...)

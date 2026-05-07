@@ -98,6 +98,33 @@ config.toml.example 参考配置
 
 `internal/disguise/detector.go` 中的 `isClaudeCodeClient` 检测器使用门控评分系统：User-Agent 必须匹配 `claude-cli/x.x.x`（门控），然后对 `/v1/messages` 请求，5 个信号中至少 2 个匹配（X-App 头部、anthropic-beta token、metadata.user_id 模式、系统提示词 Dice 系数、Anthropic-Version 非空）。非 messages 路径仅需通过 UA 门控。
 
+#### cch / 3hex 与版本白名单
+
+ccproxy 自己计算 billing block 的 `cch`（keyed xxhash64，见 `cch.go`）和 `cc_version` 末尾的 `.3hex`（vM3 风格 SHA256，见 `three_hex.go`），不再依赖客户端原值。原因：一旦我们改了 body 的任何字节（UA、user_id、cc_version 三段号、metadata），客户端原 cch 就失效了；要么算对要么算错，没有"保留原值"这个安全选项。
+
+`cch` 算法依赖 4 个硬编码的 64-bit `ATTEST_KEYS`（见 `cch.go`），这些 keys 是从 Claude Code binary `.rodata` 段抽出来的，跨版本会轮换。`internal/disguise/version_whitelist.go` 维护一张已验证版本表：每个条目都是抓包确认过 cch + 3hex 能用当前 `ATTEST_KEYS` 复现的 (UA, SDK, Runtime) 三元组。**所有出 ccproxy 的流量永远使用白名单最新版本**——包括默认值、自学习的 fp、`rebaseToWhitelist` 启动清洗，全部强制对齐。客户端实际版本不影响出口流量，自学习只吸收 OS/Arch（机器属性，与 cch 无关）。
+
+##### 维护白名单（线下流程）
+
+新版 Claude Code 发布后按这个流程验证 + 加入白名单。**严禁运行时自动跟版**——客户端自学习已被关闭，所有 UA 推进必须经过抓包验证。
+
+1. **抓包**：用 `cccc-mitm` wrapper 跑几次真实请求，所有 `/v1/messages` 落盘到 `mitm-analysis/cch-probe/captured/`。覆盖几个场景就够：纯文本对话、工具调用、多轮对话、斜杠命令。
+
+2. **跑验证脚本**：`python3 mitm-analysis/cch-probe/verify_captured.py`。它对每个样本独立验证两件事：
+   - 用当前 `ATTEST_KEYS` 重算 cch，对比 wire 上的真值
+   - 用当前 `isMetaTextPrefixes` 跑 vM3 模拟器算 3hex，对比 wire 上的真值
+
+3. **判断结果**：
+   - **全部通过** → 算法和前缀表完全匹配新版本。在 `version_whitelist.go` 末尾追加新条目 `{UserAgent, StainlessPackageVersion, StainlessRuntimeVersion}`，三元组从抓到的样本 `.meta` 文件直接抄。
+   - **cch 失配** → `ATTEST_KEYS` 轮换了。先按 `cch.go` 文件头注释的 grep 流程从新版 binary 抽出新 V1..V4，更新 cch.go 常量，再重跑验证脚本。通过后再加白名单条目。
+   - **3hex 失配** → 客户端引入了新的 isMeta 注入前缀（系统消息包装、模式切换横幅等）。看哪些样本失配，从 binary 找新前缀（`grep "isMeta:!0"` 周围 content 字符串），加到 `three_hex.go` 的 `isMetaTextPrefixes`，重跑验证。
+
+4. **跑测试**：`go test ./internal/disguise/ -race -count=1`。`fresh_sample.bin` ground-truth 测试一定要过——它是回归保险。
+
+5. **日志监控辅助判断**：线上 `BillingHeaderObserver` 记录每个 (UA_version, match_state) 一条 INFO 日志。某个新版本的 `mismatch` 持续上升就是该走上述流程的信号。但 ccproxy 自己的出口流量已经在用 ATTEST_KEYS 加白名单最新版本算 cch，**线上不会因为没及时跟版而立即坏掉**——只是冷启动账户的 UA 越来越像"装着旧 binary 的真客户端"，最终需要白名单刷新才不显得过时。
+
+`mitm-analysis/cch-probe/` 下的 `cch_compute.py`、`verify_captured.py`、`fresh_sample.bin` 是这套流程的工具与基准样本，不要删。
+
 ### OAuth
 
 所有账户使用 OAuth 认证。Anthropic OAuth 常量（ClientID、AuthURL、TokenURL、RedirectURI、Scopes）硬编码在 `internal/oauth/provider.go` 中。

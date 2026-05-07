@@ -1,6 +1,7 @@
 package disguise
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -342,11 +343,12 @@ func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
 		t.Errorf("upstream UA should not leak client version, got %q", gotUA)
 	}
 
-	// 2. Body billing header should be synced to fp UA version, but the
-	//    3-char message-derived suffix MUST be preserved verbatim from
-	//    whatever the client originally sent. As of v0.1.12 ccproxy no
-	//    longer recomputes the suffix (the historical SHA256 replica
-	//    drifted at CLI 2.1.105+), so the client's ".df2" must survive.
+	// 2. Body billing header should be synced to fp UA version, with the
+	//    3-char suffix recomputed by Compute3HexSuffix (vM3 semantics) and
+	//    the cch field rewritten by the keyed-xxhash64 of the final body.
+	//    Both the client's old ".df2" and old "abc12" are now stale because
+	//    we modified the cc_version triple (and likely other fields) — the
+	//    rewriter recomputes both for self-consistency with the wire body.
 	fpVersion := extractUAVersion(fpUA)
 	if fpVersion == "" {
 		t.Fatalf("could not extract version from fp UA %q", fpUA)
@@ -364,9 +366,32 @@ func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
 		t.Fatal("expected system[0] to be an object")
 	}
 	billingText, _ := billingBlock["text"].(string)
-	wantBilling := "x-anthropic-billing-header: cc_version=" + fpVersion + ".df2; cc_entrypoint=cli; cch=abc12"
-	if billingText != wantBilling {
-		t.Errorf("billing header not synced (or suffix not preserved):\n  want %q\n  got  %q", wantBilling, billingText)
+	// Verify shape: cc_version=<fpVersion>.<3hex> ... cch=<5hex>; with no
+	// stale "abc12" or ".df2" lingering.
+	wantPrefix := "x-anthropic-billing-header: cc_version=" + fpVersion + "."
+	if !strings.HasPrefix(billingText, wantPrefix) {
+		t.Errorf("billing header missing expected prefix %q, got %q", wantPrefix, billingText)
+	}
+	if strings.Contains(billingText, ".df2") {
+		t.Errorf("client's stale 3hex suffix .df2 leaked into final body: %q", billingText)
+	}
+	if strings.Contains(billingText, "cch=abc12") {
+		t.Errorf("client's stale cch leaked into final body: %q", billingText)
+	}
+	if !strings.Contains(billingText, "cch=") {
+		t.Errorf("billing header missing cch field: %q", billingText)
+	}
+	// Self-consistency: re-hashing the final body (with cch reverted to
+	// "00000") must reproduce the cch we wrote.
+	cchRe := regexp.MustCompile(`cch=([0-9a-f]{5})`)
+	cchMatch := cchRe.FindSubmatch(outBody)
+	if cchMatch == nil {
+		t.Fatalf("no cch field in outBody")
+	}
+	preBody := bytes.Replace(outBody, []byte("cch="+string(cchMatch[1])), []byte("cch=00000"), 1)
+	if recomputed := ComputeCCH(preBody); recomputed != string(cchMatch[1]) {
+		t.Errorf("body NOT self-consistent: wrote cch=%s, ComputeCCH(reverted)=%s",
+			cchMatch[1], recomputed)
 	}
 
 	// 3. X-Stainless-Package-Version should also be the fp value, not the
@@ -1291,10 +1316,14 @@ func TestEngineApply_LearnFingerprint(t *testing.T) {
 
 	e.Apply(origReq, upstreamReq, body, false, "seed", "acct-learn-id", "acct-learn")
 
-	// After processing a real CC client, the fingerprint should be learned
+	// After processing a real CC client, the fingerprint should exist and
+	// carry the whitelist-pinned CLI tuple (NOT the client's reported UA —
+	// see version_whitelist.go for why we ignore the client value here).
+	// OS/Arch should reflect the client's machine.
 	fp := e.fingerprints.Get("acct-learn-id")
-	if fp.UserAgent != "claude-cli/2.3.0 (external, cli)" {
-		t.Errorf("expected learned UA from CC client, got %q", fp.UserAgent)
+	tuple := latestValidatedTuple()
+	if fp.UserAgent != tuple.UserAgent {
+		t.Errorf("expected whitelist UA %q, got %q", tuple.UserAgent, fp.UserAgent)
 	}
 	if fp.StainlessOS != "Darwin" {
 		t.Errorf("expected learned OS from CC client, got %q", fp.StainlessOS)

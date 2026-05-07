@@ -94,11 +94,13 @@ func TestExtractFirstUserMessageText(t *testing.T) {
 	}
 }
 
-// TestSyncBillingHeaderVersion_PreservesSuffix is the central invariant of
-// the v0.1.12 redesign: rewriting the cc_version triple must NEVER touch
-// the .abc suffix the client sent. A real client's suffix is the only
-// algorithm-correct value we can ship to upstream, so we never replace it.
-func TestSyncBillingHeaderVersion_PreservesSuffix(t *testing.T) {
+// TestSyncBillingHeaderVersion_RecomputesSuffix pins the central invariant
+// of the cch-attestation rollout: rewriting the cc_version triple ALSO
+// recomputes the .abc 3hex suffix using vM3 semantics over messages, AND
+// resets the cch field to the "00000" placeholder so the post-marshal
+// rewriter can write the real hash. The client's old suffix and cch are
+// both invalid the moment we change the body.
+func TestSyncBillingHeaderVersion_RecomputesSuffix(t *testing.T) {
 	t.Parallel()
 	parsed := parseJSON(t, `{
 		"system": [
@@ -111,88 +113,107 @@ func TestSyncBillingHeaderVersion_PreservesSuffix(t *testing.T) {
 
 	sys := parsed["system"].([]interface{})
 	got := sys[0].(map[string]interface{})["text"].(string)
-	want := "x-anthropic-billing-header: cc_version=2.1.97.a29; cc_entrypoint=cli; cch=1931e;"
+	// 3hex is recomputed with messages="hello" and version="2.1.97"
+	wantSuffix := Compute3HexSuffix("2.1.97", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hello"},
+	})
+	want := "x-anthropic-billing-header: cc_version=2.1.97." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got != want {
-		t.Errorf("expected suffix .a29 and cch=1931e preserved\n  want %q\n  got  %q", want, got)
+		t.Errorf("expected suffix recomputed and cch reset to placeholder\n  want %q\n  got  %q", want, got)
 	}
 }
 
 // TestSyncBillingHeaderVersion_DowngradeStillRewrites verifies that the
 // rewrite is unconditional with respect to version ordering: even if the
 // fp UA version is OLDER than the client's cc_version, we still rewrite
-// the triple. This matches sub2api semantics — the goal is "make the
-// triple equal to whatever the fp UA says", not "upgrade only".
+// the triple AND recompute the suffix.
 func TestSyncBillingHeaderVersion_DowngradeStillRewrites(t *testing.T) {
 	t.Parallel()
 	parsed := parseJSON(t, `{
 		"system": [
 			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;"}
-		]
+		],
+		"messages": [{"role":"user","content":"hi"}]
 	}`)
 
 	syncBillingHeaderVersion(parsed, "2.1.88")
 
 	sys := parsed["system"].([]interface{})
 	got := sys[0].(map[string]interface{})["text"].(string)
-	want := "x-anthropic-billing-header: cc_version=2.1.88.abc; cc_entrypoint=cli;"
+	wantSuffix := Compute3HexSuffix("2.1.88", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	})
+	want := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got != want {
-		t.Errorf("expected downgrade to 2.1.88 with .abc preserved\n  want %q\n  got  %q", want, got)
+		t.Errorf("expected downgrade to 2.1.88 with recomputed suffix\n  want %q\n  got  %q", want, got)
 	}
 }
 
-// TestSyncBillingHeaderVersion_NoSuffix_NoSuffixAfter verifies that when
-// the client sent a suffix-less cc_version, the result is also
-// suffix-less. We do NOT synthesize a suffix — that is exactly the
-// behaviour we removed in v0.1.12.
-func TestSyncBillingHeaderVersion_NoSuffix_NoSuffixAfter(t *testing.T) {
+// TestSyncBillingHeaderVersion_NoSuffix_GetsSuffix verifies that when the
+// client sent a suffix-less cc_version, we still synthesize one — the
+// 3hex is mandatory in the new strategy.
+func TestSyncBillingHeaderVersion_NoSuffix_GetsSuffix(t *testing.T) {
 	t.Parallel()
 	parsed := parseJSON(t, `{
 		"system": [
 			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.76; cc_entrypoint=cli;"}
-		]
+		],
+		"messages": [{"role":"user","content":"hi"}]
 	}`)
 
 	syncBillingHeaderVersion(parsed, "2.1.88")
 
 	sys := parsed["system"].([]interface{})
 	got := sys[0].(map[string]interface{})["text"].(string)
-	want := "x-anthropic-billing-header: cc_version=2.1.88; cc_entrypoint=cli;"
+	wantSuffix := Compute3HexSuffix("2.1.88", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	})
+	want := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got != want {
-		t.Errorf("expected no synthesized suffix\n  want %q\n  got  %q", want, got)
+		t.Errorf("expected synthesized suffix and cch placeholder\n  want %q\n  got  %q", want, got)
 	}
 }
 
-// TestSyncBillingHeaderVersion_EqualVersion verifies that an already-equal
-// triple is a structural no-op (the regex matches and replaces with the
-// same value, so the resulting text is byte-identical).
+// TestSyncBillingHeaderVersion_EqualVersion verifies that even when the
+// triple is unchanged, the 3hex is recomputed (the client's original
+// suffix used vM3 with isMeta filter; ours uses the wire body, so values
+// can differ even at "same version") and a cch placeholder is injected.
 func TestSyncBillingHeaderVersion_EqualVersion(t *testing.T) {
 	t.Parallel()
 	parsed := parseJSON(t, `{
 		"system": [
 			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.88.zzz; cc_entrypoint=cli;"}
-		]
+		],
+		"messages": [{"role":"user","content":"hi"}]
 	}`)
 
 	syncBillingHeaderVersion(parsed, "2.1.88")
 
 	sys := parsed["system"].([]interface{})
 	got := sys[0].(map[string]interface{})["text"].(string)
-	want := "x-anthropic-billing-header: cc_version=2.1.88.zzz; cc_entrypoint=cli;"
+	wantSuffix := Compute3HexSuffix("2.1.88", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	})
+	want := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got != want {
-		t.Errorf("equal-version block changed:\n  want %q\n  got  %q", want, got)
+		t.Errorf("equal-version block:\n  want %q\n  got  %q", want, got)
 	}
 }
 
 func TestSyncBillingHeaderVersion_StringSystem(t *testing.T) {
 	t.Parallel()
 	parsed := parseJSON(t, `{
-		"system": "x-anthropic-billing-header: cc_version=2.1.76.df2; cc_entrypoint=cli;"
+		"system": "x-anthropic-billing-header: cc_version=2.1.76.df2; cc_entrypoint=cli;",
+		"messages": [{"role":"user","content":"hi"}]
 	}`)
 
 	syncBillingHeaderVersion(parsed, "2.1.88")
 
 	got := parsed["system"].(string)
-	want := "x-anthropic-billing-header: cc_version=2.1.88.df2; cc_entrypoint=cli;"
+	wantSuffix := Compute3HexSuffix("2.1.88", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	})
+	want := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
@@ -277,14 +298,19 @@ func TestSyncBillingHeaderVersion_MultipleBlocksOnlyBillingMutated(t *testing.T)
 			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.76.df2; cch=abc12"},
 			{"type":"text","text":"cc_version=2.1.76 this is user-authored text"},
 			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.70.qqq; cc_entrypoint=cli;"}
-		]
+		],
+		"messages": [{"role":"user","content":"hi"}]
 	}`)
 
 	syncBillingHeaderVersion(parsed, "2.1.88")
 
 	sys := parsed["system"].([]interface{})
+	wantSuffix := Compute3HexSuffix("2.1.88", []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	})
+
 	got0 := sys[0].(map[string]interface{})["text"].(string)
-	want0 := "x-anthropic-billing-header: cc_version=2.1.88.df2; cch=abc12"
+	want0 := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cch=00000"
 	if got0 != want0 {
 		t.Errorf("block 0 mismatch:\n  want %q\n  got  %q", want0, got0)
 	}
@@ -295,7 +321,7 @@ func TestSyncBillingHeaderVersion_MultipleBlocksOnlyBillingMutated(t *testing.T)
 		t.Errorf("non-billing block 1 was mutated: %q", got1)
 	}
 	got2 := sys[2].(map[string]interface{})["text"].(string)
-	want2 := "x-anthropic-billing-header: cc_version=2.1.88.qqq; cc_entrypoint=cli;"
+	want2 := "x-anthropic-billing-header: cc_version=2.1.88." + wantSuffix + "; cc_entrypoint=cli; cch=00000;"
 	if got2 != want2 {
 		t.Errorf("block 2 mismatch:\n  want %q\n  got  %q", want2, got2)
 	}

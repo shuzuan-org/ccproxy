@@ -1,0 +1,146 @@
+"""verify_captured.py — Validate cch + 3hex against all newly captured samples.
+
+Reports per-sample match/fail and aggregates by failure mode.
+"""
+import os, json, re, hashlib
+from cch_compute import cch_token
+
+CAPTURED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured")
+SALT = "59cf53e54c78"
+
+# Same 26 prefixes as Go's three_hex.go
+ISMETA_PREFIXES = [
+    "<system-reminder>", "<local-command-caveat>", "<command-name>",
+    "Result of calling the ", "Called the ",
+    "## Exited Plan Mode", "## Exited Auto Mode",
+    "Continue from where you left off.",
+    "This session is being continued from another machine",
+    "The date has changed.",
+    "The PermissionDenied hook indicated", "Your tool call was malformed",
+    "Output token limit hit. Resume directly",
+    "Auto mode still active", "The user has asked you to work without stopping",
+    "The user opened the file ", "The user selected the lines ",
+    "The user has expressed a desire to invoke the agent",
+    "Note: The file ", "Note: ", "Contents of ",
+    "A plan file exists from plan mode at:",
+    "The following skills are available for use",
+    "<mcp-resource server=", "File snapshot",
+]
+
+
+def is_meta(text):
+    t = text.lstrip()
+    return any(t.startswith(p) for p in ISMETA_PREFIXES)
+
+
+def first_non_meta_text(parsed):
+    for msg in parsed.get("messages", []):
+        if msg.get("role") != "user":
+            continue
+        c = msg.get("content")
+        if isinstance(c, str):
+            if not is_meta(c):
+                return c
+            continue
+        if isinstance(c, list):
+            for block in c:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    if not is_meta(block.get("text", "")):
+                        return block.get("text", "")
+    return ""
+
+
+def char_at(s, i):
+    return s[i] if i < len(s) else "0"
+
+
+def main():
+    files = sorted(f for f in os.listdir(CAPTURED) if f.endswith(".bin"))
+    cch_ok = cch_fail = 0
+    hex_ok = hex_fail = 0
+    skip = 0
+    failures = []
+
+    for fname in files:
+        path = os.path.join(CAPTURED, fname)
+        with open(path, "rb") as f:
+            body = f.read()
+
+        # filter out non-claude requests (our curl test was 7 bytes)
+        if len(body) < 100:
+            skip += 1
+            continue
+        if b"cch=" not in body:
+            skip += 1
+            continue
+
+        # ---- cch
+        cch_m = re.search(rb'cch=([0-9a-f]{5})', body)
+        observed_cch = cch_m.group(1).decode()
+        pre = body.replace(cch_m.group(0), b"cch=00000", 1)
+        computed_cch = cch_token(pre)
+        cch_match = observed_cch == computed_cch
+
+        # ---- 3hex
+        cv_m = re.search(rb'cc_version=(\d+\.\d+\.\d+)\.([0-9a-f]{3})', body)
+        if cv_m:
+            version = cv_m.group(1).decode()
+            observed_3hex = cv_m.group(2).decode()
+            try:
+                parsed = json.loads(body)
+                text = first_non_meta_text(parsed)
+                chars = char_at(text, 4) + char_at(text, 7) + char_at(text, 20)
+                computed_3hex = hashlib.sha256(
+                    (SALT + chars + version).encode()).hexdigest()[:3]
+                hex_match = observed_3hex == computed_3hex
+            except Exception as e:
+                hex_match = False
+                computed_3hex = f"ERR:{e}"
+                text = ""
+                chars = ""
+        else:
+            hex_match = None
+            observed_3hex = "<none>"
+            computed_3hex = ""
+            text = ""
+            chars = ""
+
+        if cch_match:
+            cch_ok += 1
+        else:
+            cch_fail += 1
+        if hex_match is True:
+            hex_ok += 1
+        elif hex_match is False:
+            hex_fail += 1
+
+        if not cch_match or hex_match is False:
+            failures.append({
+                "file": fname,
+                "size": len(body),
+                "cch_obs": observed_cch,
+                "cch_comp": computed_cch,
+                "cch_match": cch_match,
+                "version": version if cv_m else "?",
+                "3hex_obs": observed_3hex,
+                "3hex_comp": computed_3hex,
+                "3hex_match": hex_match,
+                "first_text_60": text[:60],
+                "chars": chars,
+            })
+
+    print(f"Total samples: {len(files)} (skipped {skip} non-claude)")
+    print(f"cch:  {cch_ok}/{cch_ok+cch_fail} match")
+    print(f"3hex: {hex_ok}/{hex_ok+hex_fail} match")
+    if failures:
+        print(f"\n=== {len(failures)} failures ===")
+        for f in failures:
+            print(f"\n  {f['file']} ({f['size']}b)")
+            print(f"    cch:  obs={f['cch_obs']} comp={f['cch_comp']} match={f['cch_match']}")
+            print(f"    3hex: v{f['version']} obs={f['3hex_obs']} comp={f['3hex_comp']} match={f['3hex_match']}")
+            print(f"    first non-meta text (60b): {f['first_text_60']!r}")
+            print(f"    chars: {f['chars']!r}")
+
+
+if __name__ == "__main__":
+    main()
