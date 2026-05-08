@@ -1329,3 +1329,99 @@ func TestEngineApply_LearnFingerprint(t *testing.T) {
 		t.Errorf("expected learned OS from CC client, got %q", fp.StainlessOS)
 	}
 }
+
+// TestSanitizeRequestBody_InjectContextManagement verifies that requests
+// with thinking enabled get the canonical Claude CLI context_management
+// default injected when missing — and that other shapes are left alone.
+//
+// Real CLI 2.1.126/132 traffic (221/221 thinking-enabled samples) carries
+// exactly {"edits":[{"keep":"all","type":"clear_thinking_20251015"}]}. The
+// "thinking enabled + no context_management" combination does not appear
+// in real traffic.
+func TestSanitizeRequestBody_InjectContextManagement(t *testing.T) {
+	t.Parallel()
+	canonical := map[string]interface{}{
+		"edits": []interface{}{
+			map[string]interface{}{
+				"keep": "all",
+				"type": "clear_thinking_20251015",
+			},
+		},
+	}
+	clientCM := map[string]interface{}{
+		"edits": []interface{}{
+			map[string]interface{}{"keep": "thinking", "type": "some_other_edit"},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		body   map[string]interface{}
+		wantCM interface{}
+	}{
+		{
+			name: "thinking enabled, no cm → injected",
+			body: map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 8192},
+			},
+			wantCM: canonical,
+		},
+		{
+			name: "thinking adaptive, no cm → injected",
+			body: map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "adaptive"},
+			},
+			wantCM: canonical,
+		},
+		{
+			name: "thinking disabled → not injected",
+			body: map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "disabled"},
+			},
+			wantCM: nil,
+		},
+		{
+			name:   "no thinking field → not injected",
+			body:   map[string]interface{}{},
+			wantCM: nil,
+		},
+		{
+			name: "thinking enabled, client cm present → preserved",
+			body: map[string]interface{}{
+				"thinking":           map[string]interface{}{"type": "enabled"},
+				"context_management": clientCM,
+			},
+			wantCM: clientCM,
+		},
+		{
+			name: "thinking is not an object → not injected",
+			body: map[string]interface{}{
+				"thinking": "enabled",
+			},
+			wantCM: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := map[string]interface{}{}
+			for k, v := range tc.body {
+				body[k] = v
+			}
+			sanitizeRequestBodyInPlace(body)
+			got := body["context_management"]
+			if tc.wantCM == nil {
+				if got != nil {
+					t.Errorf("expected no context_management, got %#v", got)
+				}
+				return
+			}
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(tc.wantCM)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("context_management mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}

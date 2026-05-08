@@ -618,6 +618,42 @@ func sanitizeRequestBodyInPlace(parsed map[string]interface{}) {
 
 	// Remove tool_choice (Claude Code does not send it)
 	delete(parsed, "tool_choice")
+
+	// Inject context_management when thinking is enabled.
+	//
+	// In a 221-sample capture of real Claude CLI 2.1.126/132 traffic, every
+	// request with thinking.type ∈ {enabled, adaptive} carried exactly:
+	//   {"edits":[{"keep":"all","type":"clear_thinking_20251015"}]}
+	// and every request without thinking lacked context_management entirely.
+	// The "thinking enabled + no context_management" combination does not
+	// appear in real CLI traffic and is a third-party fingerprint signal.
+	injectContextManagementIfThinking(parsed)
+}
+
+// injectContextManagementIfThinking sets parsed["context_management"] to the
+// canonical Claude CLI default when thinking is enabled but the field is
+// absent. No-op when thinking is disabled, missing, or the field is already
+// present (client value wins).
+func injectContextManagementIfThinking(parsed map[string]interface{}) {
+	if _, present := parsed["context_management"]; present {
+		return
+	}
+	thinking, ok := parsed["thinking"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	tType, _ := thinking["type"].(string)
+	if tType != "enabled" && tType != "adaptive" {
+		return
+	}
+	parsed["context_management"] = map[string]interface{}{
+		"edits": []interface{}{
+			map[string]interface{}{
+				"keep": "all",
+				"type": "clear_thinking_20251015",
+			},
+		},
+	}
 }
 
 // maxCacheControlBlocks is the maximum number of cache_control blocks allowed
