@@ -372,13 +372,14 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	_, hadTemperature := parsed["temperature"]
 	_, hadToolChoice := parsed["tool_choice"]
 	_, hadTools := parsed["tools"]
-	sanitizeRequestBodyInPlace(parsed)
-	if hadTemperature || hadToolChoice || !hadTools {
+	injectedCM := sanitizeRequestBodyInPlace(parsed)
+	if hadTemperature || hadToolChoice || !hadTools || injectedCM {
 		observe.Logger(ctx).Debug("disguise: [layer 8] body sanitized",
 			"account", accountName,
 			"removed_temperature", hadTemperature,
 			"removed_tool_choice", hadToolChoice,
 			"injected_empty_tools", !hadTools,
+			"injected_context_management", injectedCM,
 		)
 	}
 
@@ -606,8 +607,9 @@ func injectMetadataUserIDInPlace(parsed map[string]interface{}, fixedClientID st
 }
 
 // sanitizeRequestBodyInPlace ensures the request body matches Claude Code client patterns.
-// Mutates parsed in-place. No marshaling.
-func sanitizeRequestBodyInPlace(parsed map[string]interface{}) {
+// Mutates parsed in-place. No marshaling. Returns whether the canonical
+// context_management default was injected so callers can log the event.
+func sanitizeRequestBodyInPlace(parsed map[string]interface{}) (injectedCM bool) {
 	// Ensure tools field exists (even as empty array)
 	if _, exists := parsed["tools"]; !exists {
 		parsed["tools"] = []interface{}{}
@@ -627,24 +629,24 @@ func sanitizeRequestBodyInPlace(parsed map[string]interface{}) {
 	// and every request without thinking lacked context_management entirely.
 	// The "thinking enabled + no context_management" combination does not
 	// appear in real CLI traffic and is a third-party fingerprint signal.
-	injectContextManagementIfThinking(parsed)
+	return injectContextManagementIfThinking(parsed)
 }
 
 // injectContextManagementIfThinking sets parsed["context_management"] to the
 // canonical Claude CLI default when thinking is enabled but the field is
 // absent. No-op when thinking is disabled, missing, or the field is already
-// present (client value wins).
-func injectContextManagementIfThinking(parsed map[string]interface{}) {
+// present (client value wins). Returns true iff it actually wrote a value.
+func injectContextManagementIfThinking(parsed map[string]interface{}) bool {
 	if _, present := parsed["context_management"]; present {
-		return
+		return false
 	}
 	thinking, ok := parsed["thinking"].(map[string]interface{})
 	if !ok {
-		return
+		return false
 	}
 	tType, _ := thinking["type"].(string)
 	if tType != "enabled" && tType != "adaptive" {
-		return
+		return false
 	}
 	parsed["context_management"] = map[string]interface{}{
 		"edits": []interface{}{
@@ -654,6 +656,7 @@ func injectContextManagementIfThinking(parsed map[string]interface{}) {
 			},
 		},
 	}
+	return true
 }
 
 // maxCacheControlBlocks is the maximum number of cache_control blocks allowed

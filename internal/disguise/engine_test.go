@@ -1409,11 +1409,14 @@ func TestSanitizeRequestBody_InjectContextManagement(t *testing.T) {
 			for k, v := range tc.body {
 				body[k] = v
 			}
-			sanitizeRequestBodyInPlace(body)
+			injected := sanitizeRequestBodyInPlace(body)
 			got := body["context_management"]
 			if tc.wantCM == nil {
 				if got != nil {
 					t.Errorf("expected no context_management, got %#v", got)
+				}
+				if injected {
+					t.Errorf("expected injected=false, got true")
 				}
 				return
 			}
@@ -1421,6 +1424,13 @@ func TestSanitizeRequestBody_InjectContextManagement(t *testing.T) {
 			wantJSON, _ := json.Marshal(tc.wantCM)
 			if string(gotJSON) != string(wantJSON) {
 				t.Errorf("context_management mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+			}
+			// injected should be true only when WE wrote a value, i.e. when
+			// the client did not already supply context_management.
+			_, clientHad := tc.body["context_management"]
+			wantInjected := !clientHad
+			if injected != wantInjected {
+				t.Errorf("injected=%v, want %v", injected, wantInjected)
 			}
 		})
 	}
