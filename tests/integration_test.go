@@ -132,7 +132,7 @@ func buildHandler(t *testing.T, cfg *config.Config, accounts []config.AccountCon
 	tracker := loadbalancer.NewConcurrencyTracker()
 	balancer := loadbalancer.NewBalancer(accounts, tracker)
 
-	disguiseEngine := disguise.NewEngine(t.TempDir())
+	disguiseEngine := disguise.NewEngine(t.TempDir(), nil)
 
 	// Create OAuth manager with pre-saved tokens for all accounts.
 	oauthMgr := buildIntegrationOAuthManager(t, accounts)
@@ -452,7 +452,7 @@ func TestIntegration_DisguiseApplied(t *testing.T) {
 	}
 
 	// Also verify the Engine directly applies headers.
-	engine := disguise.NewEngine(t.TempDir())
+	engine := disguise.NewEngine(t.TempDir(), nil)
 	origReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq, _ := http.NewRequest(http.MethodPost, upstream.srv.URL+"/v1/messages", nil)
 	upstreamReq.Header.Set("Content-Type", "application/json")

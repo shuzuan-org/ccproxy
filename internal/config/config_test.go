@@ -662,3 +662,74 @@ func TestRuntimeAccount(t *testing.T) {
 		t.Errorf("proxy = %q, want socks5://127.0.0.1:1080", acct.Proxy)
 	}
 }
+
+func validBaseConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			AdminPassword:       "pass",
+			Port:                3000,
+			MaxConcurrency:      1,
+			RequestTimeout:      1,
+			UpdateCheckInterval: "1h",
+			UpdateChannel:       "stable",
+		},
+		APIKeys: []APIKeyConfig{{Key: "sk-x", Name: "alice", Enabled: true}},
+	}
+}
+
+func TestValidate_AccountOverrides(t *testing.T) {
+	t.Parallel()
+	const validHex = "e7073098c4527edc7ca78d99ea8929817983cd0b981ba5c34c88bdb5366c0806"
+
+	cases := []struct {
+		name      string
+		overrides []AccountOverride
+		wantErr   bool
+	}{
+		{"none", nil, false},
+		{"single valid", []AccountOverride{{AccountName: "alice-home", ClientID: validHex}}, false},
+		{"two distinct", []AccountOverride{
+			{AccountName: "alice-home", ClientID: validHex},
+			{AccountName: "bob-prod", ClientID: "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef"},
+		}, false},
+		{"empty account_name", []AccountOverride{{AccountName: "", ClientID: validHex}}, true},
+		{"duplicate name", []AccountOverride{
+			{AccountName: "alice-home", ClientID: validHex},
+			{AccountName: "alice-home", ClientID: validHex},
+		}, true},
+		{"non-hex char", []AccountOverride{{AccountName: "x", ClientID: "g7073098c4527edc7ca78d99ea8929817983cd0b981ba5c34c88bdb5366c0806"}}, true},
+		{"too short", []AccountOverride{{AccountName: "x", ClientID: "deadbeef"}}, true},
+		{"uppercase rejected", []AccountOverride{{AccountName: "x", ClientID: "E7073098C4527EDC7CA78D99EA8929817983CD0B981BA5C34C88BDB5366C0806"}}, true},
+		{"empty client_id", []AccountOverride{{AccountName: "x", ClientID: ""}}, true},
+		{"override for unknown account allowed", []AccountOverride{{AccountName: "added-later", ClientID: validHex}}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validBaseConfig()
+			cfg.AccountOverrides = tc.overrides
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestAccountOverrideByName(t *testing.T) {
+	t.Parallel()
+	const cid = "e7073098c4527edc7ca78d99ea8929817983cd0b981ba5c34c88bdb5366c0806"
+	cfg := &Config{
+		AccountOverrides: []AccountOverride{
+			{AccountName: "alice-home", ClientID: cid},
+		},
+	}
+
+	if v, ok := cfg.AccountOverrideByName("alice-home"); !ok || v != cid {
+		t.Errorf("hit: got %q,%v want %q,true", v, ok, cid)
+	}
+	if v, ok := cfg.AccountOverrideByName("missing"); ok || v != "" {
+		t.Errorf("miss: got %q,%v want \"\",false", v, ok)
+	}
+}

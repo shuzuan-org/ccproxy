@@ -83,3 +83,29 @@ max_concurrency = 5  # hard limit per account; effective value is dynamically ad
 # Dashboard login:
 #   Admin:  username "admin", password = admin_password (read-only global view)
 #   Users:  username = api_key name, password = api_key password (manage own accounts)
+
+# ----------------------------------------------------------------------------
+# Account ClientID overrides (optional)
+# ----------------------------------------------------------------------------
+# Pin a specific account's disguise ClientID — used as the device_id field
+# inside metadata.user_id on every outbound /v1/messages request.
+#
+# Use case: when this ccproxy host also runs a real Claude Code client and you
+# want a particular proxy account to share device_id with that real client,
+# copy ~/.claude.json:userID into client_id below. This makes "real CLI direct
+# from this machine" and "this machine via ccproxy" appear as the same device
+# to Anthropic for that account, instead of two distinct devices.
+#
+# DO NOT share one client_id across multiple accounts — that maps multiple
+# OAuth subscriptions to a single device, which is precisely the cross-account
+# correlation pattern you want to avoid.
+#
+# Matching is by display name (account_name). If the account does not exist
+# yet, the override is applied lazily on first fingerprint creation.
+#
+# Removing an override does NOT revert to a random ClientID. To force a fresh
+# random ID, delete the matching entry from data/fingerprints.json.
+#
+# [[account_overrides]]
+# account_name = "alice-home"
+# client_id    = "<64 lowercase hex chars from ~/.claude.json:userID>"

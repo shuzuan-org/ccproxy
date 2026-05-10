@@ -35,9 +35,10 @@ type Engine struct {
 
 // NewEngine creates a new disguise engine with per-account fingerprint storage
 // and session masking. dataDir is the path to the persistent data directory.
-func NewEngine(dataDir string) *Engine {
+// overrides supplies optional per-account ClientID pinning; pass nil to opt out.
+func NewEngine(dataDir string, overrides ClientIDOverrideProvider) *Engine {
 	return &Engine{
-		fingerprints: NewFingerprintStore(dataDir),
+		fingerprints: NewFingerprintStoreWithOverrides(dataDir, overrides),
 		sessions:     NewSessionMaskStore(),
 		billingProbe: NewBillingHeaderObserver(),
 	}

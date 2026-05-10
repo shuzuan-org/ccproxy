@@ -6,16 +6,35 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
+// clientIDOverridePattern matches the 64-char lowercase hex ClientID format
+// produced by disguise.GenerateClientID — keep these in lockstep.
+var clientIDOverridePattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
 type Config struct {
-	Server  ServerConfig   `toml:"server"`
-	APIKeys []APIKeyConfig `toml:"api_keys"`
-	Pools   []PoolConfig   `toml:"pools"`
+	Server           ServerConfig      `toml:"server"`
+	APIKeys          []APIKeyConfig    `toml:"api_keys"`
+	Pools            []PoolConfig      `toml:"pools"`
+	AccountOverrides []AccountOverride `toml:"account_overrides"`
+}
+
+// AccountOverride pins a specific account's disguise ClientID (used as
+// metadata.user_id.device_id) to a fixed value. This lets the operator make
+// a real local Claude Code client and its corresponding proxy account share
+// the same device_id by copying ~/.claude.json:userID into client_id.
+//
+// Matched by display name against AccountRegistry — accounts can be added
+// later via the admin UI, so an override referencing a not-yet-existing
+// account is allowed and applied lazily on first fingerprint creation.
+type AccountOverride struct {
+	AccountName string `toml:"account_name"`
+	ClientID    string `toml:"client_id"`
 }
 
 type ServerConfig struct {
@@ -286,6 +305,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// account_overrides: pin specific accounts to a fixed disguise ClientID.
+	// Validate format only — existence in AccountRegistry is intentionally NOT
+	// checked, since accounts are added dynamically via admin UI.
+	overrideNames := make(map[string]bool, len(c.AccountOverrides))
+	for i, o := range c.AccountOverrides {
+		if o.AccountName == "" {
+			errs = append(errs, fmt.Errorf("account_overrides[%d]: account_name must not be empty", i))
+			continue
+		}
+		if overrideNames[o.AccountName] {
+			errs = append(errs, fmt.Errorf("account_overrides: duplicate account_name %q", o.AccountName))
+			continue
+		}
+		overrideNames[o.AccountName] = true
+		if !clientIDOverridePattern.MatchString(o.ClientID) {
+			errs = append(errs, fmt.Errorf("account_overrides[%q]: client_id must be 64 lowercase hex chars, got %q", o.AccountName, o.ClientID))
+		}
+	}
+
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -322,6 +360,17 @@ func SetupLogging(cfg *Config) {
 // IsEnabled returns true when the account is enabled.
 func (ac *AccountConfig) IsEnabled() bool {
 	return ac.Enabled
+}
+
+// AccountOverrideByName returns the configured ClientID override for the given
+// account display name, or "", false if no override is configured.
+func (c *Config) AccountOverrideByName(name string) (string, bool) {
+	for _, o := range c.AccountOverrides {
+		if o.AccountName == name {
+			return o.ClientID, true
+		}
+	}
+	return "", false
 }
 
 // RuntimeAccount builds a full AccountConfig from global settings + a registry entry.

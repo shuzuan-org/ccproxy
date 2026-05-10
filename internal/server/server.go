@@ -61,7 +61,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	balancer.StartPersistence(ctx, "data")
 
 	// 3. Create disguise engine.
-	disguiseEngine := disguise.NewEngine("data")
+	disguiseEngine := disguise.NewEngine("data", &clientIDOverrideAdapter{cfg: cfg, registry: registry})
 	disguiseEngine.StartSessionCleanup(ctx)
 	disguiseEngine.GetFingerprintStore().MigrateKeys(nameToID)
 
@@ -418,4 +418,24 @@ func (a *updateAdapter) Status() observe.UpdateStatus {
 		LatestVersion:  s.LatestVersion,
 		LastCheck:      s.LastCheck,
 	}
+}
+
+// clientIDOverrideAdapter resolves a fingerprint store's accountID-keyed
+// override lookups against the (config, registry) pair: registry maps the
+// dynamic accountID to the operator-facing display name, then config supplies
+// the override for that name.
+//
+// Read-through: account renames and registry add/remove take effect
+// automatically on the next fingerprint creation, with no SetOverrides hook.
+type clientIDOverrideAdapter struct {
+	cfg      *config.Config
+	registry *config.AccountRegistry
+}
+
+func (a *clientIDOverrideAdapter) Lookup(accountID string) (string, bool) {
+	acct, ok := a.registry.GetByID(accountID)
+	if !ok {
+		return "", false
+	}
+	return a.cfg.AccountOverrideByName(acct.Name)
 }

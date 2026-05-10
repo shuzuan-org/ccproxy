@@ -72,7 +72,7 @@ func extractSessionFromUserID(uid string) string {
 // newTestEngine creates a test Engine with a temp data directory.
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
-	return NewEngine(t.TempDir())
+	return NewEngine(t.TempDir(), nil)
 }
 
 // TestEngineApply_OAuthNonClaudeCode verifies all layers are applied

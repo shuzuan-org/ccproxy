@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -356,5 +357,135 @@ func TestLearnFromHeaders_OlderClientStillPinned(t *testing.T) {
 	}
 	if fp.StainlessOS != "Linux" {
 		t.Errorf("OS should track latest client machine, got %q", fp.StainlessOS)
+	}
+}
+
+// fakeOverrideProvider is a test-only ClientIDOverrideProvider backed by an
+// in-memory map. Concurrent access is serialized via sync.RWMutex so tests
+// can mutate the map mid-flight (e.g. simulate operator removing an override).
+type fakeOverrideProvider struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func newFakeOverrideProvider(m map[string]string) *fakeOverrideProvider {
+	return &fakeOverrideProvider{m: m}
+}
+
+func (p *fakeOverrideProvider) Lookup(accountID string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	v, ok := p.m[accountID]
+	return v, ok
+}
+
+func (p *fakeOverrideProvider) set(accountID, clientID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.m == nil {
+		p.m = make(map[string]string)
+	}
+	p.m[accountID] = clientID
+}
+
+func (p *fakeOverrideProvider) remove(accountID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.m, accountID)
+}
+
+const testOverrideClientID = "e7073098c4527edc7ca78d99ea8929817983cd0b981ba5c34c88bdb5366c0806"
+
+func TestOverride_AppliedOnNewAccount(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	provider := newFakeOverrideProvider(map[string]string{"alice": testOverrideClientID})
+
+	store := NewFingerprintStoreWithOverrides(dir, provider)
+	fp := store.Get("alice")
+	if fp.ClientID != testOverrideClientID {
+		t.Errorf("alice.ClientID = %q, want override value", fp.ClientID)
+	}
+
+	// Account without an override falls back to a random ClientID.
+	fpBob := store.Get("bob")
+	if fpBob.ClientID == testOverrideClientID {
+		t.Error("bob should NOT inherit alice's override")
+	}
+	if len(fpBob.ClientID) != 64 {
+		t.Errorf("bob.ClientID len = %d, want 64", len(fpBob.ClientID))
+	}
+}
+
+func TestOverride_LearnFromHeadersHonored(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	provider := newFakeOverrideProvider(map[string]string{"alice": testOverrideClientID})
+
+	store := NewFingerprintStoreWithOverrides(dir, provider)
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/2.1.130 (external, cli)")
+	headers.Set("X-Stainless-OS", "Linux")
+	headers.Set("X-Stainless-Arch", "x64")
+
+	store.LearnFromHeaders("alice", headers)
+	fp := store.Get("alice")
+	if fp.ClientID != testOverrideClientID {
+		t.Errorf("LearnFromHeaders dropped override: ClientID = %q", fp.ClientID)
+	}
+}
+
+func TestOverride_RebaseExistingFingerprintOnReload(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// First boot: no override → random ClientID generated and persisted.
+	store1 := NewFingerprintStore(dir)
+	fp1 := store1.Get("alice")
+	originalCID := fp1.ClientID
+	if originalCID == testOverrideClientID {
+		t.Fatal("precondition: random ClientID accidentally equals test override")
+	}
+
+	// Second boot: operator added an override for "alice" — load+rebase should
+	// rewrite the persisted ClientID without waiting for renew/expiry.
+	provider := newFakeOverrideProvider(map[string]string{"alice": testOverrideClientID})
+	store2 := NewFingerprintStoreWithOverrides(dir, provider)
+	fp2 := store2.Get("alice")
+	if fp2.ClientID != testOverrideClientID {
+		t.Errorf("rebase did not apply override: ClientID = %q, want %q", fp2.ClientID, testOverrideClientID)
+	}
+
+	// And the rewrite must be persisted, so a third boot without the override
+	// keeps the (now manually-pinned) ClientID rather than reverting to a new
+	// random value — matches the documented "removal does not regenerate"
+	// semantics.
+	store3 := NewFingerprintStore(dir)
+	fp3 := store3.Get("alice")
+	if fp3.ClientID != testOverrideClientID {
+		t.Errorf("after override removed, ClientID = %q, want previous override value preserved", fp3.ClientID)
+	}
+}
+
+func TestOverride_MigrateKeysAppliesOverride(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Simulate legacy state: fingerprint keyed by account name with a random
+	// ClientID, no overrides yet.
+	store1 := NewFingerprintStore(dir)
+	store1.Get("alice")
+
+	// Operator now adds override AND launches a build that performs the
+	// name→UUID migration. Override must apply to the migrated UUID key
+	// without waiting for 24h renewal.
+	const aliceID = "550e8400-e29b-41d4-a716-446655440000"
+	provider := newFakeOverrideProvider(map[string]string{aliceID: testOverrideClientID})
+	store2 := NewFingerprintStoreWithOverrides(dir, provider)
+	store2.MigrateKeys(map[string]string{"alice": aliceID})
+
+	fp := store2.Get(aliceID)
+	if fp.ClientID != testOverrideClientID {
+		t.Errorf("override not applied after MigrateKeys: ClientID = %q", fp.ClientID)
 	}
 }

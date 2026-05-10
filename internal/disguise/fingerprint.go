@@ -28,6 +28,18 @@ type Fingerprint struct {
 	UpdatedAt               int64  `json:"updated_at"`  // milliseconds
 }
 
+// ClientIDOverrideProvider supplies a fixed ClientID for specific accounts.
+// When configured (e.g. via config.toml's [[account_overrides]]), the matched
+// account's fingerprint ClientID is pinned to the provided value instead of
+// being randomly generated. Used to align a proxy account's metadata.user_id
+// device_id with a real local Claude Code client's ~/.claude.json:userID.
+//
+// Implementations must be safe for concurrent calls; the FingerprintStore may
+// invoke Lookup from any of its public methods.
+type ClientIDOverrideProvider interface {
+	Lookup(accountID string) (clientID string, ok bool)
+}
+
 // FingerprintStore manages per-account fingerprints with lazy renewal.
 // Fingerprints are persisted to disk and expire after maxAge of inactivity.
 type FingerprintStore struct {
@@ -36,15 +48,26 @@ type FingerprintStore struct {
 	fingerprints map[string]*Fingerprint // accountName → Fingerprint
 	maxAge       time.Duration           // 7 days since last use
 	renewAfter   time.Duration           // 24 hours
+	overrides    ClientIDOverrideProvider
 }
 
 // NewFingerprintStore loads or creates a fingerprint store from disk.
+// No ClientID overrides are applied — callers needing overrides should use
+// NewFingerprintStoreWithOverrides.
 func NewFingerprintStore(dataDir string) *FingerprintStore {
+	return NewFingerprintStoreWithOverrides(dataDir, nil)
+}
+
+// NewFingerprintStoreWithOverrides loads or creates a fingerprint store and
+// wires in a ClientIDOverrideProvider. When provider is nil, behaves
+// identically to NewFingerprintStore.
+func NewFingerprintStoreWithOverrides(dataDir string, overrides ClientIDOverrideProvider) *FingerprintStore {
 	s := &FingerprintStore{
 		path:         filepath.Join(dataDir, "fingerprints.json"),
 		fingerprints: make(map[string]*Fingerprint),
 		maxAge:       7 * 24 * time.Hour,
 		renewAfter:   24 * time.Hour,
+		overrides:    overrides,
 	}
 	s.load()
 	s.rebaseToDefaults()
@@ -82,7 +105,7 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 		}
 		if age > s.maxAge {
 			// Expired — regenerate
-			fp = generateFingerprint(now)
+			fp = s.newFingerprint(accountName, now)
 			s.fingerprints[accountName] = fp
 			_ = s.saveLocked()
 			slog.Debug("disguise/fingerprint: expired, regenerated",
@@ -103,7 +126,7 @@ func (s *FingerprintStore) Get(accountName string) *Fingerprint {
 	}
 
 	// New account — generate and persist
-	fp = generateFingerprint(now)
+	fp = s.newFingerprint(accountName, now)
 	s.fingerprints[accountName] = fp
 	_ = s.saveLocked()
 	slog.Debug("disguise/fingerprint: created for new account",
@@ -144,6 +167,10 @@ func (s *FingerprintStore) MigrateKeys(nameToID map[string]string) {
 			slog.Info("fingerprints: migrated keys to UUIDs", "count", len(nameToID))
 		}
 	}
+	// Re-apply overrides + UA tuple now that fingerprints are keyed by UUID.
+	// Without this, an override configured for a freshly migrated account
+	// would not take effect until the 24h renew or 7d expiry.
+	s.rebaseToDefaults()
 }
 
 func generateFingerprint(now time.Time) *Fingerprint {
@@ -157,6 +184,19 @@ func generateFingerprint(now time.Time) *Fingerprint {
 		CreatedAt:               now.UnixMilli(),
 		UpdatedAt:               now.UnixMilli(),
 	}
+}
+
+// newFingerprint builds a fresh fingerprint for accountName, applying any
+// configured ClientID override. Falls back to a freshly generated random
+// ClientID when no override is configured.
+func (s *FingerprintStore) newFingerprint(accountName string, now time.Time) *Fingerprint {
+	fp := generateFingerprint(now)
+	if s.overrides != nil {
+		if cid, ok := s.overrides.Lookup(accountName); ok {
+			fp.ClientID = cid
+		}
+	}
+	return fp
 }
 
 func (s *FingerprintStore) load() {
@@ -177,6 +217,12 @@ func (s *FingerprintStore) load() {
 // Per-account OS/Arch are preserved — those reflect the client machine,
 // not the CLI release, and have no interaction with cch.
 //
+// Also re-applies ClientID overrides to any persisted fingerprint whose
+// stored ClientID disagrees with the configured override. This handles the
+// "operator just added/changed an override" case without waiting for the
+// 24h renew or 7d expiry. Removing an override does NOT revert to a random
+// ClientID — that would surface to Anthropic as a sudden device change.
+//
 // Runs at startup, after load(), without holding the public lock (the
 // store is not yet shared).
 func (s *FingerprintStore) rebaseToDefaults() {
@@ -187,26 +233,49 @@ func (s *FingerprintStore) rebaseToDefaults() {
 		if fp == nil {
 			continue
 		}
-		if fp.UserAgent == tuple.UserAgent &&
-			fp.StainlessPackageVersion == tuple.StainlessPackageVersion &&
-			fp.StainlessRuntimeVersion == tuple.StainlessRuntimeVersion {
-			continue
+		entryChanged := false
+		if fp.UserAgent != tuple.UserAgent ||
+			fp.StainlessPackageVersion != tuple.StainlessPackageVersion ||
+			fp.StainlessRuntimeVersion != tuple.StainlessRuntimeVersion {
+			oldUA := fp.UserAgent
+			fp.UserAgent = tuple.UserAgent
+			fp.StainlessPackageVersion = tuple.StainlessPackageVersion
+			fp.StainlessRuntimeVersion = tuple.StainlessRuntimeVersion
+			entryChanged = true
+			slog.Debug("disguise/fingerprint: rebased to whitelist head on load",
+				"account", name,
+				"old_ua", oldUA,
+				"new_ua", fp.UserAgent,
+			)
 		}
-		oldUA := fp.UserAgent
-		fp.UserAgent = tuple.UserAgent
-		fp.StainlessPackageVersion = tuple.StainlessPackageVersion
-		fp.StainlessRuntimeVersion = tuple.StainlessRuntimeVersion
-		fp.UpdatedAt = now
-		changed = true
-		slog.Debug("disguise/fingerprint: rebased to whitelist head on load",
-			"account", name,
-			"old_ua", oldUA,
-			"new_ua", fp.UserAgent,
-		)
+		if s.overrides != nil {
+			if cid, ok := s.overrides.Lookup(name); ok && fp.ClientID != cid {
+				slog.Info("disguise/fingerprint: ClientID rebased to override",
+					"account", name,
+					"old_client_id_prefix", safeClientIDPrefix(fp.ClientID),
+					"new_client_id_prefix", safeClientIDPrefix(cid),
+				)
+				fp.ClientID = cid
+				entryChanged = true
+			}
+		}
+		if entryChanged {
+			fp.UpdatedAt = now
+			changed = true
+		}
 	}
 	if changed {
 		_ = s.saveLocked()
 	}
+}
+
+// safeClientIDPrefix returns a short prefix of a ClientID for logging without
+// disclosing the full value (which is treated as device-identifying).
+func safeClientIDPrefix(cid string) string {
+	if len(cid) <= 8 {
+		return cid
+	}
+	return cid[:8] + "..."
 }
 
 func (s *FingerprintStore) saveLocked() error {
@@ -243,7 +312,7 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 	if !exists {
 		// No fingerprint yet — create with whitelist tuple + observed
 		// machine attributes.
-		fp = createFromHeaders(headers, now)
+		fp = s.newFingerprintFromHeaders(accountName, headers, now)
 		s.fingerprints[accountName] = fp
 		_ = s.saveLocked()
 		slog.Debug("disguise/fingerprint: learned from CC client (new)",
@@ -272,6 +341,18 @@ func (s *FingerprintStore) LearnFromHeaders(accountName string, headers http.Hea
 			"new_ua", fp.UserAgent,
 		)
 	}
+}
+
+// newFingerprintFromHeaders is the override-aware wrapper around
+// createFromHeaders. See newFingerprint for the override semantics.
+func (s *FingerprintStore) newFingerprintFromHeaders(accountName string, headers http.Header, now time.Time) *Fingerprint {
+	fp := createFromHeaders(headers, now)
+	if s.overrides != nil {
+		if cid, ok := s.overrides.Lookup(accountName); ok {
+			fp.ClientID = cid
+		}
+	}
+	return fp
 }
 
 // createFromHeaders builds a Fingerprint from observed request headers,
