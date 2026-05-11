@@ -8,9 +8,11 @@ from cch_compute import cch_token
 CAPTURED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured")
 SALT = "59cf53e54c78"
 
-# Same 26 prefixes as Go's three_hex.go
+# Same 25 prefixes as Go's three_hex.go (post-2026-05-11: <command-name>
+# removed after binary analysis showed it is NOT isMeta in the slash-command
+# A6 call path).
 ISMETA_PREFIXES = [
-    "<system-reminder>", "<local-command-caveat>", "<command-name>",
+    "<system-reminder>", "<local-command-caveat>",
     "<local-command-stdout>",
     "Result of calling the ", "Called the ",
     "## Exited Plan Mode", "## Exited Auto Mode",

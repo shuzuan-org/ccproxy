@@ -15,7 +15,6 @@ func TestIsMetaText(t *testing.T) {
 		{"<system-reminder>\nSome injected reminder", true},
 		{"  <system-reminder>...", true}, // leading whitespace tolerated
 		{"<local-command-caveat>Caveat:", true},
-		{"<command-name>/clear</command-name>", true},
 		{"Result of calling the Read tool:\nfile contents", true},
 		{"Called the Bash tool with the following input: ls", true},
 		{"## Exited Plan Mode\n\nYou have exited", true},
@@ -24,6 +23,10 @@ func TestIsMetaText(t *testing.T) {
 		{"This session is being continued from another machine.", true},
 		{"The date has changed. Today is now ...", true},
 		{"<mcp-resource server=foo>", true},
+
+		// <command-name>...: NOT isMeta. The slash-command path emits this
+		// inside a non-isMeta A6 message (see three_hex.go comment block).
+		{"<command-name>/clear</command-name>", false},
 
 		// Real user inputs — must NOT match
 		{"say hi", false},

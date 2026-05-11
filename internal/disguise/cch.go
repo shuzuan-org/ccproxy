@@ -7,8 +7,8 @@
 // xxhash64: the 5 PRIME64 constants are the standard xxhash64 primes, but
 // the four lane initialization values v1..v4 are hardcoded ATTEST_KEYS
 // rather than seed-derived. Confirmed identical across Claude Code 2.1.114
-// — 2.1.126 (extracted from the binary's .rodata; V1..V4 are 32 contiguous
-// bytes that occur exactly once each).
+// — 2.1.138 (24 releases, keys at the same .rodata offset, byte-identical;
+// V1..V4 are 32 contiguous bytes that occur exactly once each).
 //
 // Standard `cespare/xxhash` cannot be used because it does not expose a way
 // to override v1..v4. The implementation here follows the standard xxhash64

@@ -54,9 +54,9 @@ const billingHeaderPrefix = "x-anthropic-billing-header"
 // memories) showed the actual situation:
 //
 //   - cch is keyed-xxhash64 over the entire body, with hardcoded
-//     ATTEST_KEYS that have stayed stable across 2.1.114 through 2.1.126
-//     (verified by binary diff). It is fully reproducible from wire
-//     bytes — see cch.go.
+//     ATTEST_KEYS that have stayed stable across 2.1.114 through 2.1.138
+//     (verified by binary diff across 24 releases). It is fully
+//     reproducible from wire bytes — see cch.go.
 //
 //   - The 3hex algorithm did not actually drift. What changed at 2.1.105
 //     was the introduction of an isMeta filter that skips system-injected

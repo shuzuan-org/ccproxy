@@ -3,7 +3,8 @@
 Algorithm: keyed xxhash64 with hardcoded v1..v4 init values (not seed-derived).
 Output: lower 20 bits formatted as 5 lowercase hex chars.
 
-Verified against Claude Code 2.1.114 - 2.1.126 (same ATTEST_KEYS across all).
+Verified against Claude Code 2.1.114 - 2.1.138 (same ATTEST_KEYS across all
+24 releases; binary diff at .rodata 0x039a49d0).
 """
 import struct
 

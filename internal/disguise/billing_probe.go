@@ -87,7 +87,7 @@ const billingProbeSeenCap = 1000
 // billingFingerprintSalt is the kM3 constant in the Claude CLI binary,
 // used by both the historical observer-replica below AND the production
 // 3hex computation in three_hex.go. Verified stable from 2.1.114 through
-// 2.1.126; if Anthropic ever rotates it, both this observer and three_hex
+// 2.1.138; if Anthropic ever rotates it, both this observer and three_hex
 // need updating in lockstep.
 const (
 	billingFingerprintSalt = "59cf53e54c78"

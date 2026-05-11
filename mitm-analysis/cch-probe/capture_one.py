@@ -1,4 +1,4 @@
-"""Capture a single Claude Code request to verify cch with current 2.1.126 ATTEST_KEYS.
+"""Capture a single Claude Code request to verify cch with current ATTEST_KEYS (validated 2.1.114-2.1.138).
 
 Run on port 8888, captures the first /v1/messages request body to fresh_sample.bin.
 """

@@ -83,19 +83,28 @@ import (
 // "first user message" selector.
 //
 // Derived from 28 distinct content patterns at every isMeta:!0 call site
-// in the 2.1.126 binary (see project_3hex_unreplicable.md memory). When
-// claude-code adds new injection types or renames existing ones, rerun
-// the binary scan and update this list — see scripts/extract_isMeta_patterns
-// (TODO).
+// in the 2.1.126 binary, re-validated against the 2.1.138 binary (103
+// isMeta:!0 sites; same set with one new ultrareview wrapper that uses
+// a runtime-templated tag name). See feedback_ismeta_command_name_not_meta.md
+// memory for the correct maintenance flow: the judge of isMeta is whether
+// the A6({content, isMeta:!0}) call literally sets the flag, NOT whether
+// the text appears near an isMeta:!0 site. When claude-code adds new
+// injection types, rerun verify_captured.py first; let captured failures
+// drive prefix changes, not raw binary grep.
 var isMetaTextPrefixes = []string{
 	// System-reminder envelopes (most common): MCP instructions, available
 	// skills, context injection, dynamic memory hints, env block, ...
 	"<system-reminder>",
 
-	// Slash-command wrappers — wire body has the local-command-caveat
-	// envelope around them.
+	// Slash-command caveat wrapper — wire body has the local-command-caveat
+	// envelope around them. NOTE: <command-name> itself is NOT isMeta in the
+	// internal JS model — the slash-command path emits A6({content: J}) with
+	// NO isMeta flag for the <command-name>/<command-message>/<command-args>
+	// wrapper (see Ws7/iE7 in claude-cli 2.1.138 binary at 0xb7ab1fd). Only
+	// the <local-command-caveat> message is isMeta. Verified 2026-05-11:
+	// removing <command-name> from this list lifted 3hex pass rate from
+	// 355/564 to 580/602 across captured samples.
 	"<local-command-caveat>",
-	"<command-name>",
 	"<local-command-stdout>",
 
 	// Tool-result text wrappers (when claude-code converts a structured
