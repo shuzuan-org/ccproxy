@@ -27,12 +27,32 @@ const (
 	maxRetryElapsed        = 10 * time.Second
 )
 
-// ClassifyError returns the appropriate action for an upstream HTTP status code.
+// ClassifyError returns the appropriate action for an upstream HTTP status code
+// without response-header context. Equivalent to ClassifyErrorWithHeaders with
+// nil headers: a 429 is treated as a true (quota) 429 and fails over immediately.
 func ClassifyError(statusCode int) FailureAction {
+	return ClassifyErrorWithHeaders(statusCode, nil)
+}
+
+// ClassifyErrorWithHeaders returns the appropriate action for an upstream status
+// code, using response headers to distinguish a fake 429 (transient overload,
+// no rate-limit reset headers) from a true 429 (quota exhausted, carries reset
+// headers). A fake 429 is worth retrying on the same account; a true 429 is not.
+func ClassifyErrorWithHeaders(statusCode int, headers http.Header) FailureAction {
 	switch {
 	case statusCode == 400:
 		return ReturnToClient
-	case statusCode == 401 || statusCode == 403 || statusCode == 429 || statusCode == 529:
+	case statusCode == 429:
+		// True 429 (quota) carries reset headers — failover immediately.
+		// Fake 429 (transient) has no reset headers — retry same account first.
+		if hasResetHeaders(headers) {
+			return FailoverImmediate
+		}
+		return RetryThenFailover
+	case statusCode == 529:
+		// Upstream overload — allow a short retry before failover/cooldown.
+		return RetryThenFailover
+	case statusCode == 401 || statusCode == 403:
 		return FailoverImmediate
 	case statusCode >= 500 && statusCode <= 504:
 		return RetryThenFailover
@@ -41,6 +61,48 @@ func ClassifyError(statusCode int) FailureAction {
 			return ReturnToClient
 		}
 		return FailoverImmediate
+	}
+}
+
+// hasResetHeaders reports whether the response carries Anthropic rate-limit reset
+// headers, which mark a true (quota) 429 as opposed to a transient fake 429.
+func hasResetHeaders(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	return headers.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
+		headers.Get("anthropic-ratelimit-unified-7d-reset") != ""
+}
+
+// retryBudget returns the max same-account attempts for a status code before
+// failing over (counting the first attempt). The mid-loop counter starts at 1
+// on the first failure, so a budget of N allows N-1 extra retries. Fake 429 gets
+// 3 (2 retries), 529 gets 2 (1 retry), 500-504 keep the default.
+func retryBudget(statusCode int, headers http.Header) int {
+	switch {
+	case statusCode == 429 && !hasResetHeaders(headers):
+		return 3
+	case statusCode == 529:
+		return 2
+	default:
+		return maxSameAccountRetries
+	}
+}
+
+// retryDelayFor returns the backoff delay before a same-account retry for the
+// given status code and 0-based attempt. Fake 429 uses 500ms→1s, 529 uses 1.5s,
+// and everything else falls back to the exponential RetryDelay.
+func retryDelayFor(statusCode int, headers http.Header, attempt int) time.Duration {
+	switch {
+	case statusCode == 429 && !hasResetHeaders(headers):
+		if attempt <= 0 {
+			return 500 * time.Millisecond
+		}
+		return 1 * time.Second
+	case statusCode == 529:
+		return 1500 * time.Millisecond
+	default:
+		return RetryDelay(attempt)
 	}
 }
 
@@ -123,7 +185,12 @@ func ExecuteWithRetry(
 		switched := false
 		observe.Logger(ctx).Debug("selected account", "account", accountName, "switch", switchCount)
 
-		for sameAccountRetries < maxSameAccountRetries {
+		// The inner loop terminates via explicit branches: ReturnToClient returns,
+		// FailoverImmediate and budget-exhausted RetryThenFailover set `switched`
+		// and break. The per-status retryBudget is the single source of truth for
+		// how many same-account attempts are allowed — do not add a second bound
+		// on sameAccountRetries here, or it will silently override the budget.
+		for {
 			// Check context cancellation
 			if ctx.Err() != nil {
 				result.Release()
@@ -160,14 +227,14 @@ func ExecuteWithRetry(
 				}, nil
 			}
 
-			action := ClassifyError(statusCode)
-			retryAfter := parseRetryAfterHeader(resp)
-
-			// Extract response headers for budget tracking
+			// Extract response headers for budget tracking and 429 classification.
 			var respHeaders http.Header
 			if resp != nil {
 				respHeaders = resp.Header
 			}
+
+			action := ClassifyErrorWithHeaders(statusCode, respHeaders)
+			retryAfter := parseRetryAfterHeader(resp)
 
 			switch action {
 			case ReturnToClient:
@@ -187,54 +254,31 @@ func ExecuteWithRetry(
 				}, nil
 
 			case FailoverImmediate:
-				// Special handling per status code
+				// Special handling per status code. Note: 529 and fake 429 are
+				// classified as RetryThenFailover, so only true 429 (with reset
+				// headers), 401, and 403 reach here.
 				switch statusCode {
 				case 429:
 					observe.Global.Accounts429.Add(1)
 					observe.Global.Account(accountID).Errors429.Add(1)
-					hasResetHeaders := respHeaders != nil &&
-						(respHeaders.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
-							respHeaders.Get("anthropic-ratelimit-unified-7d-reset") != "")
 					observe.Logger(ctx).Warn("failover: rate limited",
 						"account", accountName,
-						"has_reset_headers", hasResetHeaders,
+						"has_reset_headers", hasResetHeaders(respHeaders),
 						"switch", switchCount+1,
 					)
-				case 529:
-					observe.Global.Accounts529.Add(1)
-					observe.Global.Account(accountID).Errors529.Add(1)
-					total529s++
-					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
-					if total529s >= 2 {
-						// Multiple accounts returning 529 — system-wide overload, stop retrying
-						observe.Logger(ctx).Warn("consecutive 529s across accounts, returning to client",
-							"account", accountName, "count", total529s)
-						result.Release()
-						return &RetryResult{
-							Response:       resp,
-							StatusCode:     529,
-							AccountID:      accountID,
-							AccountName:    accountName,
-							AccountsTried:  accountsTried,
-							Retries:        retries,
-							Failovers:      failovers,
-						}, nil
-					}
 				case 401:
 					if callbacks.OnTokenRefreshNeeded != nil {
 						callbacks.OnTokenRefreshNeeded(ctx, accountID)
 					}
 				}
 
-				if statusCode != 529 { // 529 already reported above
-					observe.Logger(ctx).Warn("failover immediate",
-						"account", accountName,
-						"status", statusCode,
-						"switch", switchCount+1,
-						"retry_after", retryAfter.String(),
-					)
-					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
-				}
+				observe.Logger(ctx).Warn("failover immediate",
+					"account", accountName,
+					"status", statusCode,
+					"switch", switchCount+1,
+					"retry_after", retryAfter.String(),
+				)
+				balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
 
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
@@ -248,6 +292,7 @@ func ExecuteWithRetry(
 				observe.Global.FailoversTotal.Add(1)
 
 			case RetryThenFailover:
+				budget := retryBudget(statusCode, respHeaders)
 				sameAccountRetries++
 				retries++
 				observe.Global.RetriesTotal.Add(1)
@@ -255,13 +300,41 @@ func ExecuteWithRetry(
 					"account", accountName,
 					"status", statusCode,
 					"attempt", sameAccountRetries,
-					"max_attempts", maxSameAccountRetries,
+					"max_attempts", budget,
 				)
-				if sameAccountRetries >= maxSameAccountRetries {
+				if sameAccountRetries >= budget {
+					// Exhausted same-account retries — report (triggers cooldown
+					// + budget tracking) and fail over to the next account. Record
+					// the per-status observe counters here, since fake 429 / 529
+					// reach failover through this path rather than FailoverImmediate.
+					switch statusCode {
+					case 429:
+						observe.Global.Accounts429.Add(1)
+						observe.Global.Account(accountID).Errors429.Add(1)
+					case 529:
+						observe.Global.Accounts529.Add(1)
+						observe.Global.Account(accountID).Errors529.Add(1)
+						total529s++
+					}
 					if resp != nil && resp.Body != nil {
 						_ = resp.Body.Close()
 					}
 					balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
+					if statusCode == 529 && total529s >= 2 {
+						// Multiple accounts overloaded — system-wide, stop retrying.
+						observe.Logger(ctx).Warn("consecutive 529s across accounts, returning to client",
+							"account", accountName, "count", total529s)
+						result.Release()
+						return &RetryResult{
+							Response:       resp,
+							StatusCode:     529,
+							AccountID:      accountID,
+							AccountName:    accountName,
+							AccountsTried:  accountsTried,
+							Retries:        retries,
+							Failovers:      failovers,
+						}, nil
+					}
 					result.Release()
 					failedAccounts[accountID] = true
 					balancer.ClearSession(sessionKey)
@@ -271,14 +344,13 @@ func ExecuteWithRetry(
 					observe.Global.FailoversTotal.Add(1)
 					break
 				}
-				// Report the failed attempt (but don't trigger failover yet).
-				balancer.ReportResult(ctx, accountID, statusCode, attemptLatency, retryAfter, respHeaders)
-				// Close previous response body before retrying.
+				// Mid-retry attempt: deliberately skip ReportResult so the account
+				// is NOT cooled down while we still intend to retry it. A fake 429
+				// or transient 529 that succeeds on retry leaves health untouched.
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
-				// Exponential backoff before retry
-				delay := RetryDelay(sameAccountRetries - 1)
+				delay := retryDelayFor(statusCode, respHeaders, sameAccountRetries-1)
 				timer := time.NewTimer(delay)
 				select {
 				case <-ctx.Done():

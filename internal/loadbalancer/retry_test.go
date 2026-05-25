@@ -24,10 +24,12 @@ func TestClassifyError_401(t *testing.T) {
 	}
 }
 
-// Test 3: ClassifyError(429) → FailoverImmediate
+// Test 3: ClassifyError(429) with no headers → RetryThenFailover (fake 429).
+// A bare 429 has no rate-limit reset headers, so it is treated as a transient
+// fake 429 and retried on the same account before failover.
 func TestClassifyError_429(t *testing.T) {
-	if got := ClassifyError(429); got != FailoverImmediate {
-		t.Errorf("expected FailoverImmediate for 429, got %v", got)
+	if got := ClassifyError(429); got != RetryThenFailover {
+		t.Errorf("expected RetryThenFailover for headerless 429, got %v", got)
 	}
 }
 
@@ -38,10 +40,82 @@ func TestClassifyError_503(t *testing.T) {
 	}
 }
 
-// Test 5: ClassifyError(529) → FailoverImmediate
+// Test 5: ClassifyError(529) → RetryThenFailover (short retry before cooldown).
 func TestClassifyError_529(t *testing.T) {
-	if got := ClassifyError(529); got != FailoverImmediate {
-		t.Errorf("expected FailoverImmediate for 529, got %v", got)
+	if got := ClassifyError(529); got != RetryThenFailover {
+		t.Errorf("expected RetryThenFailover for 529, got %v", got)
+	}
+}
+
+// Test 5b: ClassifyErrorWithHeaders distinguishes fake vs true 429.
+func TestClassifyErrorWithHeaders(t *testing.T) {
+	trueHeaders := http.Header{"Anthropic-Ratelimit-Unified-5h-Reset": []string{"1700000000"}}
+
+	cases := []struct {
+		name    string
+		status  int
+		headers http.Header
+		want    FailureAction
+	}{
+		{"fake 429 nil headers", 429, nil, RetryThenFailover},
+		{"fake 429 empty headers", 429, http.Header{}, RetryThenFailover},
+		{"true 429 with reset", 429, trueHeaders, FailoverImmediate},
+		{"529", 529, nil, RetryThenFailover},
+		{"401", 401, nil, FailoverImmediate},
+		{"503", 503, nil, RetryThenFailover},
+		{"400", 400, nil, ReturnToClient},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyErrorWithHeaders(tc.status, tc.headers); got != tc.want {
+				t.Errorf("ClassifyErrorWithHeaders(%d): expected %v, got %v", tc.status, tc.want, got)
+			}
+		})
+	}
+}
+
+// Test 5c: retryBudget per status code.
+func TestRetryBudget(t *testing.T) {
+	trueHeaders := http.Header{"Anthropic-Ratelimit-Unified-7d-Reset": []string{"1700000000"}}
+	cases := []struct {
+		name    string
+		status  int
+		headers http.Header
+		want    int
+	}{
+		{"fake 429", 429, nil, 3},
+		{"true 429", 429, trueHeaders, maxSameAccountRetries},
+		{"529", 529, nil, 2},
+		{"503", 503, nil, maxSameAccountRetries},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryBudget(tc.status, tc.headers); got != tc.want {
+				t.Errorf("retryBudget(%d): expected %d, got %d", tc.status, tc.want, got)
+			}
+		})
+	}
+}
+
+// Test 5d: retryDelayFor per status code and attempt.
+func TestRetryDelayFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		attempt int
+		want    time.Duration
+	}{
+		{"fake 429 attempt0", 429, 0, 500 * time.Millisecond},
+		{"fake 429 attempt1", 429, 1, 1 * time.Second},
+		{"529 attempt0", 529, 0, 1500 * time.Millisecond},
+		{"503 falls back to RetryDelay", 503, 0, 300 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryDelayFor(tc.status, nil, tc.attempt); got != tc.want {
+				t.Errorf("retryDelayFor(%d, %d): expected %v, got %v", tc.status, tc.attempt, tc.want, got)
+			}
+		})
 	}
 }
 
@@ -191,6 +265,61 @@ func TestExecuteWithRetry_429Failover(t *testing.T) {
 	}
 	if totalCalls < 2 {
 		t.Errorf("expected at least 2 total calls (failover), got %d", totalCalls)
+	}
+}
+
+// Test 10b: fake 429 then success → same-account retry succeeds WITHOUT cooling
+// down the account (mid-retry attempts skip ReportResult).
+func TestExecuteWithRetry_Fake429RetriesNoCooldown(t *testing.T) {
+	b := newRetryBalancer("inst1")
+
+	calls := 0
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
+		calls++
+		if calls == 1 {
+			// Fake 429: no rate-limit reset headers.
+			return &http.Response{StatusCode: 429, Header: http.Header{}}, 429, nil
+		}
+		return okResponse(), 200, nil
+	}
+
+	result, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("expected 200 after same-account retry, got %d", result.StatusCode)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls (1 fake 429 + 1 success), got %d", calls)
+	}
+	// The account must NOT be in cooldown — the retry succeeded before exhaustion.
+	if h := b.GetHealth("inst1-id"); h != nil && !h.IsAvailable() {
+		t.Errorf("account should remain available (not cooled down) after a retried fake 429")
+	}
+}
+
+// Test 10c: 529 retried once then still 529 → fails over and cools down the account.
+func TestExecuteWithRetry_529RetryThenCooldown(t *testing.T) {
+	b := newRetryBalancer("inst1")
+
+	calls := 0
+	fn := func(acct config.AccountConfig, reqID string) (*http.Response, int, error) {
+		calls++
+		return &http.Response{StatusCode: 529, Header: http.Header{}}, 529, nil
+	}
+
+	_, err := ExecuteWithRetry(context.Background(), b, "", nil, false, noCallbacks, fn)
+	if err == nil {
+		t.Fatal("expected error when single account stays 529")
+	}
+	// 529 budget is 1 retry → 2 attempts on the one account.
+	if calls != 2 {
+		t.Errorf("expected 2 calls (1 retry for 529), got %d", calls)
+	}
+	// After exhausting retries the account must be cooled down.
+	if h := b.GetHealth("inst1-id"); h == nil || h.IsAvailable() {
+		t.Errorf("account should be in cooldown after exhausted 529 retries")
 	}
 }
 

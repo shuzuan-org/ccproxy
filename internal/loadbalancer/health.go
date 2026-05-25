@@ -18,7 +18,7 @@ const (
 	healthWindowSize   = 5 * time.Minute  // sliding window for error rate
 	healthWindowMaxCap = 1000             // max entries per window slice
 	cooldown429        = 30 * time.Second // default cooldown for 429 (fake, no reset headers)
-	cooldown529        = 60 * time.Second // default cooldown for 529
+	cooldown529        = 15 * time.Second // default cooldown for 529 (after same-account retry exhausted)
 	cooldown401        = 30 * time.Second // wait for token refresh
 	cooldown401Disable = 5 * time.Minute  // disable threshold window for 401
 	timeoutThreshold   = 3               // consecutive timeouts before cooldown
@@ -126,7 +126,7 @@ func (h *AccountHealth) RecordError(ctx context.Context, statusCode int, retryAf
 		}
 
 	case 529:
-		jitter := time.Duration(rand.Int63n(int64(15 * time.Second)))
+		jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
 		cd := cooldown529 + jitter
 		observe.Logger(ctx).Warn("account overloaded", "account", h.Name, "cooldown", cd.String())
 		h.setCooldownWithTracking(cd, "overloaded")
