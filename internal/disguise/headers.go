@@ -8,8 +8,8 @@ import "net/http"
 // tuple from the first CC request, so DefaultHeaders only matters for
 // cold-start (an account that has never seen a real CC client).
 //
-// Version aligned with Claude CLI 2.1.138 observed traffic (cccc-mitm
-// capture 2026-05-11: 33/33 cch pass, ATTEST_KEYS unchanged from 2.1.132).
+// Version aligned with Claude CLI 2.1.150 observed traffic (cccc-mitm
+// capture 2026-05-25: 17/17 cch pass, 17/17 3hex pass, ATTEST_KEYS unchanged).
 //
 // IMPORTANT: the four fields below are a tightly-coupled tuple — each
 // published Claude CLI release bundles one specific combination of (UA,
@@ -23,11 +23,11 @@ import "net/http"
 //   - X-Stainless-Runtime-Version (Node version bundled with that CLI)
 //   - anthropic-beta set          (see baseBetasNonHaiku / baseBetasHaiku in beta.go)
 //
-// The 2.1.138 tuple is: UA 2.1.138 + SDK 0.93.0 + Node v24.3.0.
-// (SDK bumped from 0.81.0; Runtime unchanged from 2.1.132.)
+// The 2.1.150 tuple is: UA 2.1.150 + SDK 0.94.0 + Node v24.3.0.
+// (SDK bumped from 0.93.0; Runtime unchanged from 2.1.132.)
 var DefaultHeaders = map[string]string{
-	"User-Agent":                  "claude-cli/2.1.138 (external, cli)",
-	"X-Stainless-Package-Version": "0.93.0",
+	"User-Agent":                  "claude-cli/2.1.150 (external, cli)",
+	"X-Stainless-Package-Version": "0.94.0",
 	"X-Stainless-OS":              "MacOS",
 	"X-Stainless-Arch":            "arm64",
 	"X-Stainless-Runtime-Version": "v24.3.0",
