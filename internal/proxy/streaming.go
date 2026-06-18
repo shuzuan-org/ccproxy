@@ -23,6 +23,8 @@ type UsageInfo struct {
 	CacheReadInputTokens     int64
 	SSEError                 bool
 	SSEErrorData             string
+	SSEErrorEarly            bool   // true if error occurred before any data was sent to client
+	SSEErrorType             string // extracted error type (e.g., "rate_limit_error", "overloaded_error")
 }
 
 // sseEvent represents a single Server-Sent Event.
@@ -58,17 +60,20 @@ var sseBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
 
 // ForwardSSE reads SSE events from upstream and writes them verbatim to downstream.
 // It parses message_start and message_delta events to accumulate token usage.
+// If an error event is detected as the FIRST event before any data, it returns early
+// with SSEErrorEarly=true, signaling to the caller that the request should be retried.
+// For errors after content has started, they are forwarded to the client.
 // Forwarding stops when upstream is exhausted or ctx is cancelled.
 func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.ResponseWriter, originalModel string) (*UsageInfo, error) {
 	usage := &UsageInfo{}
+	headersSent := false
+	contentSent := false // track if we've written actual message content (not just meta)
 
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 
-	// Pre-assert Flusher at entry instead of per-event type assertion
 	flusher, canFlush := downstream.(http.Flusher)
 
-	// Use []byte buffers to avoid string→[]byte conversion on Unmarshal
 	var currentEvent strings.Builder
 	var currentData bytes.Buffer
 
@@ -87,7 +92,7 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 			return nil
 		}
 
-		// Parse usage from known event types before forwarding.
+		// Parse usage and error status.
 		switch event {
 		case "message_start":
 			var p messageStartPayload
@@ -101,7 +106,7 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 					"cache_read", p.Message.Usage.CacheReadInputTokens,
 				)
 			}
-			// Reverse-map model ID so downstream sees the original short name.
+			// Reverse-map model ID.
 			if originalModel != "" {
 				normalized := disguise.NormalizeModelID(originalModel)
 				if normalized != originalModel {
@@ -112,6 +117,8 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 					)
 				}
 			}
+			contentSent = true
+			headersSent = true
 		case "message_delta":
 			var p messageDeltaPayload
 			if err := json.Unmarshal(data, &p); err == nil {
@@ -120,13 +127,42 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 					"output_tokens", p.Usage.OutputTokens,
 				)
 			}
+			contentSent = true
+			headersSent = true
+		case "message_stop":
+			// Metadata event, doesn't count as content
+			headersSent = true
 		case "error":
+			// Extract error type from data.
+			var errData map[string]interface{}
+			if err := json.Unmarshal(data, &errData); err == nil {
+				if errType, ok := errData["type"].(string); ok {
+					usage.SSEErrorType = errType
+				}
+			}
 			usage.SSEError = true
 			usage.SSEErrorData = string(data)
-			observe.Logger(ctx).Warn("SSE error event received", "data", string(data))
+
+			// If error is the first event before any content, mark as early.
+			if !contentSent && !headersSent {
+				usage.SSEErrorEarly = true
+				observe.Logger(ctx).Warn("SSE: early error (no content sent)",
+					"error_type", usage.SSEErrorType,
+					"data", string(data))
+				// Don't forward, return early so caller can retry
+				currentEvent.Reset()
+				currentData.Reset()
+				return nil
+			}
+
+			observe.Logger(ctx).Warn("SSE: error after content",
+				"error_type", usage.SSEErrorType,
+				"data", string(data))
+			// Error after content — must forward (can't change HTTP status now)
+			headersSent = true
 		}
 
-		// Merge 3 writes into 1 buffered write
+		// Write to downstream
 		buf.Reset()
 		if event != "" {
 			fmt.Fprintf(buf, "event: %s\n", event)
@@ -148,7 +184,6 @@ func ForwardSSE(ctx context.Context, upstream io.Reader, downstream http.Respons
 			flusher.Flush()
 		}
 
-		// Reset buffers for the next event.
 		currentEvent.Reset()
 		currentData.Reset()
 		return nil

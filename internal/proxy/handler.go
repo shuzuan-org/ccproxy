@@ -352,6 +352,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Error("SSE forwarding error", "error", err)
 		} else {
 			usage = u
+			// Early error detected: stream was aborted before any content.
+			// This is a retryable condition.
+			if usage.SSEError && usage.SSEErrorEarly {
+				log.Warn("SSE early error — stream aborted before content",
+					"account", result.AccountName,
+					"error_type", usage.SSEErrorType,
+					"data", usage.SSEErrorData)
+				// Account penalty: temp suspend for rate_limit_error
+				if usage.SSEErrorType == "rate_limit_error" {
+					if health := h.balancer.GetHealth(result.AccountID); health != nil {
+						health.Disable("sse_early_rate_limit")
+						log.Info("account temporarily disabled due to SSE rate limit")
+					}
+				}
+			}
 		}
 	} else {
 		// Step 8: Non-streaming response — copy body and extract usage from JSON.
