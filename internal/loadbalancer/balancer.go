@@ -23,7 +23,7 @@ var (
 const sessionTTL = 1 * time.Hour
 
 type SessionInfo struct {
-	AccountID string
+	AccountID   string
 	LastRequest time.Time
 }
 
@@ -180,7 +180,7 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, scope *
 							if rate < 100 {
 								if release, ok := b.tracker.Acquire(acct.ID, requestID, effectiveMax); ok {
 									b.sessions.Store(sessionKey, &SessionInfo{
-										AccountID: si.AccountID,
+										AccountID:   si.AccountID,
 										LastRequest: time.Now(),
 									})
 									observe.Logger(ctx).Debug("balancer: sticky session hit",
@@ -255,19 +255,19 @@ func (b *Balancer) SelectAccount(ctx context.Context, sessionKey string, scope *
 				continue
 			}
 			if state == StateStickyOnly {
-                activeCount := b.activeStickySessionCount(acct.ID)
-                if activeCount >= acct.MaxConcurrency {
-                    observe.Logger(ctx).Debug("balancer: account filtered",
-                        "account", acct.Name,
-                        "reason", "sticky_only at session limit",
-                        "active_sessions", activeCount,
-                        "max_concurrency", acct.MaxConcurrency,
-                    )
-                    filteredBudget++
-                    continue
-                }
-            }
-        }
+				activeCount := b.activeStickySessionCount(acct.ID)
+				if activeCount >= acct.MaxConcurrency {
+					observe.Logger(ctx).Debug("balancer: account filtered",
+						"account", acct.Name,
+						"reason", "sticky_only at session limit",
+						"active_sessions", activeCount,
+						"max_concurrency", acct.MaxConcurrency,
+					)
+					filteredBudget++
+					continue
+				}
+			}
+		}
 
 		effectiveMax := acct.MaxConcurrency
 		if h != nil {
@@ -407,7 +407,7 @@ func (b *Balancer) BindSession(sessionKey, accountID string) {
 		return
 	}
 	b.sessions.Store(sessionKey, &SessionInfo{
-		AccountID: accountID,
+		AccountID:   accountID,
 		LastRequest: time.Now(),
 	})
 	slog.Debug("session: bound", "account_id", accountID, "session_key", sessionKey)

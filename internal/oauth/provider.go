@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,11 +18,11 @@ import (
 
 // Anthropic OAuth constants — hardcoded, these do not change.
 const (
-	ClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	AuthURL     = "https://claude.ai/oauth/authorize"
+	ClientID        = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	AuthURL         = "https://claude.ai/oauth/authorize"
 	DefaultTokenURL = "https://platform.claude.com/v1/oauth/token"
-	RedirectURI = "https://platform.claude.com/oauth/code/callback"
-	Scopes      = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers"
+	RedirectURI     = "https://platform.claude.com/oauth/code/callback"
+	Scopes          = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers"
 )
 
 type AnthropicProvider struct {
@@ -113,13 +114,27 @@ func (p *AnthropicProvider) RefreshToken(ctx context.Context, refreshToken, prox
 	return token, nil
 }
 
+// bodyKeys returns the sorted key names of an OAuth request body for safe
+// logging. Values (refresh_token, code, client_secret, ...) are never included.
+func bodyKeys(body map[string]any) []string {
+	keys := make([]string, 0, len(body))
+	for k := range body {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (p *AnthropicProvider) tokenRequest(ctx context.Context, body map[string]any, proxyURL string) (*OAuthToken, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 
-	slog.Debug("oauth: token request body", "body", string(jsonBody), "url", p.tokenURL)
+	// Never log the marshaled body — it carries refresh_token / authorization
+	// code in plaintext (see CLAUDE.md: never log raw token values). Log only
+	// the non-sensitive keys present and the target URL for debugging.
+	slog.Debug("oauth: token request", "fields", bodyKeys(body), "url", p.tokenURL)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", p.tokenURL, strings.NewReader(string(jsonBody)))
 	if err != nil {
