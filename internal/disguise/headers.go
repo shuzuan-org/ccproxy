@@ -8,8 +8,13 @@ import "net/http"
 // tuple from the first CC request, so DefaultHeaders only matters for
 // cold-start (an account that has never seen a real CC client).
 //
-// Version aligned with Claude CLI 2.1.150 observed traffic (cccc-mitm
-// capture 2026-05-25: 17/17 cch pass, 17/17 3hex pass, ATTEST_KEYS unchanged).
+// Version aligned with Claude CLI 2.1.185 — the whitelist head (see
+// version_whitelist.go latestValidatedTuple). Per the project rule, ALL
+// outbound traffic (including this cold-start default) advertises the
+// whitelist's newest verified version, so DefaultHeaders must track it.
+// 2.1.185 verified 2026-06-22 by binary reverse-engineering: cch algorithm
+// rotated to xxhash64(seed=ATTEST_V3) over a normalized body (cch_185.go),
+// reproduced byte-exact on 2 captured ground-truth bodies.
 //
 // IMPORTANT: the four fields below are a tightly-coupled tuple — each
 // published Claude CLI release bundles one specific combination of (UA,
@@ -23,10 +28,11 @@ import "net/http"
 //   - X-Stainless-Runtime-Version (Node version bundled with that CLI)
 //   - anthropic-beta set          (see baseBetasNonHaiku / baseBetasHaiku in beta.go)
 //
-// The 2.1.150 tuple is: UA 2.1.150 + SDK 0.94.0 + Node v24.3.0.
-// (SDK bumped from 0.93.0; Runtime unchanged from 2.1.132.)
+// The 2.1.185 tuple is: UA 2.1.185 + SDK 0.94.0 + Node v24.3.0.
+// (SDK + Runtime unchanged from 2.1.150, confirmed from captured
+// x-stainless-* headers.)
 var DefaultHeaders = map[string]string{
-	"User-Agent":                  "claude-cli/2.1.150 (external, cli)",
+	"User-Agent":                  "claude-cli/2.1.185 (external, cli)",
 	"X-Stainless-Package-Version": "0.94.0",
 	"X-Stainless-OS":              "MacOS",
 	"X-Stainless-Arch":            "arm64",

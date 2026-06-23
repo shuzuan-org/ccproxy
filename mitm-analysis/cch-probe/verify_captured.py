@@ -63,19 +63,24 @@ def find_billing_text(parsed):
     Must be extracted strictly from system[]: a regex over the raw body
     catches user-pasted code containing 'cch=...' substrings (very common
     when chatting *about* this codebase) and produces wrong matches.
+
+    Anchor on the 'x-anthropic-billing-header:' prefix only. The cch token is
+    NOT a reliable anchor: since 2.1.181 it is gated by provider inclusion
+    (firstParty/vertex), so legitimate third-party/OAuth traffic carries a
+    billing block with no cch= at all.
     """
     for s in parsed.get("system", []):
         if not isinstance(s, dict):
             continue
         text = s.get("text", "")
-        if "x-anthropic-billing-header:" in text and "cch=" in text:
+        if "x-anthropic-billing-header:" in text:
             return text
     return None
 
 
 def main():
     files = sorted(f for f in os.listdir(CAPTURED) if f.endswith(".bin"))
-    cch_ok = cch_fail = 0
+    cch_ok = cch_fail = cch_absent = 0
     hex_ok = hex_fail = 0
     skip = 0
     failures = []
@@ -101,30 +106,39 @@ def main():
 
         # ---- cch (operate on the body, but locate the cch token via the
         # billing block to avoid hitting a user-pasted 'cch=XXXXX' first)
+        #
+        # NOTE: since 2.1.181 the cch token is gated by provider inclusion
+        # (firstParty/vertex only — see cc-probe billing_header_template probe).
+        # Requests through a third-party/OAuth upstream legitimately carry NO
+        # cch. Treat "no cch" as an ABSENT observation, not a skip — we still
+        # want to verify 3hex (which is always present) on these samples.
         cch_m = re.search(r'cch=([0-9a-f]{5})', billing)
         if not cch_m:
-            skip += 1
-            continue
-        observed_cch = cch_m.group(1)
-        # Build the byte string we know is unique in body: the billing line
-        # with the real cch. Replace exactly that occurrence with the
-        # placeholder, then re-hash.
-        observed_cch_bytes = ("cch=" + observed_cch).encode()
-        # Find the SAME cch token, but only inside the billing line in body
-        billing_bytes = billing.encode()
-        billing_idx = body.find(billing_bytes)
-        if billing_idx < 0:
-            skip += 1
-            continue
-        # Locate the cch= within the billing block region
-        cch_off = body.find(observed_cch_bytes, billing_idx,
-                            billing_idx + len(billing_bytes))
-        if cch_off < 0:
-            skip += 1
-            continue
-        pre = body[:cch_off] + b"cch=00000" + body[cch_off + len(observed_cch_bytes):]
-        computed_cch = cch_token(pre)
-        cch_match = observed_cch == computed_cch
+            cch_absent += 1
+            cch_match = None
+            observed_cch = "<absent>"
+            computed_cch = ""
+        else:
+            observed_cch = cch_m.group(1)
+            # Build the byte string we know is unique in body: the billing line
+            # with the real cch. Replace exactly that occurrence with the
+            # placeholder, then re-hash.
+            observed_cch_bytes = ("cch=" + observed_cch).encode()
+            # Find the SAME cch token, but only inside the billing line in body
+            billing_bytes = billing.encode()
+            billing_idx = body.find(billing_bytes)
+            if billing_idx < 0:
+                skip += 1
+                continue
+            # Locate the cch= within the billing block region
+            cch_off = body.find(observed_cch_bytes, billing_idx,
+                                billing_idx + len(billing_bytes))
+            if cch_off < 0:
+                skip += 1
+                continue
+            pre = body[:cch_off] + b"cch=00000" + body[cch_off + len(observed_cch_bytes):]
+            computed_cch = cch_token(pre)
+            cch_match = observed_cch == computed_cch
 
         # ---- 3hex (extract version from billing block, not raw body)
         cv_m = re.search(r'cc_version=(\d+\.\d+\.\d+)\.([0-9a-f]{3})', billing)
@@ -150,16 +164,18 @@ def main():
             chars = ""
             version = "?"
 
-        if cch_match:
+        if cch_match is True:
             cch_ok += 1
-        else:
+        elif cch_match is False:
             cch_fail += 1
+        # cch_match is None → cch absent (provider not firstParty/vertex);
+        # already counted in cch_absent, not a failure.
         if hex_match is True:
             hex_ok += 1
         elif hex_match is False:
             hex_fail += 1
 
-        if not cch_match or hex_match is False:
+        if cch_match is False or hex_match is False:
             failures.append({
                 "file": fname,
                 "size": len(body),
@@ -175,7 +191,7 @@ def main():
             })
 
     print(f"Total samples: {len(files)} (skipped {skip} non-claude)")
-    print(f"cch:  {cch_ok}/{cch_ok+cch_fail} match")
+    print(f"cch:  {cch_ok}/{cch_ok+cch_fail} match  ({cch_absent} absent — provider not firstParty/vertex)")
     print(f"3hex: {hex_ok}/{hex_ok+hex_fail} match")
     if failures:
         print(f"\n=== {len(failures)} failures ===")

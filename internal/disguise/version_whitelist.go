@@ -33,7 +33,28 @@ type validatedTuple struct {
 	UserAgent               string
 	StainlessPackageVersion string
 	StainlessRuntimeVersion string
+	// CCHVariant selects the cch algorithm for this version. Zero value
+	// (cchVariantKeyed4) applies to all pre-2.1.150 entries.
+	CCHVariant cchVariant
 }
+
+// cchVariant selects which cch algorithm a CLI version uses. Claude Code
+// rotated the algorithm between 2.1.150 and 2.1.185 — see cch.go (old,
+// 4-key keyed-xxhash64 over the raw body) and cch_185.go (new, standard
+// xxhash64 with seed=ATTEST_V3 over a normalized body). rewriteCCHInBody
+// dispatches on the emitted tuple's variant.
+type cchVariant int
+
+const (
+	// cchVariantKeyed4 is the pre-2.1.150 algorithm: xxhash64 with four
+	// independent ATTEST_KEY lanes over the raw body. Zero value, so old
+	// whitelist entries default to it without listing the field.
+	cchVariantKeyed4 cchVariant = iota
+	// cchVariantXXH64Norm is the 2.1.185+ algorithm: standard xxhash64
+	// (seed=ATTEST_V3) over a body with model blanked and
+	// max_tokens/fallbacks stripped. See cch_185.go.
+	cchVariantXXH64Norm
+)
 
 // validatedTuples is the source of truth for what ccproxy is willing
 // to advertise as its CLI identity. Ordered ascending by CLI version;
@@ -95,6 +116,22 @@ var validatedTuples = []validatedTuple{
 		UserAgent:               "claude-cli/2.1.150 (external, cli)",
 		StainlessPackageVersion: "0.94.0",
 		StainlessRuntimeVersion: "v24.3.0",
+	},
+	{
+		// Verified 2026-06-22 by reverse-engineering the 2.1.185 binary.
+		// cch ALGORITHM ROTATED: standard xxhash64 (seed=ATTEST_V3) over a
+		// normalized body (model blanked, max_tokens/fallbacks stripped),
+		// replacing the old 4-key keyed-xxhash64. See cch_185.go +
+		// mitm-analysis/cch-probe/FINDINGS-2.1.185.md appendix 7.
+		// cch: reproduced byte-exact on 2 captured ground-truth bodies
+		// (4eb53, a63f5) AND via live XXH64 hook on the running binary.
+		// Stainless package/runtime UNCHANGED from 2.1.150 (0.94.0 /
+		// v24.3.0, confirmed from captured x-stainless-* headers).
+		// 3hex: unchanged (SHA256 salt "59cf53e54c78", see three_hex.go).
+		UserAgent:               "claude-cli/2.1.185 (external, cli)",
+		StainlessPackageVersion: "0.94.0",
+		StainlessRuntimeVersion: "v24.3.0",
+		CCHVariant:              cchVariantXXH64Norm,
 	},
 }
 

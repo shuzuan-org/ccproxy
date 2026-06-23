@@ -30,7 +30,7 @@ func ProxyURLFromContext(ctx context.Context) string {
 }
 
 // NewTransport creates an HTTP transport that uses utls to mimic
-// Claude CLI's TLS fingerprint (Node.js 24.x).
+// Claude Code's TLS fingerprint (2.1.181+ Bun build — see claudeCLIv2Spec).
 // Connections are pooled per proxy URL for efficient reuse.
 func NewTransport() http.RoundTripper {
 	return &fingerprintTransport{
@@ -221,9 +221,12 @@ func toUint8s(vals []uint16) []uint8 {
 
 func buildDefaultExtensions() []utls.TLSExtension {
 	keyShares := []utls.KeyShare{{Group: utls.X25519}}
+	// Extension order/set is captured byte-exact from the real Claude Code
+	// 2.1.181+ (Bun build) ClientHello — verified against versions 2.1.181,
+	// 2.1.185, 2.1.186 (all identical). See the claudeCLIv2Spec comment for
+	// the Node→Bun drift that removed ECH-GREASE and added RFC7685 padding.
 	return []utls.TLSExtension{
 		&utls.SNIExtension{},
-		&utls.GREASEEncryptedClientHelloExtension{},
 		&utls.ExtendedMasterSecretExtension{},
 		&utls.RenegotiationInfoExtension{},
 		&utls.SupportedCurvesExtension{Curves: append([]utls.CurveID(nil), defaultCurves...)},
@@ -236,9 +239,27 @@ func buildDefaultExtensions() []utls.TLSExtension {
 		&utls.KeyShareExtension{KeyShares: keyShares},
 		&utls.PSKKeyExchangeModesExtension{Modes: []uint8{uint8(utls.PskModeDHE)}},
 		&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+		// RFC 7685 padding (ext 0x15): real client pads the ClientHello to a
+		// 512-byte record body when its unpadded length lands in [256,512).
+		// BoringPaddingStyle implements exactly that.
+		&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
 	}
 }
 
+// claudeCLIv2Spec is the ClientHello captured from real Claude Code.
+//
+// Originally modeled on Node.js 24.x (OpenSSL 3.5). Claude Code later
+// shipped as a custom Bun binary; its TLS stack still emits an
+// OpenSSL-style hello (same 17 cipher suites incl. legacy RSA/CBC, no
+// cipher GREASE — NOT BoringSSL/Chrome-style), but two extensions drifted
+// at the Node→Bun transition (verified 2026-06-23 by capturing real
+// 2.1.181/185/186 ClientHellos):
+//   - ECH-GREASE (ext 0xfe0d) was DROPPED — Node 24's OpenSSL 3.5 emitted
+//     it; the Bun build's TLS library does not.
+//   - RFC 7685 padding (ext 0x15) was ADDED — hello is padded to a 512-byte
+//     record body.
+// buildDefaultExtensions reflects the current (Bun) profile. Re-verify with
+// the capture method in mitm-analysis/ whenever the upstream runtime changes.
 func claudeCLIv2Spec() *utls.ClientHelloSpec {
 	return &utls.ClientHelloSpec{
 		CipherSuites:       append([]uint16(nil), defaultCipherSuites...),

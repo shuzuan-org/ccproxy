@@ -169,6 +169,8 @@ func ja3Hash(t testing.TB, spec *utls.ClientHelloSpec) string {
 			extIDs = append(extIDs, "45")
 		case *utls.KeyShareExtension:
 			extIDs = append(extIDs, "51")
+		case *utls.UtlsPaddingExtension:
+			extIDs = append(extIDs, "21")
 		default:
 			t.Fatalf("ja3Hash: unhandled extension type %T", ext)
 			return ""
@@ -189,7 +191,9 @@ func ja3Hash(t testing.TB, spec *utls.ClientHelloSpec) string {
 
 func TestClaudeCLIv2Spec_JA3Hash(t *testing.T) {
 	t.Parallel()
-	const expectedJA3 = "44f88fca027f27bab4bb08d4af15f23e"
+	// JA3 of the Claude Code 2.1.181+ (Bun) ClientHello: no ECH-GREASE,
+	// padding (ext 21) appended. Verified byte-exact against real 2.1.186.
+	const expectedJA3 = "d871d02cecbde59abbf8f4806134addf"
 
 	spec := claudeCLIv2Spec()
 	got := ja3Hash(t, spec)
@@ -243,14 +247,26 @@ func TestClaudeCLIv2Spec_DefaultKeyShare(t *testing.T) {
 	t.Fatal("expected KeyShareExtension")
 }
 
-func TestClaudeCLIv2Spec_DefaultIncludesECH(t *testing.T) {
+// Real Claude Code 2.1.181+ (Bun) does NOT send ECH-GREASE and DOES send a
+// RFC 7685 padding extension — opposite of the old Node-era spec. See
+// claudeCLIv2Spec for the Node→Bun drift.
+func TestClaudeCLIv2Spec_NoECHHasPadding(t *testing.T) {
 	spec := claudeCLIv2Spec()
+	var hasECH, hasPadding bool
 	for _, ext := range spec.Extensions {
 		if _, ok := ext.(*utls.GREASEEncryptedClientHelloExtension); ok {
-			return
+			hasECH = true
+		}
+		if _, ok := ext.(*utls.UtlsPaddingExtension); ok {
+			hasPadding = true
 		}
 	}
-	t.Fatal("expected GREASEEncryptedClientHelloExtension")
+	if hasECH {
+		t.Error("did not expect GREASEEncryptedClientHelloExtension (Bun client does not send 0xfe0d)")
+	}
+	if !hasPadding {
+		t.Error("expected UtlsPaddingExtension (Bun client pads ClientHello to 512)")
+	}
 }
 
 func TestClaudeCLIv2Spec_DefaultHasNoGREASEBookends(t *testing.T) {

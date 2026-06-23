@@ -331,7 +331,7 @@ ExchangeAndSave()             StartAutoRefresh (5 min tick)
 #### 加密
 
 - 算法：AES-256-GCM
-- 密钥派生：Argon2id（password=`ccproxy-{hostname}-{username}-{machineID}`, salt=`ccproxy-{hostname}-{username}`，time=1, memory=64KB, parallelism=4, keyLen=32）
+- 密钥派生：Argon2id（password=`ccproxy-{hostname}-{username}-{machineID}`, salt=`ccproxy-{hostname}-{username}`，time=1, memory=64MB, parallelism=4, keyLen=32）。**密钥不含用户口令**——威胁模型见下文「OAuth 令牌加密的威胁模型」
 - 存储路径：`data/oauth_tokens.json`，权限 0600
 - 原子写入：通过 `fileutil.AtomicWriteFile`
 
@@ -600,3 +600,25 @@ TOML 配置在启动时加载，变更需重启。账号变更通过管理面板
 - **令牌不外泄**：不记录、不返回原始 OAuth token 值
 - **CSRF 防护**：PKCE 登录的 state 参数用 `subtle.ConstantTimeCompare` 验证
 - **限速 IP 提取**：基于 `RemoteAddr`，不信任 `X-Forwarded-For`，防止 IP 伪造
+
+### OAuth 令牌加密的威胁模型（重要）
+
+令牌加密密钥由 `deriveKey()`（`internal/oauth/store.go`）从**机器身份**派生：
+
+```
+password = "ccproxy-{hostname}-{username}-{machineID}"
+salt     = "ccproxy-{hostname}-{username}"
+key      = Argon2id(password, salt, time=1, memory=64MB, parallelism=4, keyLen=32)
+```
+
+**关键性质：不依赖任何用户口令。** 这意味着加密的目的是"静态数据混淆 + 防止令牌文件被随手拷走后在异机解密"，而**不是**抵御能在本机执行代码的攻击者。
+
+| 威胁 | 是否防护 | 说明 |
+|------|---------|------|
+| 令牌文件被拷到**另一台机器**解密 | ✅ 防护 | hostname/username/machineID 不同，密钥不同 |
+| 磁盘失窃 / 备份泄漏（离机） | ✅ 防护 | 同上 |
+| 攻击者在**本机**有读权限（容器逃逸、SSH、同主机其他进程以同 user 运行） | ❌ **不防护** | machineID、hostname、username 全部可在本机确定性获取 → 可重算密钥解密全部账户令牌 |
+| 宿主机 root | ❌ 不防护 | 可读 `machineID` 来源（`/etc/machine-id` 或 `IOPlatformUUID`）+ 进程内存 |
+
+**部署结论：** 在本部署模型下，**能读到宿主机文件系统 + 以相同用户身份运行代码的人 = 所有订阅账户的 OAuth 令牌失守**。因此宿主机的访问控制（最小化登录用户、容器隔离、文件权限）是真正的信任边界，磁盘加密只在"文件离开本机"时提供价值。若需要抵御本机攻击者，必须改为用户提供口令派生密钥，或接入 TPM/HSM/外部密钥管理（KMS / Vault）。Argon2 `time=1` 在无口令场景下不是弱点（攻击者已知全部输入，调高迭代次数无意义）。
+

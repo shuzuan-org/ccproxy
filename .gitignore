@@ -16,3 +16,6 @@ mitm-analysis/*
 mitm-analysis/cch-probe/*
 !mitm-analysis/cch-probe/*.py
 !mitm-analysis/cch-probe/README*
+!mitm-analysis/cch-probe/FINDINGS*
+# captured/ holds real request bodies (prompts, file contents) — never commit.
+mitm-analysis/cch-probe/captured/

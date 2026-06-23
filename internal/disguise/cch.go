@@ -162,7 +162,18 @@ func rewriteCCHInBody(body []byte) bool {
 	if idx < 0 {
 		return false
 	}
-	cch := ComputeCCH(body)
+	// Dispatch on the cch algorithm of the version we emit on the wire
+	// (always the whitelist head — see version_whitelist.go). Old versions
+	// use the 4-key algorithm over the raw body; 2.1.185+ use standard
+	// xxhash64 over a normalized body. The value is written into the body's
+	// cch=00000 placeholder regardless of variant.
+	var cch string
+	switch latestValidatedTuple().CCHVariant {
+	case cchVariantXXH64Norm:
+		cch = ComputeCCH185(body)
+	default:
+		cch = ComputeCCH(body)
+	}
 	// Overwrite exactly 5 chars at idx+4 .. idx+9 (the "00000").
 	copy(body[idx+4:idx+9], cch)
 	return true

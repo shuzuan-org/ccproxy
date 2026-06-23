@@ -389,8 +389,10 @@ func TestEngineApply_OAuthRealClaudeCode_UnifiesUAAndBilling(t *testing.T) {
 		t.Fatalf("no cch field in outBody")
 	}
 	preBody := bytes.Replace(outBody, []byte("cch="+string(cchMatch[1])), []byte("cch=00000"), 1)
-	if recomputed := ComputeCCH(preBody); recomputed != string(cchMatch[1]) {
-		t.Errorf("body NOT self-consistent: wrote cch=%s, ComputeCCH(reverted)=%s",
+	// Recompute with the algorithm of the emitted version (whitelist head).
+	// Head is 2.1.185 → ComputeCCH185; mirrors rewriteCCHInBody's dispatch.
+	if recomputed := ComputeCCH185(preBody); recomputed != string(cchMatch[1]) {
+		t.Errorf("body NOT self-consistent: wrote cch=%s, ComputeCCH185(reverted)=%s",
 			cchMatch[1], recomputed)
 	}
 
