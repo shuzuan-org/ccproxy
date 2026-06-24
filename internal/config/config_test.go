@@ -96,8 +96,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Server.Host != "127.0.0.1" {
-		t.Errorf("host default = %q, want 127.0.0.1", cfg.Server.Host)
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Errorf("host default = %q, want 0.0.0.0", cfg.Server.Host)
 	}
 	if cfg.Server.Port != 3000 {
 		t.Errorf("port default = %d, want 3000", cfg.Server.Port)
@@ -154,8 +154,8 @@ func TestLoadConfig_FileNotFound_CreatesDefault(t *testing.T) {
 	}
 
 	// Default server settings from the generated template
-	if cfg.Server.Host != "127.0.0.1" {
-		t.Errorf("host = %q, want 127.0.0.1", cfg.Server.Host)
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Errorf("host = %q, want 0.0.0.0", cfg.Server.Host)
 	}
 	if cfg.Server.Port != 3000 {
 		t.Errorf("port = %d, want 3000", cfg.Server.Port)
