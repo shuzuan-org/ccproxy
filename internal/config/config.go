@@ -162,7 +162,7 @@ func ensureConfigFile(path string) error {
 func (cfg *Config) applyDefaults() {
 	// Server defaults
 	if cfg.Server.Host == "" {
-		cfg.Server.Host = "127.0.0.1"
+		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 3000
