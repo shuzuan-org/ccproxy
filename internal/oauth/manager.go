@@ -243,9 +243,9 @@ func (m *Manager) MarkTokenExpired(accountName string) {
 }
 
 // ForceRefreshBackground triggers a token refresh in a background goroutine.
-func (m *Manager) ForceRefreshBackground(ctx context.Context, accountName string) {
+func (m *Manager) ForceRefreshBackground(_ context.Context, accountName string) {
 	go func() {
-		_, err := m.ForceRefresh(ctx, accountName)
+		_, err := m.ForceRefresh(context.Background(), accountName)
 		if err != nil {
 			slog.Warn("background token refresh failed", "account", accountName, "error", err.Error())
 		}
