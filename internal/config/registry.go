@@ -208,6 +208,7 @@ func (r *AccountRegistry) UpdateProxy(id, proxy string) error {
 				r.accounts[i].Proxy = acct.Proxy // roll back
 				return fmt.Errorf("persist proxy update: %w", err)
 			}
+			r.notifyChange()
 			return nil
 		}
 	}
