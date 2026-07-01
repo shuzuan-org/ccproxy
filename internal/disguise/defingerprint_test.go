@@ -163,3 +163,32 @@ func TestRewriteDateFingerprint_NilSafe(t *testing.T) {
 		t.Fatal("nil must be a no-op")
 	}
 }
+
+func TestNormalizeDateLine_MultipleOccurrences(t *testing.T) {
+	// Two carrier lines in one string (e.g. compacted history quoting an
+	// earlier reminder) — BOTH must be cleaned, not just the first.
+	in := "First: Today’s date is 2026/07/01.\n...later...\nAgain: Today’s date is 2026/07/01."
+	out, changed := normalizeDateLine(in)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.ContainsRune(out, 0x2019) || strings.Contains(out, "2026/07/01") {
+		t.Fatalf("all occurrences must be cleaned, got: %q", out)
+	}
+	if strings.Count(out, "Today's date is 2026-07-01.") != 2 {
+		t.Fatalf("expected 2 cleaned lines, got: %q", out)
+	}
+}
+
+func TestNormalizeDateLine_MixedCleanAndDirty(t *testing.T) {
+	// First occurrence already clean, second dirty — must still clean the
+	// second and report changed.
+	in := "Today's date is 2026-07-01. ... Today’s date is 2026/07/01."
+	out, changed := normalizeDateLine(in)
+	if !changed {
+		t.Fatal("expected change from the dirty second occurrence")
+	}
+	if strings.ContainsRune(out, 0x2019) || strings.Contains(out, "2026/07/01") {
+		t.Fatalf("dirty occurrence not cleaned: %q", out)
+	}
+}

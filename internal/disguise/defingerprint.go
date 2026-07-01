@@ -112,21 +112,37 @@ func rewriteBlockList(blocks []interface{}, fn func(string) string) {
 	}
 }
 
-// normalizeDateLine finds the covert date line inside s (if present) and
-// rewrites only that matched span: homoglyph apostrophes → U+0027, date
-// separator '/' → '-'. Everything else in s is left byte-for-byte identical.
-// Returns the (possibly unchanged) string and whether it changed.
+// normalizeDateLine finds EVERY covert date line inside s and rewrites only
+// those matched spans: homoglyph apostrophes → U+0027, date separator '/' →
+// '-'. Everything else in s is left byte-for-byte identical. It scans all
+// matches, not just the first — a single string can carry the line more than
+// once (e.g. a compacted history quoting an earlier reminder), and missing any
+// occurrence would leave a fingerprint on the wire. Returns the (possibly
+// unchanged) string and whether it changed.
 func normalizeDateLine(s string) (string, bool) {
-	loc := dateFingerprintLineRe.FindStringIndex(s)
-	if loc == nil {
+	locs := dateFingerprintLineRe.FindAllStringIndex(s, -1)
+	if locs == nil {
 		return s, false
 	}
-	segment := s[loc[0]:loc[1]]
-	cleaned := normalizeSegment(segment)
-	if cleaned == segment {
+	var b strings.Builder
+	b.Grow(len(s))
+	last := 0
+	changed := false
+	for _, loc := range locs {
+		b.WriteString(s[last:loc[0]])
+		segment := s[loc[0]:loc[1]]
+		cleaned := normalizeSegment(segment)
+		if cleaned != segment {
+			changed = true
+		}
+		b.WriteString(cleaned)
+		last = loc[1]
+	}
+	b.WriteString(s[last:])
+	if !changed {
 		return s, false
 	}
-	return s[:loc[0]] + cleaned + s[loc[1]:], true
+	return b.String(), true
 }
 
 // normalizeSegment rewrites the two carrier character classes within a single
