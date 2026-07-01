@@ -151,6 +151,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"session_key", sessionKey,
 	)
 
+	// Record the raw inbound client body for fingerprint analysis when
+	// CCPROXY_RECORD_DIR is set (no-op otherwise). This captures the client's
+	// fingerprint as emitted, before disguise/de-fingerprint.
+	recordInboundBody(rawBody, authInfo.APIKeyName)
+
 	// Capture the original request for disguise detection.
 	origReq := r
 
