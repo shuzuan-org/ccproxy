@@ -64,3 +64,38 @@ func TestReport_SkippedVariantHonestlyMarked(t *testing.T) {
 		t.Errorf("skipped variant must be honestly marked as not driven:\n%s", out)
 	}
 }
+
+func TestReport_DiffsAgainstRefNotBaseline(t *testing.T) {
+	// host_cn must diff against host_baseline (clean domain), NOT baseline.
+	// Here baseline and host_baseline carry different date lines to prove the
+	// reference selection matters: if the report wrongly used baseline, the
+	// apostrophe drift would be masked/miscounted.
+	hostBase := mkResult("host_baseline", "Today's date is 2026-07-01.", true, "")
+	hostCN := mkResult("host_cn", "Today’s date is 2026-07-01.", true, "")
+	hostCN.Variant.Ref = "host_baseline"
+	// A baseline with a DELIBERATELY different line — must be ignored for host_cn.
+	base := mkResult("baseline", "Today's date is 1999-01-01.", true, "")
+
+	out := BuildReport([]VariantResult{base, hostBase, hostCN}).Render()
+
+	if !strings.Contains(out, "differ from host_baseline") {
+		t.Errorf("host_cn must be diffed against host_baseline:\n%s", out)
+	}
+	if !strings.Contains(out, "U+2019") {
+		t.Errorf("apostrophe drift vs host_baseline should be reported:\n%s", out)
+	}
+	// The summary line for host_cn should mention the apostrophe, once.
+	if strings.Count(out, "host_cn") < 1 {
+		t.Errorf("host_cn missing from report:\n%s", out)
+	}
+}
+
+func TestReport_DrivenButNoDateLine(t *testing.T) {
+	// Distinct outcome from "not driven": the client ran but emitted no carrier.
+	res := VariantResult{Variant: Variant{Label: "tz_cn"}, Driven: true, DateLine: ""}
+	base := mkResult("baseline", "Today's date is 2026-07-01.", true, "")
+	out := BuildReport([]VariantResult{base, res}).Render()
+	if !strings.Contains(out, "no date-injection line") {
+		t.Errorf("driven-but-no-carrier must be reported distinctly:\n%s", out)
+	}
+}

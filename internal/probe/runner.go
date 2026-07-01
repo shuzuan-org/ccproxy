@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -82,7 +86,32 @@ func Run(cfg Config) (string, error) {
 				cfg.Logf("warning: could not edit /etc/hosts (%v); host_* variants will be skipped", err)
 				hosts = nil
 			} else {
-				defer hosts.restore()
+				// A `defer` does not run if the process is killed by a signal,
+				// which would leave the root-owned /etc/hosts pointing our
+				// probe hostnames at loopback. Trap SIGINT/SIGTERM, restore,
+				// then re-raise the default disposition so the exit code is
+				// correct. sync.Once ensures restore runs exactly once whether
+				// triggered by the signal path or the normal defer.
+				var once sync.Once
+				restoreOnce := func() { once.Do(hosts.restore) }
+				defer restoreOnce()
+
+				sig := make(chan os.Signal, 1)
+				signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+				defer signal.Stop(sig)
+				go func() {
+					s, ok := <-sig
+					if !ok {
+						return
+					}
+					fmt.Fprintf(os.Stderr, "\nprobe: caught %v, restoring %s...\n", s, hostsPath)
+					restoreOnce()
+					// Re-raise so the shell sees a signal exit, not exit 0.
+					signal.Reset(os.Interrupt, syscall.SIGTERM)
+					if p, err := os.FindProcess(os.Getpid()); err == nil {
+						_ = p.Signal(s)
+					}
+				}()
 				cfg.Logf("added temporary /etc/hosts entries for %d hostname(s)", len(names))
 			}
 		}
@@ -149,14 +178,21 @@ func driveVariant(cfg Config, sink *Sink, bin string, v Variant, hostsReady bool
 		return res
 	}
 
-	// Use the first captured request (the primary turn).
+	// A single client invocation can emit several /v1/messages requests
+	// (auto-compact, retries, sub-agents). The carrier line is not guaranteed
+	// to be in the first one, so scan every capture and use the first request
+	// that actually contains the date line. Falling back to caps[0] preserves
+	// the raw body for inspection even when no carrier line is found (which the
+	// report then shows as "no date line", distinct from "not driven").
 	res.Driven = true
 	res.RawBody = caps[0].Body
-	// The covert date carrier can live in system[] or in a <system-reminder>
-	// inside messages[] (2.1.197 uses the latter). DateLine finds it wherever
-	// it is; that precise line is what we scan and diff, avoiding false
-	// positives from legitimate markdown (backticks, em-dashes) elsewhere.
-	res.DateLine = DateLine(caps[0].Body)
+	for i := range caps {
+		if dl := DateLine(caps[i].Body); dl != "" {
+			res.RawBody = caps[i].Body
+			res.DateLine = dl
+			break
+		}
+	}
 	res.SystemText = res.DateLine
 	if res.DateLine != "" {
 		res.Findings = ScanConfusables(res.DateLine)
@@ -221,11 +257,13 @@ func detectClaude() (string, error) {
 	candidates := []string{
 		filepath.Join(home, ".local/bin/claude"),
 	}
-	// Versioned installs: pick the highest version dir if present.
+	// Versioned installs: pick the highest version dir if present. Compare as
+	// semver (numeric per component), not lexically — "2.1.197" must beat
+	// "2.1.99", which a string compare gets backwards.
 	if entries, err := os.ReadDir(filepath.Join(home, ".local/share/claude/versions")); err == nil {
 		var best string
 		for _, e := range entries {
-			if e.Name() > best {
+			if best == "" || semverLess(best, e.Name()) {
 				best = e.Name()
 			}
 		}
@@ -242,6 +280,39 @@ func detectClaude() (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("could not locate claude binary; pass --claude-bin")
+}
+
+// semverLess reports whether version a sorts before b, comparing dot-separated
+// components numerically (so 2.1.99 < 2.1.197). Non-numeric or missing
+// components fall back to a lexical comparison of that component.
+func semverLess(a, b string) bool {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		var av, bv string
+		if i < len(as) {
+			av = as[i]
+		}
+		if i < len(bs) {
+			bv = bs[i]
+		}
+		ai, aerr := strconv.Atoi(av)
+		bi, berr := strconv.Atoi(bv)
+		if aerr == nil && berr == nil {
+			if ai != bi {
+				return ai < bi
+			}
+			continue
+		}
+		if av != bv {
+			return av < bv
+		}
+	}
+	return false
 }
 
 // hostnamesNeeded collects the distinct hostnames the host_* variants require.

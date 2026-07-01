@@ -79,3 +79,45 @@ func TestSelect_AlwaysIncludesBaseline(t *testing.T) {
 		t.Errorf("baseline must be included and first")
 	}
 }
+
+func TestSelect_PullsInHostReference(t *testing.T) {
+	// Selecting host_cn must also pull in host_baseline (its Ref), else the
+	// host diff has no clean-domain reference and would fall back to the dirty
+	// IP-literal baseline — the contamination this fix exists to prevent.
+	m := DefaultMatrix()
+	got := Select(m, map[string]bool{"host_cn": true})
+	labels := map[string]bool{}
+	for _, v := range got {
+		labels[v.Label] = true
+	}
+	if !labels["host_baseline"] {
+		t.Errorf("selecting host_cn must pull in host_baseline; got %v", labels)
+	}
+	if !labels["host_cn"] {
+		t.Errorf("host_cn missing from selection")
+	}
+}
+
+func TestHostVariants_ReferenceCleanDomain(t *testing.T) {
+	m := DefaultMatrix()
+	for _, v := range m {
+		if v.Label == "host_cn" || v.Label == "host_reseller" || v.Label == "host_labkw" || v.Label == "host_cn_tz_cn" {
+			if v.Ref != "host_baseline" {
+				t.Errorf("%s.Ref = %q, want host_baseline (clean domain, not IP baseline)", v.Label, v.Ref)
+			}
+		}
+	}
+	// host_baseline itself must be a real domain, and not carry any signal.
+	var hb Variant
+	for _, v := range m {
+		if v.Label == "host_baseline" {
+			hb = v
+		}
+	}
+	if hb.Hostname != cleanHost {
+		t.Errorf("host_baseline hostname = %q, want %q", hb.Hostname, cleanHost)
+	}
+	if got := ScanConfusables(hb.Hostname); len(got) != 0 {
+		t.Errorf("clean host must be plain ASCII")
+	}
+}

@@ -29,21 +29,31 @@ type VariantResult struct {
 
 // Report aggregates all variant results and renders a human-readable summary.
 type Report struct {
-	Results  []VariantResult
-	baseline *VariantResult
+	Results []VariantResult
+	byLabel map[string]*VariantResult
 }
 
-// BuildReport assembles a report from variant results. The variant labeled
-// "baseline" (if driven) becomes the diff reference.
+// BuildReport assembles a report from variant results. Each variant is diffed
+// against its reference (Variant.Ref, defaulting to "baseline").
 func BuildReport(results []VariantResult) *Report {
-	r := &Report{Results: results}
+	r := &Report{Results: results, byLabel: make(map[string]*VariantResult, len(results))}
 	for i := range results {
-		if results[i].Variant.Label == "baseline" && results[i].Driven {
-			r.baseline = &results[i]
-			break
-		}
+		r.byLabel[results[i].Variant.Label] = &results[i]
 	}
 	return r
+}
+
+// refFor returns the driven reference result for a variant, or nil if its
+// reference was not driven (so no diff can be produced).
+func (r *Report) refFor(v Variant) *VariantResult {
+	label := v.Ref
+	if label == "" {
+		label = "baseline"
+	}
+	if ref, ok := r.byLabel[label]; ok && ref.Driven {
+		return ref
+	}
+	return nil
 }
 
 // Render produces the textual report.
@@ -74,20 +84,36 @@ func (r *Report) Render() string {
 					f.CodePoint, f.Category, like, f.RuneIndex, f.Context)
 			}
 		}
-		// Diff vs baseline.
-		if r.baseline != nil && res.Variant.Label != "baseline" {
-			hunks := Diff(r.baseline.SystemText, res.SystemText)
-			if len(hunks) == 0 {
-				b.WriteString("    = system text identical to baseline\n")
-			} else {
-				fmt.Fprintf(&b, "    Δ %d char(s) differ from baseline:\n", len(hunks))
-				for _, h := range hunks {
-					fmt.Fprintf(&b, "        @rune %d: %s(%s) → %s(%s)  «%s»\n",
-						h.RuneIndex,
-						visualRune(h.Base), h.BaseCP,
-						visualRune(h.Variant), h.VariantCP,
-						h.Context)
-				}
+		// Report an absent carrier explicitly — a driven variant with no date
+		// line is a distinct outcome from "not driven" and from "identical".
+		if res.DateLine == "" {
+			b.WriteString("    · no date-injection line found in captured body\n\n")
+			continue
+		}
+		// Diff against this variant's reference (Ref, default baseline).
+		ref := r.refFor(res.Variant)
+		if ref == nil {
+			if refLabel(res.Variant) != res.Variant.Label {
+				fmt.Fprintf(&b, "    · reference %q not driven — no diff\n", refLabel(res.Variant))
+			}
+			b.WriteString("\n")
+			continue
+		}
+		if res.Variant.Label == ref.Variant.Label {
+			b.WriteString("\n") // this IS a reference variant
+			continue
+		}
+		hunks := Diff(ref.SystemText, res.SystemText)
+		if len(hunks) == 0 {
+			fmt.Fprintf(&b, "    = identical to %s\n", ref.Variant.Label)
+		} else {
+			fmt.Fprintf(&b, "    Δ %d char(s) differ from %s:\n", len(hunks), ref.Variant.Label)
+			for _, h := range hunks {
+				fmt.Fprintf(&b, "        @rune %d: %s(%s) → %s(%s)  «%s»\n",
+					h.RuneIndex,
+					visualRune(h.Base), h.BaseCP,
+					visualRune(h.Variant), h.VariantCP,
+					h.Context)
 			}
 		}
 		b.WriteString("\n")
@@ -95,17 +121,17 @@ func (r *Report) Render() string {
 
 	// Summary table: which dimension triggered which fingerprint bits.
 	b.WriteString("─── 环境敏感指纹位汇总 ───\n")
-	if r.baseline == nil {
-		b.WriteString("(无 baseline,无法给出差分汇总)\n")
-		return b.String()
-	}
 	any := false
 	for i := range r.Results {
 		res := &r.Results[i]
-		if res.Variant.Label == "baseline" || !res.Driven {
+		if !res.Driven || res.DateLine == "" {
 			continue
 		}
-		hunks := Diff(r.baseline.SystemText, res.SystemText)
+		ref := r.refFor(res.Variant)
+		if ref == nil || ref.Variant.Label == res.Variant.Label {
+			continue
+		}
+		hunks := Diff(ref.SystemText, res.SystemText)
 		if len(hunks) == 0 {
 			continue
 		}
@@ -116,6 +142,14 @@ func (r *Report) Render() string {
 		b.WriteString("  ✓ 无环境敏感差异 — 该客户端在本轮维度下未表现出指纹漂移\n")
 	}
 	return b.String()
+}
+
+// refLabel returns the reference label for a variant (its Ref, or "baseline").
+func refLabel(v Variant) string {
+	if v.Ref == "" {
+		return "baseline"
+	}
+	return v.Ref
 }
 
 // summarizeHunks turns a hunk list into a one-line human summary, e.g.

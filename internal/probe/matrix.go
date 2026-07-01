@@ -25,7 +25,18 @@ type Variant struct {
 	// platforms/permissions where that is not possible, the runner skips the
 	// variant and reports it as "not driven" rather than faking a result.
 	NeedsHostResolve bool
+	// Ref names the variant this one is diffed against. Empty means "baseline".
+	// The host_* variants use a clean-DOMAIN reference (host_baseline) rather
+	// than the IP-literal baseline, so a diff isolates the domain's *content*
+	// (.cn / keyword) and is not contaminated by the IP-literal-vs-domain
+	// difference — differential testing must vary exactly one thing.
+	Ref string
 }
+
+// cleanHost is the neutral domain used as the reference for host_* variants: a
+// real domain name (so the comparison is domain-vs-domain) that is not .cn, not
+// a reseller, and contains no AI-lab keyword.
+const cleanHost = "probe-clean.example"
 
 // The reseller hostname used for the reseller dimension. Chosen from the
 // decoded blacklist embedded in the client; any entry works, this one is
@@ -90,11 +101,19 @@ func DefaultMatrix() []Variant {
 			Env:   with(baseEnv(), "LANG", "zh_CN.UTF-8", "LC_ALL", "zh_CN.UTF-8"),
 		},
 		{
+			Label:            "host_baseline",
+			Desc:             "clean DOMAIN reference for host_* (non-cn, non-reseller, no keyword)",
+			Env:              baseEnv(),
+			Hostname:         cleanHost,
+			NeedsHostResolve: true,
+		},
+		{
 			Label:            "host_cn",
 			Desc:             "proxy hostname ends in .cn (known signal, .cn catch-all)",
 			Env:              baseEnv(),
 			Hostname:         "probe-fp.cn",
 			NeedsHostResolve: true,
+			Ref:              "host_baseline",
 		},
 		{
 			Label:            "host_reseller",
@@ -102,6 +121,7 @@ func DefaultMatrix() []Variant {
 			Env:              baseEnv(),
 			Hostname:         resellerHost,
 			NeedsHostResolve: true,
+			Ref:              "host_baseline",
 		},
 		{
 			Label:            "host_labkw",
@@ -109,6 +129,7 @@ func DefaultMatrix() []Variant {
 			Env:              baseEnv(),
 			Hostname:         "api.deepseek-probe.com",
 			NeedsHostResolve: true,
+			Ref:              "host_baseline",
 		},
 		{
 			Label:            "host_cn_tz_cn",
@@ -116,20 +137,34 @@ func DefaultMatrix() []Variant {
 			Env:              with(baseEnv(), "TZ", "Asia/Shanghai"),
 			Hostname:         "probe-fp.cn",
 			NeedsHostResolve: true,
+			Ref:              "host_baseline",
 		},
 	}
 }
 
 // Select filters the matrix to the requested labels (comma/space handled by the
-// caller). An empty labels set returns the full matrix. Baseline is always
-// included because every diff needs it as the reference.
+// caller). An empty labels set returns the full matrix. A variant's reference
+// (baseline, or its Ref such as host_baseline) is always pulled in so every
+// selected variant has something to diff against.
 func Select(all []Variant, labels map[string]bool) []Variant {
 	if len(labels) == 0 {
 		return all
 	}
+	// Expand the requested set with every selected variant's reference.
+	want := map[string]bool{"baseline": true}
+	byLabel := make(map[string]Variant, len(all))
+	for _, v := range all {
+		byLabel[v.Label] = v
+	}
+	for l := range labels {
+		want[l] = true
+		if v, ok := byLabel[l]; ok && v.Ref != "" {
+			want[v.Ref] = true
+		}
+	}
 	var out []Variant
 	for _, v := range all {
-		if v.Label == "baseline" || labels[v.Label] {
+		if want[v.Label] {
 			out = append(out, v)
 		}
 	}
