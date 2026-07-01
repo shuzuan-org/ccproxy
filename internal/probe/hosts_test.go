@@ -72,3 +72,36 @@ func TestStripProbeBlock_MalformedBeginOnly(t *testing.T) {
 		t.Fatalf("original content must survive: %q", got)
 	}
 }
+
+func TestStripProbeBlock_MultipleBlocks(t *testing.T) {
+	// Two blocks (repeated/interrupted runs). A single strings.Index pass would
+	// leave the second — and its domain→loopback lines — behind. All must go.
+	block := func(h string) string {
+		return "\n" + hostsBegin + "\n127.0.0.1\t" + h + "\n" + hostsEnd + "\n"
+	}
+	content := "127.0.0.1\tlocalhost\n" + block("probe-fp.cn") + block("yunwu.ai")
+	got := string(stripProbeBlock([]byte(content)))
+	if strings.Contains(got, hostsBegin) || strings.Contains(got, "probe-fp.cn") || strings.Contains(got, "yunwu.ai") {
+		t.Fatalf("all probe blocks must be removed, got: %q", got)
+	}
+	if got != "127.0.0.1\tlocalhost\n" {
+		t.Fatalf("original content must be preserved exactly, got: %q", got)
+	}
+}
+
+func TestStripProbeBlock_Idempotent(t *testing.T) {
+	orig := "127.0.0.1\tlocalhost\n"
+	withBlock := orig + "\n" + hostsBegin + "\n127.0.0.1\tprobe-fp.cn\n" + hostsEnd + "\n"
+	once := stripProbeBlock([]byte(withBlock))
+	twice := stripProbeBlock(once)
+	if string(once) != string(twice) {
+		t.Fatalf("strip must be idempotent:\n once=%q\ntwice=%q", once, twice)
+	}
+}
+
+func TestHostsGuard_NilRestoreSucceeds(t *testing.T) {
+	var g *hostsGuard
+	if !g.restore() {
+		t.Fatal("nil guard restore must report success (nothing to restore)")
+	}
+}

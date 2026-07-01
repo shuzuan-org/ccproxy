@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -41,10 +41,22 @@ type Config struct {
 const defaultPrompt = "Reply with the single word: ok"
 
 // Run executes the env-matrix probe end to end and returns the rendered report.
-func Run(cfg Config) (string, error) {
+// If a temporary /etc/hosts edit could not be reverted, Run returns the report
+// together with a non-nil error so the caller exits non-zero rather than
+// appearing to finish cleanly with the system file still modified.
+func Run(cfg Config) (report string, err error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
+	// Registered first so it runs LAST (LIFO), i.e. after the deferred hosts
+	// restore: if the restore ultimately failed, surface it as the returned
+	// error even on an otherwise-successful run.
+	var restoreFailed atomic.Bool
+	defer func() {
+		if restoreFailed.Load() && err == nil {
+			err = fmt.Errorf("failed to restore %s; it still contains probe entries", hostsPath)
+		}
+	}()
 	if cfg.Prompt == "" {
 		cfg.Prompt = defaultPrompt
 	}
@@ -86,30 +98,45 @@ func Run(cfg Config) (string, error) {
 				cfg.Logf("warning: could not edit /etc/hosts (%v); host_* variants will be skipped", err)
 				hosts = nil
 			} else {
-				// A `defer` does not run if the process is killed by a signal,
-				// which would leave the root-owned /etc/hosts pointing our
-				// probe hostnames at loopback. Trap SIGINT/SIGTERM, restore,
-				// then re-raise the default disposition so the exit code is
-				// correct. sync.Once ensures restore runs exactly once whether
-				// triggered by the signal path or the normal defer.
-				var once sync.Once
-				restoreOnce := func() { once.Do(hosts.restore) }
+				// restoreOnce restores at most once *successfully*: a failed
+				// restore does NOT consume the guard, so the deferred call can
+				// retry. (sync.Once would burn the single attempt on failure.)
+				var restored atomic.Bool
+				restoreOnce := func() bool {
+					if restored.Load() {
+						return true
+					}
+					if hosts.restore() {
+						restored.Store(true)
+						return true
+					}
+					restoreFailed.Store(true)
+					return false
+				}
 				defer restoreOnce()
 
+				// A `defer` does not run if the process is killed by a signal,
+				// which would leave the root-owned /etc/hosts pointing our probe
+				// hostnames at loopback. Trap SIGINT/SIGTERM, restore, then
+				// re-raise so the shell sees a signal exit. `done` lets the
+				// goroutine exit cleanly on the normal path (no leak).
 				sig := make(chan os.Signal, 1)
+				done := make(chan struct{})
 				signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 				defer signal.Stop(sig)
+				defer close(done)
 				go func() {
-					s, ok := <-sig
-					if !ok {
+					select {
+					case s := <-sig:
+						fmt.Fprintf(os.Stderr, "\nprobe: caught %v, restoring %s...\n", s, hostsPath)
+						restoreOnce()
+						// Re-raise so the exit code reflects the signal.
+						signal.Reset(os.Interrupt, syscall.SIGTERM)
+						if p, err := os.FindProcess(os.Getpid()); err == nil {
+							_ = p.Signal(s)
+						}
+					case <-done:
 						return
-					}
-					fmt.Fprintf(os.Stderr, "\nprobe: caught %v, restoring %s...\n", s, hostsPath)
-					restoreOnce()
-					// Re-raise so the shell sees a signal exit, not exit 0.
-					signal.Reset(os.Interrupt, syscall.SIGTERM)
-					if p, err := os.FindProcess(os.Getpid()); err == nil {
-						_ = p.Signal(s)
 					}
 				}()
 				cfg.Logf("added temporary /etc/hosts entries for %d hostname(s)", len(names))
@@ -131,7 +158,7 @@ func Run(cfg Config) (string, error) {
 		cfg.Logf("variant %-14s %s", v.Label, status)
 	}
 
-	report := BuildReport(results).Render()
+	report = BuildReport(results).Render()
 	if cfg.OutDir != "" {
 		_ = os.WriteFile(filepath.Join(cfg.OutDir, "report.txt"), []byte(report), 0o644)
 	}

@@ -72,45 +72,62 @@ func addHostsEntries(hostnames []string) (*hostsGuard, error) {
 }
 
 // restore rewrites /etc/hosts back to the clean snapshot (original minus any
-// probe block). Safe to call multiple times and on a nil guard.
-func (g *hostsGuard) restore() {
+// probe block) and reports whether it succeeded. On failure it emits a loud
+// warning with manual-cleanup instructions; the caller is responsible for
+// surfacing the failure (non-zero exit) rather than exiting as if clean —
+// a root-owned file left modified is a security event, not a warning to bury.
+// Safe to call multiple times and on a nil guard (nil counts as success:
+// nothing to restore).
+func (g *hostsGuard) restore() bool {
 	if g == nil || g.original == nil {
-		return
+		return true
 	}
 	if err := writeRootFile(hostsPath, string(g.original)); err != nil {
 		fmt.Fprintf(os.Stderr, "probe: WARNING failed to restore %s: %v\n", hostsPath, err)
-		fmt.Fprintf(os.Stderr, "probe: manually remove the block between %q and %q\n", hostsBegin, hostsEnd)
+		fmt.Fprintf(os.Stderr, "probe: /etc/hosts STILL CONTAINS probe entries — remove the block "+
+			"between %q and %q by hand.\n", hostsBegin, hostsEnd)
+		return false
 	}
+	return true
 }
 
-// stripProbeBlock removes a marker-delimited probe block (and the single
-// leading blank line addHostsEntries writes before it) from content. Content
-// with no probe block is returned unchanged. Exposed logic kept pure for
-// testing without touching the real /etc/hosts.
+// stripProbeBlock removes every marker-delimited probe block (and the single
+// leading blank line addHostsEntries writes before each) from content. Content
+// with no probe block is returned unchanged. It loops until no marker remains,
+// so multiple blocks left by repeated/interrupted runs are all cleaned — a
+// single strings.Index pass would leave the second block (and its
+// domain→loopback lines) behind. Kept pure for testing without touching the
+// real /etc/hosts.
 func stripProbeBlock(content []byte) []byte {
 	s := string(content)
-	start := strings.Index(s, hostsBegin)
-	if start < 0 {
-		return content
+	for {
+		start := strings.Index(s, hostsBegin)
+		if start < 0 {
+			break
+		}
+		before := strings.TrimRight(s[:start], "\n")
+		end := strings.Index(s, hostsEnd)
+		if end < 0 || end < start {
+			// Malformed (begin without a following end): cut from the marker to
+			// EOF so we never leave a dangling half-block.
+			s = before
+			break
+		}
+		end += len(hostsEnd)
+		after := s[end:]
+		// Rejoin; a stripped middle block leaves before+after adjacent, which
+		// the next iteration re-scans for further blocks.
+		if before == "" {
+			s = strings.TrimLeft(after, "\n")
+		} else {
+			s = before + "\n" + strings.TrimLeft(after, "\n")
+		}
 	}
-	end := strings.Index(s, hostsEnd)
-	if end < 0 || end < start {
-		// Malformed (begin without end): cut from the marker to EOF so we never
-		// leave a dangling half-block.
-		trimmed := strings.TrimRight(s[:start], "\n")
-		return []byte(trimmed + "\n")
-	}
-	end += len(hostsEnd)
-	// Drop the block plus the leading newline we prepended, then re-normalize a
-	// single trailing newline.
-	before := strings.TrimRight(s[:start], "\n")
-	after := s[end:]
-	joined := before + after
-	joined = strings.TrimRight(joined, "\n")
-	if joined == "" {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
 		return []byte{}
 	}
-	return []byte(joined + "\n")
+	return []byte(s + "\n")
 }
 
 // writeRootFile writes content to a root-owned path via sudo tee. Using tee
