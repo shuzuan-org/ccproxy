@@ -733,3 +733,23 @@ func TestAccountOverrideByName(t *testing.T) {
 		t.Errorf("miss: got %q,%v want \"\",false", v, ok)
 	}
 }
+
+func TestDisguiseConfig_DefingerprintDefaultsOn(t *testing.T) {
+	// Unset => enabled (zero-config strips the fingerprint).
+	var d DisguiseConfig
+	if !d.IsDefingerprintEnabled() {
+		t.Error("defingerprint must default to enabled when unset")
+	}
+	// Explicit false => disabled.
+	no := false
+	d.Defingerprint = &no
+	if d.IsDefingerprintEnabled() {
+		t.Error("defingerprint=false must disable")
+	}
+	// Explicit true => enabled.
+	yes := true
+	d.Defingerprint = &yes
+	if !d.IsDefingerprintEnabled() {
+		t.Error("defingerprint=true must enable")
+	}
+}

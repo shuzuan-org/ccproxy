@@ -22,6 +22,22 @@ type Config struct {
 	APIKeys          []APIKeyConfig    `toml:"api_keys"`
 	Pools            []PoolConfig      `toml:"pools"`
 	AccountOverrides []AccountOverride `toml:"account_overrides"`
+	Disguise         DisguiseConfig    `toml:"disguise"`
+}
+
+// DisguiseConfig holds toggles for the outbound disguise layer.
+type DisguiseConfig struct {
+	// Defingerprint controls covert date-line fingerprint removal. A nil
+	// pointer means "unset" and defaults to enabled — the desired default is
+	// ON so zero-config proxies strip the fingerprint. Set to false only to
+	// inspect the raw client fingerprint (e.g. for probe comparison).
+	Defingerprint *bool `toml:"defingerprint"`
+}
+
+// IsDefingerprintEnabled reports whether covert date-line fingerprint removal
+// is active (default: true when unset).
+func (d DisguiseConfig) IsDefingerprintEnabled() bool {
+	return d.Defingerprint == nil || *d.Defingerprint
 }
 
 // AccountOverride pins a specific account's disguise ClientID (used as

@@ -31,18 +31,28 @@ type Engine struct {
 	fingerprints *FingerprintStore
 	sessions     *SessionMaskStore
 	billingProbe *BillingHeaderObserver
+	// defingerprint, when true (the default), normalizes the covert date-line
+	// fingerprint out of outbound bodies. Toggle via SetDefingerprint.
+	defingerprint bool
 }
 
 // NewEngine creates a new disguise engine with per-account fingerprint storage
 // and session masking. dataDir is the path to the persistent data directory.
 // overrides supplies optional per-account ClientID pinning; pass nil to opt out.
+//
+// Date-fingerprint normalization defaults to ON; call SetDefingerprint(false)
+// to disable it (e.g. to inspect the raw client fingerprint).
 func NewEngine(dataDir string, overrides ClientIDOverrideProvider) *Engine {
 	return &Engine{
-		fingerprints: NewFingerprintStoreWithOverrides(dataDir, overrides),
-		sessions:     NewSessionMaskStore(),
-		billingProbe: NewBillingHeaderObserver(),
+		fingerprints:  NewFingerprintStoreWithOverrides(dataDir, overrides),
+		sessions:      NewSessionMaskStore(),
+		billingProbe:  NewBillingHeaderObserver(),
+		defingerprint: true,
 	}
 }
+
+// SetDefingerprint enables or disables covert date-line fingerprint removal.
+func (e *Engine) SetDefingerprint(enabled bool) { e.defingerprint = enabled }
 
 // GetFingerprintStore returns the underlying fingerprint store (for migration).
 func (e *Engine) GetFingerprintStore() *FingerprintStore {
@@ -212,6 +222,16 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 		// values leak which human is behind the token. We guard on Claude
 		// Code prompt prefix inside the rewriter so user content is safe.
 		rewriteEnvBlockInPlace(parsed, fp)
+
+		// Normalize the covert date-line fingerprint (homoglyph apostrophe +
+		// '/' date separator) back to the clean official-direct form. Must run
+		// before the marshal + cch recompute below so the attestation covers
+		// the cleaned bytes.
+		if e.defingerprint && rewriteDateFingerprintInPlace(parsed) {
+			observe.Logger(ctx).Debug("disguise: date fingerprint normalized (CC pass-through)",
+				"account", accountName,
+			)
+		}
 
 		// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 		if strings.Contains(origReq.URL.Path, "count_tokens") {
@@ -402,6 +422,14 @@ func (e *Engine) Apply(origReq *http.Request, upstreamReq *http.Request, body []
 	// above, any later sub-agent system block that happens to quote an
 	// <env> envelope gets normalized too. Cheap no-op in the common case.
 	rewriteEnvBlockInPlace(parsed, fp)
+
+	// Normalize the covert date-line fingerprint before the marshal + cch
+	// recompute, same as the CC pass-through path.
+	if e.defingerprint && rewriteDateFingerprintInPlace(parsed) {
+		observe.Logger(ctx).Debug("disguise: date fingerprint normalized (full disguise)",
+			"account", accountName,
+		)
+	}
 
 	// count_tokens endpoint does not accept metadata field — strip it to avoid 400.
 	if strings.Contains(origReq.URL.Path, "count_tokens") {

@@ -62,6 +62,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 
 	// 3. Create disguise engine.
 	disguiseEngine := disguise.NewEngine("data", &clientIDOverrideAdapter{cfg: cfg, registry: registry})
+	disguiseEngine.SetDefingerprint(cfg.Disguise.IsDefingerprintEnabled())
 	disguiseEngine.StartSessionCleanup(ctx)
 	disguiseEngine.GetFingerprintStore().MigrateKeys(nameToID)
 
