@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -98,16 +99,24 @@ func Run(cfg Config) (report string, err error) {
 				cfg.Logf("warning: could not edit /etc/hosts (%v); host_* variants will be skipped", err)
 				hosts = nil
 			} else {
-				// restoreOnce restores at most once *successfully*: a failed
-				// restore does NOT consume the guard, so the deferred call can
-				// retry. (sync.Once would burn the single attempt on failure.)
-				var restored atomic.Bool
+				// restoreOnce restores at most once *successfully* and is fully
+				// mutually exclusive: the signal path and the deferred path can
+				// call it concurrently, and restore() shells out to `sudo tee`
+				// (slow), so a plain atomic check-then-act would let both run a
+				// tee against /etc/hosts at once. The mutex makes the
+				// check→restore→mark sequence atomic. A failed restore does NOT
+				// set restored, so the next caller retries (sync.Once would burn
+				// the single attempt on failure).
+				var mu sync.Mutex
+				var restored bool
 				restoreOnce := func() bool {
-					if restored.Load() {
+					mu.Lock()
+					defer mu.Unlock()
+					if restored {
 						return true
 					}
 					if hosts.restore() {
-						restored.Store(true)
+						restored = true
 						return true
 					}
 					restoreFailed.Store(true)
